@@ -73,12 +73,24 @@ rows out to sort or join them locally.
 
 ## 4. Credentials
 
-The token is never a literal in SQL and is never printed. Read it with a reader, put it in a
-variable for exactly as long as the `CREATE SECRET` takes, then reset it. Do not `trim()` it:
-`trim` strips spaces, and a trailing newline survives.
+The token is an **environment value on the shell line**. It is never a literal in SQL, never
+selected back, and never carried in a `SET VARIABLE` — that would be the same orchestration
+the contract rules out, and it does not survive a reconnect:
 
-A secret's `SCOPE` is a literal prefix match on the URI spelling, so it must match the
-`quack:host:port` form character for character.
+```bash
+export QUACK_TOKEN="$(cat ~/.duck/token)"
+```
+```sql
+-- ATTACH uri AS name (TYPE quack, TOKEN ...) -- one body, nothing to sequence
+ATTACH IF NOT EXISTS 'quack:localhost:9494' AS dev (TYPE quack, TOKEN getenv('QUACK_TOKEN'));
+```
+
+If a token must come from a file rather than the environment, read it with a reader and do not
+`trim()` it: `trim` strips spaces, and a trailing newline survives to make the auth fail in a
+way that looks like a bad token.
+
+A secret's `SCOPE`, where one is used, is a literal prefix match on the URI spelling, so it has
+to match the `quack:host:port` form character for character.
 
 **The server currently holds no secrets at all** — `dev.query($$FROM duckdb_secrets()$$)`
 returns zero rows. Anything reaching for `s3://` will therefore fail at the first *data* read,
