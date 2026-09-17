@@ -1,0 +1,9 @@
+# The DuckDB database and everything it fetches. The .sql file is the artifact;
+# the data is always reproducible by running it.
+data/
+*.duckdb
+*.duckdb.wal
+*.ducklake
+*.parquet
+*.log
+.DS_Store
