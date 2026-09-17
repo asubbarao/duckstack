@@ -1,0 +1,19 @@
+{
+  "name": "duckdb-skills",
+  "owner": {
+    "name": "duckdb",
+    "url": "https://github.com/duckdb"
+  },
+  "plugins": [
+    {
+      "name": "duckdb-skills",
+      "source": "./",
+      "description": "InFrame fork of the DuckDB skills (quack/duckstack-targeted): read any data file, attach and query DuckDB databases, search DuckDB/DuckLake docs, search past session logs, and install/update DuckDB extensions.",
+      "version": "0.2.4-inframe.7",
+      "homepage": "https://duckdb.org",
+      "repository": "https://github.com/duckdb/duckdb-skills",
+      "license": "MIT",
+      "keywords": ["duckdb", "ducklake", "parquet", "csv", "json", "avro", "excel", "iceberg", "delta", "read-file", "read-memories", "duckdb-docs", "data-exploration", "session-logs", "query", "sql", "attach-db"]
+    }
+  ]
+}

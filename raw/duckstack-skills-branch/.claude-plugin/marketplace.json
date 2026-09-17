@@ -1,0 +1,17 @@
+{
+  "name": "duckstack",
+  "owner": {
+    "name": "InFrame",
+    "url": "https://github.com/inframe-risk"
+  },
+  "plugins": [
+    {
+      "name": "duckstack",
+      "source": "./",
+      "description": "InFrame duckstack skills: how to actually call the quack server and DuckLake from an ephemeral DuckDB client, plus the crawl, git/GitHub and Superhuman Docs doors.",
+      "version": "0.1.0",
+      "license": "MIT",
+      "keywords": ["duckdb", "ducklake", "quack", "duckstack", "mcp", "sql", "inframe"]
+    }
+  ]
+}

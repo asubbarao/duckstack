@@ -1,0 +1,2 @@
+-- Canonical: ~/personal/agent-stream/agent_signature.sql
+-- See also: README_FOR_AGENTS.md and query_catalog.sql

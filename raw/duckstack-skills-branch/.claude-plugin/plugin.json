@@ -1,0 +1,11 @@
+{
+  "name": "duckstack",
+  "description": "InFrame duckstack skills: how to actually call the quack server and DuckLake from an ephemeral DuckDB client, plus the crawl, git/GitHub and Superhuman Docs doors. Written because agents get the calling convention wrong, not because they cannot write SQL.",
+  "version": "0.1.0",
+  "author": {
+    "name": "InFrame",
+    "url": "https://github.com/inframe-risk"
+  },
+  "license": "MIT",
+  "keywords": ["duckdb", "ducklake", "quack", "duckstack", "mcp", "sql", "inframe", "crawl", "superhuman-docs"]
+}

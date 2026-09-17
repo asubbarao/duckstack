@@ -1,0 +1,13 @@
+{% if single %}
+query($id: String!) {
+  {{ item }}(id: $id) { ...SelectedFields }
+}
+{% else %}
+query($filter: {{ type }}Filter, $after: String) {
+  {{ collection }}({{ arguments }}) {
+    nodes { ...SelectedFields }
+    pageInfo { hasNextPage endCursor }
+  }
+}
+{% endif %}
+fragment SelectedFields on {{ type }} { {{ fields }} }

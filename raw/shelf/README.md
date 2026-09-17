@@ -1,6 +1,4 @@
-# shelf (was duckdb-flying)
-
-Moved into the duckdb-skills plugin by ADR-002 so a skill and the SQL it summarizes change in one commit.
+# duckdb-flying
 
 One `.sql` file per DuckDB extension, each verified on this machine (DuckDB 1.5.5 osx_arm64), each
 self-describing, and one query that finds the right one.
@@ -13,7 +11,7 @@ catalog.sql             reads ext/*.sql → flying_header, flying_lines, FTS ind
 ## Find one
 
 ```sql
--- from the plugin root:  FLYING_ROOT="$PWD/shelf" duckdb :memory: -cmd ".read shelf/catalog.sql"
+.read catalog.sql
 FROM find_sql('which files changed in a pull request');   -- ranked: file, ext, score, summary, matching lines
 FROM find_sql('post a query to myself per row');          -- → quackapi.sql, http_client.sql
 FROM sql_for('read_cloudwatch_logs');                     -- by extension, function, or tag

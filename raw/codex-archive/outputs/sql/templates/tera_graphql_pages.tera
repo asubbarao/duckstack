@@ -1,0 +1,29 @@
+sh -c '
+set -eu
+[ -n "${% raw %}{{% endraw %}{{ auth_env }}-}" ] || { echo "Missing {{ auth_env }}" >&2; exit 1; }
+work=$(mktemp -d)
+trap "rm -f \"$work/body\" \"$work/headers\"; rmdir \"$work\"" EXIT
+payload=$(printf %s "{{ payload_base64 }}" | openssl base64 -d -A)
+cursor=""
+while :; do
+    status=$(curl --silent --show-error --connect-timeout 10 --max-time 60 \
+        --output "$work/body" --dump-header "$work/headers" --write-out "%{http_code}" \
+        --header "Content-Type: application/json" --header "Authorization: ${{ auth_env }}" \
+        --data-binary "$payload" "{{ endpoint }}")
+    jq -nc --arg status "$status" --argjson request "$payload" \
+        --rawfile body "$work/body" --rawfile headers "$work/headers" \
+        "{status: (\$status|tonumber), request: \$request, body: \$body, headers: \$headers}"
+    case "$status" in 2??) ;; *) exit 1 ;; esac
+    jq -e "if .errors != null then error(\"GraphQL errors; inspect raw response\") else true end" "$work/body" >/dev/null
+{% if page_path %}
+    page=$(jq -ce ".{{ page_path }} | if (.hasNextPage|type) != \"boolean\" then error(\"Missing pageInfo\") else . end" "$work/body")
+    [ "$(printf %s "$page" | jq -r .hasNextPage)" = true ] || break
+    next=$(printf %s "$page" | jq -er ".endCursor | select(type == \"string\" and length > 0)")
+    [ "$next" != "$cursor" ] || { echo "Repeated cursor" >&2; exit 1; }
+    cursor=$next
+    payload=$(printf %s "$payload" | jq -c --arg cursor "$cursor" ".variables.after = \$cursor")
+{% else %}
+    break
+{% endif %}
+done
+'{{ '|' -}}

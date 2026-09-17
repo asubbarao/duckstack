@@ -1,18 +1,20 @@
 -- ============================================================================
--- catalog.sql — every ext/<extension>.sql as rows, and one macro that finds the right one.
---   FLYING_ROOT="$PWD/shelf" duckdb :memory: -cmd ".read shelf/catalog.sql"   # -cmd keeps ~/.duckdbrc; never -init
--- The root is an environment variable read inline (house rule 4: no SET VARIABLE).
--- Each file carries a header of `-- @key: value` lines, with continuations on `--   ` lines.
+-- catalog.sql — every ext/<extension>.sql as rows, and the queries that find the right one.
+-- Local tool: reads the ext/ corpus into an ephemeral :memory: and builds an FTS index.
+-- It does not touch the server, so there is no quack_query here.
+-- Each statement is a complete idempotent body: no macros, no .read, no SET VARIABLE,
+-- no getvariable().
+-- Each ext file carries a `-- @key: value` header, continuations on `--   ` lines.
 -- No key is named anywhere below: the header is kept as (key, value) ROWS and widened by
 -- PIVOT, so a new `-- @key:` appears on its own instead of being silently dropped.
 -- ============================================================================
 LOAD fts;
 
--- 1. raw: one row per file, the file whole.
--- read_text(glob) -> filename, content, size, last_modified
+-- 1. raw: one row per file, the file whole. The corpus lives beside this file; its path is
+-- one expression, not a macro and not a variable.
 CREATE OR REPLACE TABLE flying_files AS
 SELECT filename, content, size, last_modified
-FROM read_text(getenv('FLYING_ROOT') || '/ext/*.sql');   -- FLYING_ROOT = this shelf/ directory; set on the shell line
+FROM read_text(getenv('HOME') || '/duckdb-flying/ext/*.sql');
 
 -- 2. lines: one row per line, numbered. unnest(...) WITH ORDINALITY gives the number, so
 -- there is no second string_split for generate_subscripts and no wrapper CTE.

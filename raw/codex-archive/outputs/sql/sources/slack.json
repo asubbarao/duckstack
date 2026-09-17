@@ -1,0 +1,19 @@
+{
+  "source_id": "slack",
+  "protocol": "rest",
+  "base_url": "https://slack.com/api",
+  "auth_env": "SLACK_TOKEN",
+  "auth_scheme": "Bearer",
+  "channels_operation": "conversations.list",
+  "history_operation": "conversations.history",
+  "channel_types": "public_channel,private_channel,mpim,im",
+  "channel_page_size": 999,
+  "history_page_size": 200,
+  "channel_ids": [
+    "C0BKMLQ6URE",
+    "C0BMT1GD4CS",
+    "C0AV2B62L68",
+    "C0AJV462T4K",
+    "D0C1V1Z5AGL"
+  ]
+}
