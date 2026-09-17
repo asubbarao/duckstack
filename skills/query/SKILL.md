@@ -1,44 +1,41 @@
 ---
 name: query
 description: >
-  Run SQL queries against the attached DuckDB database or ad-hoc against files.
-  Accepts raw SQL or natural language questions. Uses DuckDB Friendly SQL idioms.
-argument-hint: <SQL or question> [--file path]
+  Run SQL on the dev quack (or another explicitly selected door) or ad-hoc against files.
+  Accepts raw SQL, a natural-language question, or a path to a .sql artifact. One statement
+  runs with `duckdb :memory: -c`; anything longer is a single .sql artifact run by path with
+  `-f` — no state file, the ATTACH is in the head. Uses DuckDB Friendly SQL and this user's
+  SQL process rules; `--#` lines in an artifact are the human's instructions.
+argument-hint: <SQL | question | path.sql> [--file data-path] [--door dev|dev-ro|quack:host:port]
 allowed-tools: Bash
 ---
 
-You are helping the user query data using DuckDB.
+You are helping the user query data on the duckstack. Read `/duckdb-skills:duck` §2 (boundary),
+§3 (client forms) and §5 (process rules) first; they bind every statement you write.
 
 Input: `$@`
 
-Follow these steps in order.
+## Step 1 — Determine the mode
 
-## Step 1 — Resolve state and determine the mode
+- **Artifact mode**: the input is a path to a `.sql` file. Read it; collect every line starting
+  with `--#` — that is the instruction set (human → agent). Act on them, then execute the file
+  by path (Step 5). Never depend on the human having run it in their IDE; you run it.
+- **Ad-hoc file mode**: `--file` present, or the SQL references file paths (`FROM 'x.csv'`).
+  Runs sandboxed in the local client (Step 5).
+- **Session mode** (default): everything else — table names, natural language, SQL without
+  file references. The target is `dev` (`quack:localhost:9494`) unless `--door` says otherwise.
 
-Look for an existing state file in either location:
-
-```bash
-STATE_DIR=""
-test -f .duckdb-skills/state.sql && STATE_DIR=".duckdb-skills"
-PROJECT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")"
-PROJECT_ID="$(echo "$PROJECT_ROOT" | tr '/' '-')"
-test -f "$HOME/.duckdb-skills/$PROJECT_ID/state.sql" && STATE_DIR="$HOME/.duckdb-skills/$PROJECT_ID"
-```
-
-If found, verify the databases it references are still accessible:
+Head for every dev statement (token on the shell line, never in SQL):
 
 ```bash
-duckdb -init "$STATE_DIR/state.sql" -c "SHOW DATABASES;"
+QUACK_TOKEN="$(cat ~/.duck/token)" duckdb :memory: -c "
+LOAD quack;
+ATTACH 'quack:localhost:9494' AS dev (TYPE quack, TOKEN getenv('QUACK_TOKEN'));
+<statement>"
 ```
 
-Now determine the mode:
-
-- **Ad-hoc mode** if: the `--file` flag is present, or the SQL references file paths/literals (e.g. `FROM 'data.csv'`), or `STATE_DIR` is empty.
-- **Session mode** if: `STATE_DIR` is set and the input references table names, is natural language, or is SQL without file references.
-
-If no state file exists and no file is referenced, fall back to ad-hoc mode against `:memory:` — the user must reference files directly in their SQL.
-
-If the state file exists but any ATTACH in it fails, warn the user and fall back to ad-hoc mode.
+If the attach fails ("connection refused"), the launchd job may have restarted — run once more,
+then report. Do not fall back to opening `~/.duck/dev.duckdb`; it is locked by design.
 
 ## Step 2 — Check DuckDB is installed
 
@@ -50,40 +47,33 @@ If not found, delegate to `/duckdb-skills:install-duckdb` and then continue.
 
 ## Step 3 — Generate SQL if needed
 
-If the input is natural language (not valid SQL), generate SQL using the Friendly SQL reference below.
+Natural language → read the schema **from the server** first:
 
-In **session mode**, first retrieve the schema to inform query generation:
-
-```bash
-duckdb -init "$STATE_DIR/state.sql" -csv -c "
-SELECT table_name FROM duckdb_tables() ORDER BY table_name;
-"
+```sql
+FROM dev.query($$SELECT table_name, estimated_size, column_count FROM duckdb_tables() WHERE NOT internal ORDER BY 1$$);
+FROM dev.query($$DESCRIBE <table_name>$$);
 ```
 
-Then for relevant tables:
+Then write the query with the Friendly SQL reference below **and** the process rules:
 
-```bash
-duckdb -init "$STATE_DIR/state.sql" -csv -c "DESCRIBE <table_name>;"
-```
-
-Use the schema context and the Friendly SQL reference to generate the most appropriate query.
+- readers infer schema; `DESCRIBE` first; select by name — no `col0`, no `p[-4]`, no
+  `split_part` on a path, no `json_extract` ladders, no `regexp_*` (banned; petition the user)
+- base layers keep every row and column; `array_agg(x) AS xs, len(xs) AS n`, not `COUNT(*)`
+- one layer at a time; CTEs, not subqueries inside table-function arguments; start at
+  `LIMIT 1` / `WHERE name IN (…)` and widen
+- every function call carries a comment listing all its parameters and defaults
+- cast with the extension's type (`::HTML`, `::JSON`) and use its functions; no string surgery
+- more than one statement → it is an artifact (Step 5), not a longer `-c` string
 
 ## Step 4 — Estimate result size
 
-Before executing, estimate whether the query could produce a very large result that would
-consume excessive tokens when returned to this conversation.
+Session mode — sizes from the server:
 
-**Session mode** — check row counts for the tables involved:
-
-```bash
-duckdb -init "$STATE_DIR/state.sql" -csv -c "
-SELECT table_name, estimated_size, column_count
-FROM duckdb_tables()
-WHERE table_name IN ('<table1>', '<table2>');
-"
+```sql
+FROM dev.query($$SELECT table_name, estimated_size, column_count FROM duckdb_tables() WHERE table_name IN ('<t1>', '<t2>')$$);
 ```
 
-**Ad-hoc mode** — probe the source:
+Ad-hoc file mode — probe in a sandbox:
 
 ```bash
 duckdb :memory: -csv -c "
@@ -95,20 +85,55 @@ SELECT count() AS row_count FROM 'FILE_PATH';
 "
 ```
 
-**Evaluate**:
-- If the query already has a `LIMIT`, `count()`, or other aggregation that bounds the output -> safe, proceed.
-- If the source has **>1M rows** and the query has no LIMIT or aggregation -> tell the user:
-  *"This query would return a very large result set. Displaying it here would consume a lot of tokens and increase cost. I'd recommend adding `LIMIT 1000` or an aggregation to keep the output manageable."*
-  Ask for confirmation before running as-is.
-- If the data size is **>10 GB** -> additionally warn:
-  *"This table is over 10 GB — the query may take a while to complete."*
-  Proceed if the user confirms.
+- Bounded by `LIMIT`, `count()` or an aggregation → proceed.
+- Source **>1M rows** with no bound → *"This would return a very large result set; I'd
+  recommend `LIMIT 1000` or an aggregation."* Ask before running as-is.
+- **>10 GB** → add *"This table is over 10 GB — the query may take a while."*
+- Prefer **landing** a big result as a table on dev (`CREATE OR REPLACE TABLE … AS` inside
+  `dev.query`) and reading back a slice: SQL-and-join beats stdout.
 
-Skip this step for queries that are intrinsically bounded (e.g. `DESCRIBE`, `SUMMARIZE`, aggregations, `count()`).
+Skip for intrinsically bounded statements (`DESCRIBE`, `SUMMARIZE`, aggregations).
 
-## Step 5 — Execute the query
+## Step 5 — Execute
 
-**Ad-hoc mode** (sandboxed — only the referenced file is accessible):
+**One statement** — session mode. Two shapes; pick by what it touches:
+
+| Statement | Shape |
+|---|---|
+| one dev table, read only, no join | `SELECT … FROM dev.<table> …` client-side is fine |
+| joins, aggregates over dev tables, server table functions, `CREATE`/`INSERT` on dev, TEMP tables, `SET VARIABLE`, macros defined on dev | `FROM dev.query($$ … $$)` |
+
+A client-side join of two dev tables fails with "Multiple streaming scans … not currently
+supported" — that is the signal to push it into `dev.query`. `SET`, `INSTALL`, `LOAD`, `PRAGMA`
+against dev are refused ("the configuration has been locked"); do not try. Use a heredoc for
+anything multi-line; inside `$$…$$` nothing needs escaping (use `$q$…$q$` if the SQL itself
+contains `$$`):
+
+```bash
+QUACK_TOKEN="$(cat ~/.duck/token)" duckdb :memory: -csv <<'SQL'
+LOAD quack;
+ATTACH 'quack:localhost:9494' AS dev (TYPE quack, TOKEN getenv('QUACK_TOKEN'));
+FROM dev.query($$
+<QUERY>
+$$);
+SQL
+```
+
+**An artifact** — more than one statement, or anything the human should be able to edit and
+re-run. Write `<name>.sql` with the head from `/duckdb-skills:duck` `references/head.sql`,
+one table per statement, raw first, verification queries as trailing comments, `--#` lines
+left in place. Run it by path (`-f` keeps the rc floor):
+
+```bash
+QUACK_TOKEN="$(cat ~/.duck/token)" duckdb :memory: -f <name>.sql
+```
+
+Where the artifact lives: next to the work it belongs to (a project's `queries/`, a
+`sources/`, the scratchpad for a throwaway). There is no state directory.
+If the human works in a console (`claudes-console`), the artifact *is* the console file: stage
+it there, commit the round, execute by path, read the diff back.
+
+**Ad-hoc file mode** (sandboxed — only the referenced files are reachable):
 
 ```bash
 duckdb :memory: -csv <<'SQL'
@@ -120,38 +145,26 @@ SET lock_configuration=true;
 SQL
 ```
 
-Replace `FILE_PATH` with the actual file path extracted from the query or `--file` argument.
-If multiple files are referenced, include all paths in the `allowed_paths` list.
-
-**Session mode** (user-trusted database):
-
-```bash
-duckdb -init "$STATE_DIR/state.sql" -csv -c "<QUERY>"
-```
-
-For multi-line queries, use a heredoc with `-init`:
-
-```bash
-duckdb -init "$STATE_DIR/state.sql" -csv <<'SQL'
-<QUERY>;
-SQL
-```
-
-Always use heredocs (`<<'SQL'`) for multi-line queries to avoid shell quoting issues.
+Multiple files → list them all in `allowed_paths`.
 
 ## Step 6 — Handle errors
 
-- **Syntax error**: show the error, suggest a corrected query, and re-run.
-- **Missing extension** (e.g. `Extension "X" not loaded`): delegate to `/duckdb-skills:install-duckdb <ext>`, then retry.
-- **Table not found** (session mode): list available tables with `FROM duckdb_tables()` and suggest corrections.
-- **File not found** (ad-hoc mode): use `find "$PWD" -name "<filename>" 2>/dev/null` to locate the file and suggest the corrected path.
-- **Persistent or unclear DuckDB error**: use `/duckdb-skills:duckdb-docs <error message or relevant keywords>` to search the documentation for guidance, then apply the fix and retry.
+- **Syntax error**: show it, propose the corrected statement, re-run.
+- **"Multiple streaming scans…"**: wrap the statement in `dev.query($$…$$)`.
+- **Table not found**: list with `dev.query($$FROM duckdb_tables()$$)`; the client-side
+  catalog is empty for a quack attach, so never conclude "missing" from a client-side
+  `duckdb_tables()`.
+- **"Authorization failed"**: the read-only door (9495) with a non-SELECT; use `dev` (9494) if
+  the write is intended, otherwise fix the statement.
+- **Missing extension on the client**: `/duckdb-skills:install-duckdb <ext>`. Missing on the
+  **server**: it goes in `setup.sql`; report, do not `INSTALL` through dev.
+- **Persistent or unclear DuckDB error**: `/duckdb-skills:duckdb-docs <error keywords>`.
 
 ## Step 7 — Present results
 
-Show the query output to the user. If the result has more than 100 rows, note the truncation and suggest adding `LIMIT` to the query.
-
-For natural language questions, also provide a brief interpretation of the results.
+Show the output. Over 100 rows: note the truncation and suggest `LIMIT`, or land it as a
+table and read back a slice. For natural-language questions add a brief interpretation, and
+always show the SQL you ran — the user reads SQL fluently and will correct it.
 
 ---
 
@@ -171,38 +184,38 @@ When generating SQL, prefer these idiomatic DuckDB constructs:
 - **Trailing commas** allowed in SELECT lists
 
 ### Query features
-- **count()**: no need for `count(*)`
+- **count()**: no need for `count(*)` — but in base layers prefer `array_agg` + `len`
 - **Reusable aliases**: use column aliases in WHERE / GROUP BY / HAVING
 - **Lateral column aliases**: `SELECT i+1 AS j, j+2 AS k`
-- **COLUMNS(*)**: apply expressions across columns; supports regex, EXCLUDE, REPLACE, lambdas
+- **COLUMNS(*)**: apply expressions across columns; supports EXCLUDE, REPLACE, lambdas
 - **FILTER clause**: `count() FILTER (WHERE x > 10)` for conditional aggregation
 - **GROUPING SETS / CUBE / ROLLUP**: advanced multi-level aggregation
 - **Top-N per group**: `max(col, 3)` returns top 3 as a list; also `arg_max(arg, val, n)`, `min_by(arg, val, n)`
-- **DESCRIBE table_name**: schema summary (column names and types)
-- **SUMMARIZE table_name**: instant statistical profile
+- **QUALIFY**: filter on window results — the `_latest` snapshot idiom
+- **DESCRIBE table_name**: schema summary; **SUMMARIZE table_name**: statistical profile
 - **PIVOT / UNPIVOT**: reshape between wide and long formats
-- **SET VARIABLE x = expr**: define SQL-level variables, reference with `getvariable('x')`
+- **SET VARIABLE x = expr**: SQL-level variables, `getvariable('x')` — how a previous stage's list reaches a table-function argument
 
 ### Data import
 - **Direct file queries**: `FROM 'file.csv'`, `FROM 'data.parquet'`
-- **Globbing**: `FROM 'data/part-*.parquet'` reads multiple files
+- **Globbing**: `FROM 'data/part-*.parquet'`; hive partitions are read as columns
 - **Auto-detection**: CSV headers and schemas are inferred automatically
 
 ### Expressions and types
 - **Dot operator chaining**: `'hello'.upper()` or `col.trim().lower()`
 - **List comprehensions**: `[x*2 FOR x IN list_col]`
-- **List/string slicing**: `col[1:3]`, negative indexing `col[-1]`
+- **List/string slicing**: `col[1:3]`, negative indexing `col[-1]` (not for structural enumeration)
 - **STRUCT.* notation**: `SELECT s.* FROM (SELECT {'a': 1, 'b': 2} AS s)`
 - **Square bracket lists**: `[1, 2, 3]`
-- **format()**: `format('{}->{}', a, b)` for string formatting
+- **format()**: `format('{}->{}', a, b)` — not `||` chains
 
 ### Joins
 - **ASOF joins**: approximate matching on ordered data (e.g. timestamps)
 - **POSITIONAL joins**: match rows by position, not keys
-- **LATERAL joins**: reference prior table expressions in subqueries
+- **LATERAL joins**: `FROM seeds CROSS JOIN LATERAL f(seeds.col)` — always correlated
 
 ### Data modification
 - **CREATE OR REPLACE TABLE**: no need for `DROP TABLE IF EXISTS` first
-- **CREATE TABLE ... AS SELECT (CTAS)**: create tables from query results
+- **CREATE TABLE ... AS SELECT (CTAS)**: raw first, one table per statement
 - **INSERT INTO ... BY NAME**: match columns by name, not position
 - **INSERT OR IGNORE INTO / INSERT OR REPLACE INTO**: upsert patterns

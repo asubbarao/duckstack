@@ -10,6 +10,13 @@ allowed-tools: Bash
 
 Arguments: `$@`
 
+> **duckstack note.** This installs into the *local client's* extension directory
+> (`~/.duckdb/extensions`). The dev server (`~/.duck/dev.duckdb`, `quack:localhost:9494`) runs
+> with `autoinstall_known_extensions = false` and `lock_configuration = true`; nothing installed
+> here is visible there, and `INSTALL` through `dev.query()` is refused. An extension the
+> server needs is added to `~/inframe/internal/duckdb/setup.sql` (pre-staged in
+> `~/.duck/extensions`) and the launchd job is restarted. See `/duckdb-skills:duck`.
+
 Each extension argument has the form `name` or `name@repo`.
 - `name` → `INSTALL name;`
 - `name@repo` → `INSTALL name FROM repo;`
