@@ -15,17 +15,25 @@ claude plugin install duckstack@duckstack
 
 ## Skills
 
-| Skill | What it covers | Maturity |
+| Skill | What it covers | Local maturity |
 |---|---|---|
 | `duck` | The execution boundary and SQL process rules. Read first; every other skill assumes it. | verified |
-| `ducklake` | Reaching a DuckLake catalog — and what is **not** wired (no secrets on dev). | **unexercised** |
+| `ducklake` | Reaching a DuckLake catalog — and what is **not** wired (no secrets on dev). | **unexercised here** |
 | `agent-door` | What the `dev` MCP sidecar on 9496 can actually reach, incl. raw JSON-RPC. | verified |
 | `crawl` | Fetching pages as tables, crawler × webbed, on the dev quack. | verified |
 | `git-github` | Git history and GitHub as tables (`duck_tails`, `gh`). | verified |
 | `superhuman-docs` | Superhuman Docs via the MCP connector or the `superhuman_docs` extension. | verified |
 
-Maturity is not decoration. A skill marked **unexercised** documents a shape nobody has run
-here; say so in your report rather than implying it works.
+Maturity is not decoration. A skill marked **unexercised here** documents a shape nobody has
+run on this machine; say so in your report rather than implying it works.
+
+**Local maturity is not provenance.** They are different questions and must not be conflated.
+`duckdb_extensions().installed_from` is the discriminator: `core` is DuckDB Labs' own work
+(`ducklake`, `quack`, `httpfs`, `aws`), `community` is whatever someone published
+(`crawler`, `webbed`). Adoption metrics — stars, weekly downloads — are the only signal
+available for a community extension and say nothing useful about a first-party one. Never
+rank a DuckDB Labs component against a community extension on download counts. DuckLake
+being unexercised *here* says nothing about DuckLake.
 
 ## The four doors, so nobody confuses them again
 

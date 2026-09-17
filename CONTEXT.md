@@ -26,3 +26,24 @@ duckdb_mcp `a6b8648` (v2.3.0), `superhuman_docs` `1d85c9e`.
 - No DuckLake catalog has ever been attached on this machine. The `ducklake` skill documents
   the shape, not a verified run.
 - `INSTALL` against dev.
+
+## Provenance, not just maturity
+
+`duckdb_extensions().installed_from` separates DuckDB Labs' own work from community packages.
+Verified on dev 2026-09-17:
+
+| extension | installed_from | version | description |
+|---|---|---|---|
+| `ducklake` | **core** | `d8a1881e` | Adds support for DuckLake, SQL as a Lakehouse Format |
+| `quack` | **core** | `c154811` | The DuckDB 'Quack' Client/Server Protocol |
+| `httpfs` | **core** | `827222f` | reading and writing files over HTTP(S) |
+| `aws` | **core** | `efa54a9` | features that depend on the AWS SDK |
+| `crawler` | community | `7725ede` | — |
+| `webbed` | community | `73189d2` | — |
+
+DuckLake is DuckDB Labs' lakehouse format. No community extension is equivalent, and judging
+it by stars or weekly downloads is a category error. `install_mode` is `REPOSITORY` for both
+kinds and is **not** the discriminator — `installed_from` is.
+
+Keep the two questions apart: *has it been exercised here* (local, applies to everything,
+including DuckLake) versus *is it trustworthy at all* (provenance, already answered for core).

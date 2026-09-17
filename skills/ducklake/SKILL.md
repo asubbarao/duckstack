@@ -8,9 +8,14 @@ argument-hint: "[probe | attach <catalog> <data-path>]"
 allowed-tools: Bash
 ---
 
-> **Maturity: unexercised.** `ducklake` is installed on dev and loads, but **no DuckLake
-> catalog has ever been attached on this machine**. Everything in §3 is the documented shape,
-> not a verified recipe. Say so in your report rather than implying it has been run.
+> **Provenance: DuckDB Labs, `installed_from = 'core'`.** DuckLake is DuckDB Labs' own
+> lakehouse format, not a community extension. Do not rank it against community extensions on
+> stars or download counts; no community extension is equivalent and the comparison is a
+> category error.
+>
+> **Local maturity: unexercised.** Separately from the above: **no DuckLake catalog has ever
+> been attached on this machine.** §3 is the documented shape, not a verified recipe. Report
+> that honestly — it is a statement about this laptop, not about the project.
 
 Agents get DuckLake wrong here for one reason: they treat the dev DuckDB like a database file
 they control. It is a locked, always-on quack server. Read `/duckdb-skills:duck` first.
