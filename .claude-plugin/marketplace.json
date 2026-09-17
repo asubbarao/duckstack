@@ -8,12 +8,37 @@
     {
       "name": "duckdb-skills",
       "source": "./",
-      "description": "InFrame fork of the DuckDB skills (quack/duckstack-targeted): read any data file, attach and query DuckDB databases, search DuckDB/DuckLake docs, search past session logs, and install/update DuckDB extensions.",
-      "version": "0.2.4-inframe.2",
+      "description": "InFrame fork of the DuckDB skills, plus the verified SQL shelf (shelf/ext/*.sql, searchable with shelf/catalog.sql) and HOUSE.md, the house SQL rules: the quack execution boundary, self-dispatch, DuckLake, crawling, git/GitHub and CI logs as tables.",
+      "version": "0.3.0-inframe.1",
       "homepage": "https://duckdb.org",
       "repository": "https://github.com/duckdb/duckdb-skills",
       "license": "MIT",
-      "keywords": ["duckdb", "ducklake", "parquet", "csv", "json", "avro", "excel", "iceberg", "delta", "read-file", "read-memories", "duckdb-docs", "data-exploration", "session-logs", "query", "sql", "attach-db"]
+      "keywords": [
+        "duckdb",
+        "ducklake",
+        "parquet",
+        "csv",
+        "json",
+        "avro",
+        "excel",
+        "iceberg",
+        "delta",
+        "read-file",
+        "read-memories",
+        "duckdb-docs",
+        "data-exploration",
+        "session-logs",
+        "query",
+        "sql",
+        "attach-db",
+        "self-dispatch",
+        "quack",
+        "quackapi",
+        "shelf",
+        "duck-hunt",
+        "duck-tails",
+        "house-rules"
+      ]
     }
   ]
 }

@@ -1,0 +1,23 @@
+-- @ext: duckdb_mcp
+-- @rev: a6b8648 (v2.3.0, community, DuckDB 1.5.5); the `dev` sidecar on http://localhost:9496/mcp runs it
+-- @verified: 2026-09-17 — function list on the local client; server side is the running sidecar (see inframe/internal/duckdb/agent-gateway)
+-- @functions: mcp_server_start, mcp_publish_table, mcp_publish_query, mcp_publish_tool, mcp_publish_resource, mcp_list_tools, mcp_call_tool, mcp_get_resource, ATTACH … (TYPE mcp)
+-- @needs: for the client side, an MCP server command on PATH and its own auth (token env vars)
+-- @tags: mcp, agents, expose tables, slack mcp, linear mcp, call a tool from sql, sidecar
+-- @summary: Two directions. Server: publish tables/queries/tools so Claude/Codex query the lake through the
+--   `dev` MCP — every raw_* table landed by the feeds is reachable there with no new code. Client:
+--   ATTACH an MCP server (Slack, Linear, …) and mcp_call_tool() from SQL — the pull is a query.
+
+-- SERVER — what the sidecar already does (init in agent-gateway/; each tool call is a fresh connection):
+--   SELECT mcp_server_start('http', '{"port": 9496}');
+--   PRAGMA mcp_publish_table('raw_slack_messages');                 -- read-only resource
+--   PRAGMA mcp_publish_query('sentry_open', 'SELECT shortId, title, count FROM raw_sentry_issues WHERE status = ''unresolved''');
+--   PRAGMA mcp_publish_tool('find_sql', 'SELECT * FROM find_sql($q)');   -- the catalog search from catalog.sql, as a tool
+-- Publish before start: listChanged is advertised and never sent (CONTEXT.md).
+
+-- CLIENT — unexercised here (no Slack/Linear stdio server configured on this machine yet):
+--   ATTACH 'stdio://npx -y @modelcontextprotocol/server-slack' AS slack_mcp (TYPE mcp);
+--   SELECT * FROM mcp_list_tools('slack_mcp');
+--   SELECT mcp_call_tool('slack_mcp', 'slack_get_channel_history', '{"channel_id": "C0AJV462T4K", "limit": 200}') AS payload;
+-- The same fan-out shape as http_post: one row per channel/day → one mcp_call_tool per row → JSON landed whole.
+-- Tokens still live in the server's environment, so this buys a uniform surface, not credential-free access.
