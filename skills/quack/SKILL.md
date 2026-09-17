@@ -1,112 +1,95 @@
 ---
 name: quack
 description: >
-  How to actually call the Quack server. Quack owns the database file; you are an ephemeral
-  client that sends complete SQL bodies to it. Use before any statement that touches dev,
-  when a DuckDB CLI reports a lock error, when a table "does not exist" through an attach,
-  or when reaching for .read / SET VARIABLE to sequence work.
-argument-hint: "[probe | send <sql>]"
+  How to call the Quack server: quack_query, one complete body, no attach. Use before any
+  statement that touches the server, when a table "does not exist", when a join fails with
+  "Multiple streaming scans", or when reaching for ATTACH / .read / SET VARIABLE to set up.
+argument-hint: "[send <sql> | probe]"
 allowed-tools: Bash
 ---
 
-Agents fail here in one specific way: they treat Quack as a database file they can open and
-drive with CLI conveniences. It is a server that owns the file. Everything below was probed on
-this machine on 2026-09-17 (DuckDB 1.5.5 osx_arm64, quack `c154811`); where a fact came from
-reading rather than running, it says so.
-
-## 1. The contract
-
-**Quack is the sole owner of its database file.** Do not attach it, open it, or point a CLI at
-it from anywhere else — not from a sidecar, not from a client writer, not with `-readonly`. A
-lock error is not the server misbehaving; it is the caller being in the wrong place. Go through
-the server.
-
-**Send complete, idempotent SQL bodies.** Do not use `.read`, `SET VARIABLE` or `getvariable()`
-as orchestration. Those are CLI session conveniences; they do not exist for the server, they do
-not survive a reconnect, and a body that depends on them is not re-runnable. Every statement
-you send should stand alone and produce the same result run twice.
-
-**One statement is the unit of work.** Its inputs are files and environment; its output is a
-table on the server or a stream. Not a pile of intermediate tables a later query is expected to
-find lying around.
-
-## 2. What actually works, and what silently does not
-
-| From an ephemeral client | Result |
-|---|---|
-| `FROM dev.query($$SELECT …$$)` | runs **on the server**; joins, aggregates and table functions all fine |
-| `SELECT … FROM dev.one_table` | works — a streaming scan through the attach |
-| `SELECT … FROM dev.a JOIN dev.b` | **fails** — "Multiple streaming scans … not currently supported". Push the join inside `dev.query` |
-| `FROM duckdb_tables() WHERE database_name='dev'` | **0 rows.** The remote catalog is not mirrored. Ask the server: `dev.query($$FROM duckdb_tables()$$)` |
-| `dev.query($$SET memory_limit='8GiB'$$)` | refused — `Cannot change configuration option "memory_limit" - the configuration has been locked` |
-| `dev.query($$LOAD <installed ext>$$)` | **succeeds.** `lock_configuration` locks settings, not extension loading |
-| `ATTACH 'quack://host:port'` | silently not dispatched to the extension. Spell it `quack:host:port` |
-
-Two of these are the ones that waste an afternoon.
-
-**The catalog is not mirrored.** An agent lists tables, sees nothing, and concludes the table
-was never created. It was; you asked the wrong process.
-
-**`LOAD` is not blocked but it is not free either.** A `LOAD` against the server is *session
-state on a shared server*: it changes the running server for every other client until launchd
-restarts it, and it does not survive that restart. Do not load something into a shared server
-as a side effect of exploring. If a body needs an extension, the server's own setup owns that
-decision.
-
-## 3. Resource ceilings are not symmetric
-
-The server and your client have different limits, and a plan sized for one will not fit the
-other.
-
-| | memory_limit | threads |
-|---|---|---|
-| the server | `24.0 GiB` | `10` |
-| an ephemeral client | `4.0 GiB` | `4` |
-
-The client floor comes from `~/.duckdbrc`, which also carries the temp directory and the
-per-process query/metrics/HTTP capture. **Never start a client with `-init`** — that *replaces*
-the rc file rather than adding to it, and the process then runs unbounded and untelemetered.
-This is the single most damaging flag on this machine.
-
-That asymmetry is another reason to push work inside `dev.query($$…$$)` rather than streaming
-rows out to sort or join them locally.
-
-## 4. Credentials
-
-The token is an **environment value on the shell line**. It is never a literal in SQL, never
-selected back, and never carried in a `SET VARIABLE` — that would be the same orchestration
-the contract rules out, and it does not survive a reconnect:
+There is one way to call the server and it is a function call:
 
 ```bash
 export QUACK_TOKEN="$(cat ~/.duck/token)"
 ```
 ```sql
--- ATTACH uri AS name (TYPE quack, TOKEN ...) -- one body, nothing to sequence
-ATTACH IF NOT EXISTS 'quack:localhost:9494' AS dev (TYPE quack, TOKEN getenv('QUACK_TOKEN'));
+LOAD quack;
+-- quack_query(uri, sql, disable_ssl := false, token := ...) -> the server's result as rows
+FROM quack_query('quack:localhost:9494', $$<one complete body>$$, token := getenv('QUACK_TOKEN'));
 ```
 
-If a token must come from a file rather than the environment, read it with a reader and do not
-`trim()` it: `trim` strips spaces, and a trailing newline survives to make the auth fail in a
-way that looks like a bad token.
+That is the whole interface. No `ATTACH`, no alias, no `dev.` prefix, no state file, nothing
+to establish before it and nothing to re-establish after a restart.
 
-A secret's `SCOPE`, where one is used, is a literal prefix match on the URI spelling, so it has
-to match the `quack:host:port` form character for character.
+## Why not ATTACH
 
-**The server currently holds no secrets at all** — `dev.query($$FROM duckdb_secrets()$$)`
-returns zero rows. Anything reaching for `s3://` will therefore fail at the first *data* read,
-not at `ATTACH`, which makes a credentials gap look like a bug in whatever you attached.
+`ATTACH` is client-side session state, and it is broken in two ways that waste the most time.
+Both measured on this machine, 2026-09-17, same server, same moment.
 
-## 5. When it breaks
+**The server's tables are invisible.** The remote catalog is not mirrored, so the client's own
+catalog views answer for a database that, as far as they are concerned, is empty:
 
-- **Lock error on the database file** → you are opening the file. Attach the server instead.
-- **"Table does not exist" through the attach** → you asked the client's catalog. Ask the server.
-- **"Multiple streaming scans"** → your join is client-side. Move it inside `dev.query`.
-- **"Authorization failed" on a write** → you are on the read-only listener, whose gate refuses
-  anything the parser does not see as exactly one SELECT. That is working as designed.
-- **After a launchd restart** → `DETACH` then `ATTACH` again, and anything `LOAD`ed into the
-  server's session is gone.
+```sql
+-- through ATTACH
+SELECT count(*) FROM duckdb_tables() WHERE database_name = 'dev';   -- 0
+-- through quack_query
+$$SELECT count(*) FROM duckdb_tables() WHERE NOT internal$$          -- 20
+```
 
-## 6. Report
+An agent lists tables, sees nothing, and concludes its write failed. The write was fine; it
+asked the wrong process. This is the single most common false alarm on this stack.
 
-Say which statements ran **on the server** versus in your client, and name any server state you
-changed — a `LOAD`, a created table, a dropped one. A shared server means those are not private.
+**A join of two server tables fails outright.**
+
+```sql
+-- through ATTACH
+SELECT count(*) FROM dev.raw_gh_runs_inframe r JOIN dev.raw_git_log_inframe g
+  ON g.commit_hash = r.headSha;
+-- Not implemented Error: Multiple streaming scans or streaming scans + CTAS / insert
+-- in the same query are not currently supported
+
+-- through quack_query, same join, inside the body
+$$SELECT count(*) FROM raw_gh_runs_inframe r JOIN raw_git_log_inframe g
+    ON g.commit_hash = r.headSha$$                                   -- 140
+```
+
+The attach turns each table into a streaming scan and DuckDB will not plan two of them
+together. Every real query joins something, so this is not an edge case.
+
+On top of those: an attach has to be re-issued after a launchd restart, it drags in a state
+file that must run before everything else, and `CREATE TABLE dev.x` routes the write through
+the client's catalog path instead of executing on the server. None of that exists with
+`quack_query`.
+
+## The body
+
+Write the body as if you were sitting on the server, because you are. Tables are unqualified.
+Joins, aggregates, CTEs, table functions, `CREATE OR REPLACE TABLE` — all normal.
+
+One body, idempotent, standing alone. Do not use `.read`, `SET VARIABLE` or `getvariable()` to
+sequence work across calls: they are CLI conveniences, they do not exist for the server, and a
+body that depends on them is not re-runnable.
+
+## Rules that still apply
+
+- **Never open the database file.** Quack owns it; even `-readonly` is refused. A lock error
+  means the caller is in the wrong place.
+- **Never start a client with `-init`.** It *replaces* `~/.duckdbrc` rather than adding to it,
+  dropping the 4 GiB / 4 thread floor and the per-process telemetry.
+- **Spell it `quack:host:port`.** `quack://…` is silently not dispatched to the extension.
+- **`LOAD` against the server is shared session state.** It succeeds — `lock_configuration`
+  locks settings, not extension loading — but it changes the running server for every other
+  client until launchd restarts it. `SET` is refused outright:
+  `Cannot change configuration option "…" - the configuration has been locked`.
+- **The server holds no secrets.** `$$FROM duckdb_secrets()$$` returns zero rows, so anything
+  reaching for `s3://` fails at the first data read, not at attach time.
+- **Ceilings are asymmetric.** Server 24 GiB / 10 threads; an ephemeral client 4 GiB / 4. One
+  more reason the work belongs in the body.
+- **The read-only listener** refuses anything its parser does not see as exactly one SELECT.
+  "Authorization failed" on a write there is working as designed.
+
+## Report
+
+Name any server state you changed — a created or dropped table, a `LOAD`. It is a shared
+server; those are not private.
