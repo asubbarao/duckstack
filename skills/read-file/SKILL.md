@@ -76,13 +76,16 @@ CREATE OR REPLACE MACRO read_any(file_name) AS TABLE
      -- read_xml(pattern, ...same named params and defaults as read_html above...,
      --   streaming := true).
      , xml_case AS (FROM read_xml(file_name))
-     -- read_pdf(files, layout := 'reading', parse_tables := false, first_page := NULL,
+     -- read_pdf(files, layout := 'auto', parse_tables := false, first_page := NULL,
      --   last_page := NULL, password := NULL, ignore_errors := false, ocr := false,
      --   auto_ocr := false, ocr_language/ocr_dpi/ocr_psm/ocr_oem/ocr_preprocess/
      --   ocr_retry/tessdata_dir/ocr_backend/ocr_plugin/ocr_endpoint := defaults).
-     --   layout := 'physical' is passed explicitly (verified 2026-09-18, skills/pdf): the
-     --   'reading' default flattens table/column alignment for prose and grids.
-     , pdf_case AS (FROM read_pdf(file_name, layout := 'physical'))
+     --   layout is deliberately NOT passed. 'auto' detects real column bands from word
+     --   geometry; 'physical' pads with spaces to imitate the printed page and fuses a
+     --   prose column into the grid row beside it. On the DuckDB Friendly SQL calendar
+     --   the default yields 'MON TUE WED THU FRI SAT SUN' then '1 2 3 4', while
+     --   layout := 'physical' yields 'PREFIX ALIASES   MON   TUE   WED ...'.
+     , pdf_case AS (FROM read_pdf(file_name))
      , ipynb_case AS (
          WITH nb AS (FROM read_json_auto(file_name))
          SELECT cell_idx, cell.cell_type,
