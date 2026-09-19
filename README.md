@@ -1,4 +1,43 @@
-# duckdb-skills
+# duckdb-skills — InFrame fork
+
+Private fork of [duckdb/duckdb-skills](https://github.com/duckdb/duckdb-skills) retargeted at
+the **duckstack**: one persistent DuckDB per machine held locked by a `quack` server, agents as
+stateless `:memory:` clients, an MCP sidecar as the agent door, and this user's SQL process
+rules. The style guide is the user's own repos (`asubbarao/duckdb-ops-toolkit` conduit,
+`duckdb-chrome-bridge`, `claudes-console`), not upstream. Upstream stays mergeable —
+`git fetch upstream && git merge upstream/main`.
+
+| Skill | Status | What changed |
+|---|---|---|
+| `duck` | **new** | the record label: boundary, the three stateless client forms, the reference repos, SQL process rules, 1.5.5 gotchas |
+| `attach-db` | rewritten | pick the door (`dev` / `dev-ro` / `quack:host:port` / Superhuman doc / a file no server holds), probe it, list its catalog, hand back the two-line head — **no state file** |
+| `query` | rewritten | one statement via `-c`, anything longer is a single `.sql` artifact via `-f`; `--#` lines are the human's instructions; joins through `dev.query($$…$$)` |
+| `crawl` | **new** | crawler × webbed with all 13 `crawl()` parameters, the capability ladder, the shape catalog, and `--chrome` (duckdb-chrome-bridge) for SPAs/auth |
+| `agent-door` | **new** | what the 9496 MCP can reach (only `dev.query`), raw JSON-RPC, review of `mcp-setup.sql` against the duckdb_mcp docs |
+| `git-github` | **new** | `duck_tails` + `gh` extension + `gh` CLI, as tables |
+| `install-duckdb` | note added | client-side only; the server's extensions live in `setup.sql` |
+| `read-file`, `convert-file`, `s3-explore`, `spatial`, `duckdb-docs`, `read-memories` | upstream | untouched; they run sandboxed `duckdb :memory:` clients |
+
+There is deliberately **no `state.sql`, no `.read`, no `-init`**: the persistent state is the
+server. Every statement carries `LOAD quack; ATTACH 'quack:localhost:9494' AS dev (TYPE quack,
+TOKEN getenv('QUACK_TOKEN'));` and the token is exported on the shell line
+(`QUACK_TOKEN="$(cat ~/.duck/token)"`). `-c`, `-f` and `-cmd` keep `~/.duckdbrc` (the resource
+floor); `-init` replaces it (verified: 15 threads / 38 GiB, no telemetry).
+
+Install from the local clone:
+
+```
+/plugin marketplace add ~/duckdb-skills
+/plugin install duckdb-skills@duckdb-skills
+```
+
+Codex reads the same manifest: `codex plugin marketplace add ~/duckdb-skills && codex plugin add duckdb-skills@duckdb-skills`.
+Both CLIs cache by version: after editing, `claude plugin uninstall duckdb-skills@duckdb-skills && claude plugin install duckdb-skills@duckdb-skills`
+and `codex plugin add duckdb-skills@duckdb-skills` again, or bump the version.
+
+---
+
+# duckdb-skills (upstream README — its `state.sql` / `-init` mechanism is NOT used in this fork)
 
 A [Claude Code](https://claude.ai/code) plugin that adds DuckDB-powered skills for data exploration and session memory.
 
