@@ -2,6 +2,7 @@
 name: read-file
 description: >
   Read any data file (CSV, JSON, Parquet, Avro, Excel, spatial, SQLite) or remote URL (S3, HTTPS).
+  For PDFs use /duckdb-skills:pdf.
   Use when user references a data file, asks "what's in this file", or wants to preview/profile a dataset.
   Not for source code.
 argument-hint: <filename or URL> [question about the data]
@@ -12,6 +13,11 @@ You are helping the user read and analyze a data file using DuckDB.
 
 Filename given: `$0`
 Question: `${1:-describe the data}`
+
+## Step 0 — Route PDFs away
+
+If `$0` ends in `.pdf`, stop and invoke `/duckdb-skills:pdf` instead. The `read_any`
+macro below would land it in `blob_case` and hand you the bytes.
 
 ## Step 1 — Read it
 
