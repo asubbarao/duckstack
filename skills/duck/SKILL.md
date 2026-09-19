@@ -47,8 +47,11 @@ DuckDB **1.5.5** osx_arm64. Server extensions: `~/.duck/extensions`; local CLI: 
    statement of `setup.sql` ("the configuration has been locked"); `autoinstall_known_extensions
    = false`. Endpoints, regions, URL styles are **secrets**, never settings. Anything a server
    needs goes in `setup.sql`, nowhere else.
-6. **Spell URIs `quack:host:port`.** `quack://…` is silently not dispatched to the extension.
-   A secret's `SCOPE` is a literal prefix match on that spelling.
+6. **Spell URIs `quack:host:port`.** That is the repo standard and what every secret `SCOPE`
+   is written against (a literal prefix match). Verified 2026-09-17 on quack c154811: the
+   `quack://host:port` spelling *also* works for both `quack_query` and `ATTACH`, so the
+   inframe CONTEXT.md line "`quack://` is not dispatched" is stale — the rule is consistency
+   with the secrets, not a parser limit.
 7. **The token is an environment variable on the shell line, never a literal in SQL, never in
    a file, never printed.** `QUACK_TOKEN="$(cat ~/.duck/token)" duckdb :memory: …` and
    `getenv('QUACK_TOKEN')` in the statement.
@@ -124,13 +127,16 @@ terminal / to_retry (two `WHERE`s). Retry is an unrolled ladder gated by CTE car
 (`range()`, probe-then-fan, unrolled cursor rungs), never `WITH RECURSIVE`. `sql/conduit.sql`
 + `sql/capstone.sql` are the whole thing.
 
-**Self-dispatch** (`conduit/docs/self-dispatch*.md`) — the server runs SQL it built at runtime
-by querying **itself**. Canonical form: the server `ATTACH`es itself as `self` in its init and
-runtime-built SQL runs as `FROM self.query('…')` with no per-call token. **Not present on this
-dev yet** (`duckdb_databases()` on 9494 shows only `dev`) — a `setup.sql` change if wanted.
-The scalar molecule (`array_agg(http_post_form(executor, MAP{}, MAP{'q': q})) … CROSS JOIN
-UNNEST … WITH ORDINALITY`) is the *exception* for genuine per-row scalar fan-out — a table
-function that rejects a column argument — and needs a co-resident httpserver, not quack's port.
+**Self-dispatch** — *the database writes the statement it cannot bind, then runs it.* Table
+functions bind literals; a scalar takes columns; so build the statement per row and hand it to
+a scalar that runs SQL. Three forms verified on this machine 2026-09-17, all in
+`/duckdb-skills:self-dispatch`: (1) **quackapi in-process** — `CREATE ROUTE dispatch POST '/q' AS SELECT rows.* FROM query($q)
+rows; quackapi_serve(port)` in the same `:memory:` process, `array_agg(http_post_form(url,
+MAP{}, MAP{'q': q}))`, `UNNEST WITH ORDINALITY`, a JSON array of typed rows back, `quackapi_stop()`; (2) **two constant shellfs pipes** —
+an inner duckdb `COPY`s generated statements to stdout, a child duckdb (or `bash`) runs them;
+(3) **quack loopback** — `dev.query($$FROM quack_query('quack:localhost:9494', '…', token :=
+getenv('QUACK_TOKEN'))$$)`, the server calling itself. Posting `q=` to quack's own port is the
+error every agent makes (`status -1`); the executor port is a parameter, not a fact.
 
 **duckdb-chrome-bridge** — *your logged-in Chrome is a set of DuckDB relations.* macOS
 osascript over the Chrome already running (no CDP/Playwright/fresh profile), via `shellfs`
@@ -208,6 +214,7 @@ Verbatim source: `~/.duck/catalog/2026-09-15.md`. Breaking one is a procedural f
 | run SQL — one statement, or a `.sql` artifact | `/duckdb-skills:query` |
 | pages as tables: crawler × webbed, or logged-in Chrome for SPAs/auth | `/duckdb-skills:crawl` |
 | what the MCP sidecar can reach, raw JSON-RPC | `/duckdb-skills:agent-door` |
+| a table function needs a column; per-row fan-out; "lateral join column parameters" | `/duckdb-skills:self-dispatch` |
 | git history / GitHub as tables (`duck_tails`, `gh`) | `/duckdb-skills:git-github` |
 | a data file locally or over HTTP/S3 | `/duckdb-skills:read-file` |
 | DuckDB docs | `/duckdb-skills:duckdb-docs` |
