@@ -18,32 +18,40 @@ Input: `$0` — path, glob or URL. Question: `${1:-describe the document}`.
 
 ## The rule that matters most
 
-**`layout` decides whether the text is true or false, and its default is the bad one.**
+**Pass no `layout` at all.** The default is `'auto'`, a geometric column
+detector: it finds the whitespace corridors a page actually has, assigns every
+word to a column band, and emits the bands left to right. On a calendar, an
+invoice, a two-column paper or a form, that is the reading order a person sees.
 
-`read_pdf` / `read_pdf_lines` / `read_pdf_words` / `pdf_to_text` take
-`layout := 'reading' | 'physical' | 'raw'`, defaulting to `'reading'`. On any
-multi-column page — a calendar, an invoice, a two-column report, a form —
-`'reading'` emits each text run on its own line and throws away horizontal
-position, so columns interleave and aligned rows lose the column they belonged
-to. The output looks clean and is wrong.
+The other values exist because they answer different questions, and each is
+worse than the default for reading a document:
 
-- **Always pass `layout := 'physical'`** for anything you will read as prose or
-  as a grid. It keeps column alignment and code indentation.
+- `'physical'` pads with spaces to imitate the printed page. It preserves
+  alignment but fuses a prose column into the grid row beside it, because it has
+  no idea what a column is.
+- `'reading'` emits each text run on its own line and discards horizontal
+  position, so columns interleave. Output looks clean and is wrong.
 - `'raw'` is content-stream order — useful only to see how the file was authored.
-- **An unrecognised value silently becomes `'reading'`.** `layout := true` casts
-  to `'true'` and does nothing; so does `layout := 'banana'`. There is no error.
-  If the output looks flattened, check the spelling before blaming the document.
-- `parse_tables := true` forces physical regardless of `layout`.
+- An unrecognised value throws:
+  `layout must be one of ['auto', 'physical', 'reading', 'raw'], not 'banana'`.
 
-Verified 2026-09-18, pdf 6535c81 / DuckDB 1.5.5, on the DuckDB Friendly SQL
-Calendar: with the default `layout`, every month's grid read as starting on
-Monday. With `layout := 'physical'`, all twelve matched `dayname()`.
+Measured on the DuckDB Friendly SQL Calendar, page 2, with the build installed
+here (`bef4b27`):
+
+    default            MON TUE WED THU FRI SAT SUN
+                       1 2 3 4                       <- 1 Jan 2026 is a Thursday
+    layout 'physical'  PREFIX ALIASES     MON   TUE   WED   THU   FRI   SAT   SUN
+
+**Version caveat.** `'auto'` and the fail-loud validation land in 0.9.0. The
+published community build (0.8.0, `6535c81`) still defaults to `'reading'` and
+still falls back silently on a bad value — against that build, and only that
+build, `layout := 'physical'` is the least-bad workaround.
 
 ## The five grains — pick by what the question needs
 
 ```sql
 LOAD pdf;
--- read_pdf(files, layout := 'reading', parse_tables := false, first_page := NULL,
+-- read_pdf(files, layout := 'auto', parse_tables := false, first_page := NULL,
 --          last_page := NULL, password := NULL, ignore_errors := false, ocr := false,
 --          auto_ocr := false, ocr_language/ocr_dpi/ocr_psm/ocr_oem/ocr_preprocess/
 --          ocr_retry/tessdata_dir/ocr_backend/ocr_plugin/ocr_endpoint := defaults)
