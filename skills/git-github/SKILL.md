@@ -28,9 +28,15 @@ LOAD duck_tails;
 SELECT commit_hash[1:8] AS sha, author_name, message, author_date
 FROM git_log('.') LIMIT 5;                                 -- start small, then widen
 
--- git_tree(ref, repo_path) -> git_uri, repo_path, commit_hash, tree_hash, file_path, file_ext, ref,
+-- git_tree(repo_path, ref) -> git_uri, repo_path, commit_hash, tree_hash, file_path, file_ext, ref,
 --                              blob_hash, commit_date, mode, size_bytes, kind, is_text, encoding
-FROM git_tree('.') WHERE file_ext = 'sql';
+--   Positional and in THAT order: git_tree('HEAD','.') fails with "Failed to resolve ref '.'".
+--   repo_path is a named parameter of git_log/git_read/git_blame but NOT of git_tree.
+--   file_ext CARRIES THE LEADING DOT ('.sql', '.md', '' for LICENSE, '.gitignore' for a
+--   dotfile), so `= 'sql'` matches nothing and says nothing -- the quiet one.
+--   kind is 'file' or 'tree': directory rows are included, so an unfiltered inventory
+--   double-counts.
+FROM git_tree('.', 'HEAD') WHERE file_ext = '.sql' AND kind = 'file';
 
 -- git_read(path_or_uri, ..., repo_path) -> file contents at a revision; git:// works in readers too
 SELECT * FROM read_csv('git://data/sales.csv@HEAD~1');
@@ -46,7 +52,7 @@ FROM git_blame('skills/query/SKILL.md', repo_path := '.') LIMIT 20;
 ```
 
 `*_each` variants take a relation of paths/refs — the correlated form for many files:
-`FROM (SELECT file_path FROM git_tree('.') WHERE file_ext = 'md') t, git_read_each(t.file_path)`.
+`FROM (SELECT file_path FROM git_tree('.', 'HEAD') WHERE file_ext = '.md' AND kind = 'file') t, git_read_each(t.file_path)`.
 
 ## Public GitHub — `gh` extension (no token; public only)
 
