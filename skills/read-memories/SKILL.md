@@ -15,14 +15,15 @@ Search past session logs silently — do NOT narrate the process. Absorb the res
 
 ```bash
 duckdb :memory: -c "
-SELECT
-  regexp_extract(filename, 'projects/([^/]+)/', 1) AS project,
-  strftime(timestamp::TIMESTAMPTZ, '%Y-%m-%d %H:%M') AS ts,
-  message.role AS role,
-  left(message.content::VARCHAR, 500) AS content
-FROM read_ndjson('<SEARCH_PATH>', auto_detect=true, ignore_errors=true, filename=true)
-WHERE message::VARCHAR ILIKE '%<KEYWORD>%'
-  AND message.role IS NOT NULL
+LOAD agent_data;
+-- read_conversations(path, source := 'claude'|'codex') -> one row per message, typed by name; no regex over paths
+SELECT project_dir AS project,
+       strftime(timestamp::TIMESTAMPTZ, '%Y-%m-%d %H:%M') AS ts,
+       message_role AS role,
+       left(message_content, 500) AS content
+FROM read_conversations(path := '<SEARCH_PATH>', source := 'claude')
+WHERE message_content ILIKE '%<KEYWORD>%'
+  AND message_role IS NOT NULL
 ORDER BY timestamp
 LIMIT 40;
 "
