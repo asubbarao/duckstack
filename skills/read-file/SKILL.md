@@ -2,7 +2,7 @@
 name: read-file
 description: >
   Read any data file (CSV, JSON, Parquet, Avro, Excel, spatial, SQLite) or remote URL (S3, HTTPS).
-  For PDFs use /duckdb-skills:pdf.
+  For PDFs use /duckstack:pdf.
   Use when user references a data file, asks "what's in this file", or wants to preview/profile a dataset.
   Not for source code.
 argument-hint: <filename or URL> [question about the data]
@@ -16,7 +16,7 @@ Question: `${1:-describe the data}`
 
 ## Step 0 — Route PDFs away
 
-If `$0` ends in `.pdf`, stop and invoke `/duckdb-skills:pdf` instead. The `read_any`
+If `$0` ends in `.pdf`, stop and invoke `/duckstack:pdf` instead. The `read_any`
 macro below would land it in `blob_case` and hand you the bytes.
 
 ## Step 1 — Read it
@@ -76,7 +76,7 @@ FROM read_any('RESOLVED_PATH') LIMIT 20;
 ```
 
 **If this fails:**
-- **`duckdb: command not found`** → invoke `/duckdb-skills:install-duckdb` and retry.
+- **`duckdb: command not found`** → invoke `/duckstack:install-duckdb` and retry.
 - **Missing extension** (e.g. spatial files, xlsx, sqlite) → retry with `INSTALL spatial; LOAD spatial;` or `INSTALL sqlite_scanner; LOAD sqlite_scanner;` prepended before the macro.
 - **Wrong reader / parse error** → use the correct `read_*` function directly instead of `read_any`.
 

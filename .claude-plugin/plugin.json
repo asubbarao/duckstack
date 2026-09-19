@@ -1,13 +1,33 @@
 {
-  "name": "duckdb-skills",
-  "description": "InFrame fork of the DuckDB skills (quack/duckstack-targeted): read any data file, read and write PDFs, attach and query DuckDB databases, search DuckDB/DuckLake docs, search past session logs, and install/update DuckDB extensions.",
+  "name": "duckstack",
+  "description": "Personal fork of the DuckDB skills (quack/duckstack-targeted): read any data file, read and write PDFs, attach and query DuckDB databases, search DuckDB/DuckLake docs, search past session logs, and install/update DuckDB extensions.",
   "version": "0.2.4-inframe.7",
   "author": {
-    "name": "duckdb",
-    "url": "https://github.com/duckdb"
+    "name": "Alok Subbarao",
+    "url": "https://github.com/asubbarao"
   },
-  "repository": "https://github.com/duckdb/duckdb-skills",
-  "homepage": "https://duckdb.org",
+  "repository": "https://github.com/asubbarao/duckstack",
+  "homepage": "https://github.com/asubbarao/duckstack",
   "license": "MIT",
-  "keywords": ["duckdb", "ducklake", "parquet", "csv", "json", "avro", "excel", "iceberg", "delta", "pdf", "ocr", "read-file", "read-memories", "duckdb-docs", "data-exploration", "session-logs", "query", "sql", "attach-db"]
+  "keywords": [
+    "duckdb",
+    "ducklake",
+    "parquet",
+    "csv",
+    "json",
+    "avro",
+    "excel",
+    "iceberg",
+    "delta",
+    "pdf",
+    "ocr",
+    "read-file",
+    "read-memories",
+    "duckdb-docs",
+    "data-exploration",
+    "session-logs",
+    "query",
+    "sql",
+    "attach-db"
+  ]
 }

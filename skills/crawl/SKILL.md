@@ -11,7 +11,7 @@ argument-hint: "<url> [url ...] [--name raw_table] [--shape map|rounds|walk|cros
 allowed-tools: Bash
 ---
 
-You are fetching web pages into tables. Read `/duckdb-skills:duck` first. A scraper is not a
+You are fetching web pages into tables. Read `/duckstack:duck` first. A scraper is not a
 program; it is two decisions — **crawl topology** (how the URL space is discovered) and
 **section delimiter** (what bounds the datum on a page) — answered with crawler and webbed used
 raw. The deliverable is one `.sql` artifact whose `SELECT *` is a tabular grid of the pages.

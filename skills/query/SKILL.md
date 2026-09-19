@@ -10,7 +10,7 @@ argument-hint: <SQL | question | path.sql> [--file data-path] [--door dev|dev-ro
 allowed-tools: Bash
 ---
 
-You are helping the user query data on the duckstack. Read `/duckdb-skills:duck` §2 (boundary),
+You are helping the user query data on the duckstack. Read `/duckstack:duck` §2 (boundary),
 §3 (client forms) and §5 (process rules) first; they bind every statement you write.
 
 Input: `$@`
@@ -43,7 +43,7 @@ then report. Do not fall back to opening `~/.duck/dev.duckdb`; it is locked by d
 command -v duckdb
 ```
 
-If not found, delegate to `/duckdb-skills:install-duckdb` and then continue.
+If not found, delegate to `/duckstack:install-duckdb` and then continue.
 
 ## Step 3 — Generate SQL if needed
 
@@ -120,7 +120,7 @@ SQL
 ```
 
 **An artifact** — more than one statement, or anything the human should be able to edit and
-re-run. Write `<name>.sql` with the head from `/duckdb-skills:duck` `references/head.sql`,
+re-run. Write `<name>.sql` with the head from `/duckstack:duck` `references/head.sql`,
 one table per statement, raw first, verification queries as trailing comments, `--#` lines
 left in place. Run it by path (`-f` keeps the rc floor):
 
@@ -156,9 +156,9 @@ Multiple files → list them all in `allowed_paths`.
   `duckdb_tables()`.
 - **"Authorization failed"**: the read-only door (9495) with a non-SELECT; use `dev` (9494) if
   the write is intended, otherwise fix the statement.
-- **Missing extension on the client**: `/duckdb-skills:install-duckdb <ext>`. Missing on the
+- **Missing extension on the client**: `/duckstack:install-duckdb <ext>`. Missing on the
   **server**: it goes in `setup.sql`; report, do not `INSTALL` through dev.
-- **Persistent or unclear DuckDB error**: `/duckdb-skills:duckdb-docs <error keywords>`.
+- **Persistent or unclear DuckDB error**: `/duckstack:duckdb-docs <error keywords>`.
 
 ## Step 7 — Present results
 

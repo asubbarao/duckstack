@@ -11,7 +11,7 @@ allowed-tools: Bash
 ---
 
 Use both: the extensions when the data is public or local, `gh` when it is private or needs
-your login. Everything lands as rows; `SQL-and-join beats stdout`. Read `/duckdb-skills:duck`
+your login. Everything lands as rows; `SQL-and-join beats stdout`. Read `/duckstack:duck`
 §4 for the process rules — they apply to git data too (no `regexp_*` on messages, keep the
 whole row, `array_agg` over `count`).
 

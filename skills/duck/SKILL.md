@@ -22,7 +22,7 @@ wrong here. This skill is the record label the other skills ship under.
 |---|---|---|---|
 | `quack:localhost:9494` | dev, read-write | `~/.duck/token` | humans and the main agent |
 | `quack:localhost:9495` | dev, read-only, gated | `~/.duck/token.ro` | agents; `dev_gate` refuses anything the parser does not see as exactly one SELECT |
-| `http://localhost:9496/mcp` | the MCP sidecar (`dev` in Claude/Codex MCP config) | none, loopback | agents that only have MCP — `/duckdb-skills:agent-door` |
+| `http://localhost:9496/mcp` | the MCP sidecar (`dev` in Claude/Codex MCP config) | none, loopback | agents that only have MCP — `/duckstack:agent-door` |
 | `quack:localhost:9497` + OTLP `:4318` | telemetry DuckDB | `~/.duck/telemetry/` | observability |
 
 `~/.duck/dev.duckdb` is held open by `com.inframe.quack` (launchd `KeepAlive`); `~/.duck/setup.sql`
@@ -130,7 +130,7 @@ terminal / to_retry (two `WHERE`s). Retry is an unrolled ladder gated by CTE car
 **Self-dispatch** — *the database writes the statement it cannot bind, then runs it.* Table
 functions bind literals; a scalar takes columns; so build the statement per row and hand it to
 a scalar that runs SQL. Three forms verified on this machine 2026-09-17, all in
-`/duckdb-skills:self-dispatch`: (1) **quackapi in-process** — `CREATE ROUTE dispatch POST '/q' AS SELECT rows.* FROM query($q)
+`/duckstack:self-dispatch`: (1) **quackapi in-process** — `CREATE ROUTE dispatch POST '/q' AS SELECT rows.* FROM query($q)
 rows; quackapi_serve(port)` in the same `:memory:` process, `array_agg(http_post_form(url,
 MAP{}, MAP{'q': q}))`, `UNNEST WITH ORDINALITY`, a JSON array of typed rows back, `quackapi_stop()`; (2) **two constant shellfs pipes** —
 an inner duckdb `COPY`s generated statements to stdout, a child duckdb (or `bash`) runs them;
@@ -210,11 +210,11 @@ Verbatim source: `~/.duck/catalog/2026-09-15.md`. Breaking one is a procedural f
 
 | Want | Skill |
 |---|---|
-| pick a door, probe it, list what is on it | `/duckdb-skills:attach-db` |
-| run SQL — one statement, or a `.sql` artifact | `/duckdb-skills:query` |
-| pages as tables: crawler × webbed, or logged-in Chrome for SPAs/auth | `/duckdb-skills:crawl` |
-| what the MCP sidecar can reach, raw JSON-RPC | `/duckdb-skills:agent-door` |
-| a table function needs a column; per-row fan-out; "lateral join column parameters" | `/duckdb-skills:self-dispatch` |
-| git history / GitHub as tables (`duck_tails`, `gh`) | `/duckdb-skills:git-github` |
-| a data file locally or over HTTP/S3 | `/duckdb-skills:read-file` |
-| DuckDB docs | `/duckdb-skills:duckdb-docs` |
+| pick a door, probe it, list what is on it | `/duckstack:attach-db` |
+| run SQL — one statement, or a `.sql` artifact | `/duckstack:query` |
+| pages as tables: crawler × webbed, or logged-in Chrome for SPAs/auth | `/duckstack:crawl` |
+| what the MCP sidecar can reach, raw JSON-RPC | `/duckstack:agent-door` |
+| a table function needs a column; per-row fan-out; "lateral join column parameters" | `/duckstack:self-dispatch` |
+| git history / GitHub as tables (`duck_tails`, `gh`) | `/duckstack:git-github` |
+| a data file locally or over HTTP/S3 | `/duckstack:read-file` |
+| DuckDB docs | `/duckstack:duckdb-docs` |

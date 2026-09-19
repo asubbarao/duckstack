@@ -88,7 +88,7 @@ If the user asks an analytical question (e.g., "how many rows match X"), write a
 
 ## Error handling
 
-- **`duckdb: command not found`** → delegate to `/duckdb-skills:install-duckdb`
+- **`duckdb: command not found`** → delegate to `/duckstack:install-duckdb`
 - **Access denied / 403** → suggest the user check credentials: `aws configure`, environment variables, or provide explicit key/secret
 - **Bucket not found / 404** → check the URL and region
 - **Timeout on large listing** → suggest narrowing the glob pattern or adding a prefix

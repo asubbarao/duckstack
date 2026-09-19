@@ -77,7 +77,7 @@ LOAD spatial;
 - For density/hotspot results: describe the pattern and offer to export for visualization
 
 If the query fails:
-- **`duckdb: command not found`** → delegate to `/duckdb-skills:install-duckdb`
+- **`duckdb: command not found`** → delegate to `/duckstack:install-duckdb`
 - **Missing extension** → `INSTALL spatial; LOAD spatial;` or `INSTALL h3 FROM community; LOAD h3;`
 - **S3 access denied** → suggest checking AWS credentials
 - **No results with Overture** → widen the bbox, check the category spelling, or try a broader search

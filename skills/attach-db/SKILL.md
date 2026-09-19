@@ -10,7 +10,7 @@ argument-hint: "[dev | dev-ro | quack:host:port | superhuman:<doc-id> | <path.du
 allowed-tools: Bash
 ---
 
-You are choosing which database an agent talks to, and proving it. Read `/duckdb-skills:duck`
+You are choosing which database an agent talks to, and proving it. Read `/duckstack:duck`
 first: the dev database is a locked, always-on quack server, not a file, and there is no
 session file to write — every later statement carries its own `LOAD quack; ATTACH …`.
 
@@ -84,4 +84,4 @@ FROM dev.query($$DESCRIBE <table_name>$$);
 - **Head**: the two lines from Step 1, verbatim, for every statement / artifact that follows
 - **Tables**: name, column count, estimated rows — or "empty"
 - Reminders: joins across dev tables go through `dev.query($$…$$)`; `SET`/`INSTALL`/`LOAD`
-  are refused on dev; `/duckdb-skills:query` runs the work, `/duckdb-skills:crawl` lands pages.
+  are refused on dev; `/duckstack:query` runs the work, `/duckstack:crawl` lands pages.

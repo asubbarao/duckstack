@@ -65,6 +65,6 @@ On success, report:
 - Row count if quick to compute
 
 On failure:
-- **`duckdb: command not found`** → delegate to `/duckdb-skills:install-duckdb`
+- **`duckdb: command not found`** → delegate to `/duckstack:install-duckdb`
 - **Missing extension** → install it and retry
-- **Input parse error** → suggest the user check the input format or try `/duckdb-skills:read-file` first to inspect it
+- **Input parse error** → suggest the user check the input format or try `/duckstack:read-file` first to inspect it

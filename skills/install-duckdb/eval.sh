@@ -33,7 +33,7 @@ eval_case() {
     printf "  %-56s " "$desc"
     local t0 t1 elapsed result
     t0=$(date +%s)
-    result=$(printf '/duckdb-skills:install-duckdb %s' "$args" \
+    result=$(printf '/duckstack:install-duckdb %s' "$args" \
         | claude --print --plugin-dir "$PLUGIN_DIR" 2>/dev/null)
     t1=$(date +%s)
     elapsed=$((t1 - t0))
@@ -85,7 +85,7 @@ echo "--- Version check (included in --update output) ---"
 # Just verify the skill runs and mentions a version number
 printf "  %-56s " "Version info present in --update output"
 t0=$(date +%s)
-out=$(printf '/duckdb-skills:install-duckdb --update' \
+out=$(printf '/duckstack:install-duckdb --update' \
     | claude --print --plugin-dir "$PLUGIN_DIR" 2>/dev/null)
 t1=$(date +%s)
 elapsed=$((t1 - t0))

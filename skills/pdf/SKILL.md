@@ -11,7 +11,7 @@ argument-hint: "<file.pdf | glob | url> [question about the document]"
 allowed-tools: Bash
 ---
 
-You are reading a PDF into tables. Read `/duckdb-skills:duck` first. The deliverable is one
+You are reading a PDF into tables. Read `/duckstack:duck` first. The deliverable is one
 `.sql` artifact whose `SELECT *` is a tabular grid of the document.
 
 Input: `$0` — path, glob or URL. Question: `${1:-describe the document}`.
@@ -118,7 +118,7 @@ scores it — filter on confidence, never on a hunch.
 - `read_pdf_meta.encrypted` and `pdf_info.is_encrypted` are the same fact under two
   names; `read_pdf_meta.pages` and `pdf_info.page_count` likewise.
 - Table functions bind literals. Per-file fan-out is `SET VARIABLE` + a glob, or
-  `/duckdb-skills:self-dispatch`; `pdf_redact_lateral` exists because `pdf_redact`
+  `/duckstack:self-dispatch`; `pdf_redact_lateral` exists because `pdf_redact`
   cannot take a column.
 - Claude Code's own PDF reader shells out to `pdftoppm`. If it errors with
   "poppler-utils not installed", do not install poppler — render with
