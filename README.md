@@ -15,6 +15,7 @@ rules. The style guide is the user's own repos (`asubbarao/duckdb-ops-toolkit` c
 | `crawl` | **new** | crawler × webbed with all 13 `crawl()` parameters, the capability ladder, the shape catalog, and `--chrome` (duckdb-chrome-bridge) for SPAs/auth |
 | `agent-door` | **new** | what the 9496 MCP can reach (only `dev.query`), raw JSON-RPC, review of `mcp-setup.sql` against the duckdb_mcp docs |
 | `git-github` | **new** | `duck_tails` + `gh` extension + `gh` CLI, as tables |
+| `duck-tails` | **new** | the local repo half, corrected and verified: `git://` is a filesystem, so **every reader works over a commit — Parquet included** (66 hive-partitioned blobs, hive keys intact); the reference SQL's house style applied to git data |
 | `install-duckdb` | note added | client-side only; the server's extensions live in `setup.sql` |
 | `read-file`, `convert-file`, `s3-explore`, `spatial`, `duckdb-docs`, `read-memories` | upstream | untouched; they run sandboxed `duckdb :memory:` clients |
 
