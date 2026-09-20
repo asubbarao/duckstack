@@ -56,6 +56,20 @@ one file is `overlap-risk`, and the merge order gets named up front.
 Bound every loop. Max rounds, a repeat-failure cap, and a small set of explicit
 terminal statuses. `pending` and `awaiting` are never terminal.
 
+## Which model does the work
+
+Codex models, ranked by the owner against the Claude models — pick by the difficulty of the task:
+
+| model | sits | use for |
+|---|---|---|
+| `luna` | the workhorse | fix a specified bug, or do a specified thing. One task per dispatch |
+| `terra` | between sonnet and opus | routine implementation from a design that already exists |
+| `sol` | between opus and fable | design, adversarial review of a diff, a plan, "what would you do next" |
+| `astra` | just short of fable | expensive; only when the owner names it |
+
+A named defect with a reproduction goes to luna. Sol reviews the diff luna or terra produces before
+anything is committed. See `/codex` for the exact `-m` identifiers and the sandbox flags.
+
 ## 3. House rules every brief carries, at full strength
 
 State these as the end state, never as "do not *add* one" — softening a rule into a

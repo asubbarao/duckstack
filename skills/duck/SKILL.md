@@ -161,6 +161,15 @@ Verbatim source: `~/.duck/catalog/2026-09-15.md`. Breaking one is a procedural f
   cast cannot do it. `LIKE` on markup is the same offence.
 - **No enumeration = no lossy aggregation.** No `p[-4]`, `split_part(path,'=',2)`, no
   `COUNT(*)`/`min`/`max`/`avg` in base layers — `array_agg(x) AS xs, len(xs) AS n`.
+- **`coalesce((SELECT …), 0)` is an antipattern.** A scalar subselect with no reason is a join
+  written badly, and `coalesce` around one is a second smell: `count(*)` never returns NULL, so
+  `coalesce((SELECT count(*) FROM approvals a WHERE a.proposal_id = p.id), 0)` protects against
+  something the inner expression cannot produce. Join the child table (`LEFT JOIN`, aggregated in
+  its own CTE) and put the `coalesce` on the outer column, where a missing match really does yield
+  NULL. Ask what the wrapper defends against and whether that can happen.
+- **Nested parens `(([((` are often, but not always, an antipattern.** They usually mean a query
+  built inside-out where named CTEs reading top to bottom would say it directly. Do not flag
+  parentheses mechanically — flag the subselect that has no reason to be one.
 - **No string surgery on structure.** raw → cast with the extension's type (`::HTML`, `::XML`,
   `::JSON`) → the extension's functions. URLs are strings: `netquack`/`urlpattern`, or literal
   `string_split`; markup is a tree: webbed XPath / crawler CSS.
