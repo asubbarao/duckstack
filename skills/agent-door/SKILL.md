@@ -15,19 +15,45 @@ through the gated 9495 listener, serving duckdb_mcp over HTTP on 9496. Registere
 MCP in `~/.claude.json` and `~/.codex/config.toml`. Everything below was verified against the
 running sidecar on 2026-09-17 (duckdb_mcp a6b8648 = v2.3.0, quack c154811, DuckDB 1.5.5).
 
-> **This door is live on a stale attach, and will not come back from a restart.**
-> Verified 2026-09-20: the sidecar (`com.inframe.mcp`, pid 72875) has been up since
-> Sep 17 01:38 and its `ATTACH … (TYPE quack)` to dev still works. But dev acquired
+> **This door's process is live, but its stale dev attachment is no longer usable.**
+> The sidecar has been up since Sep 17 01:38. A live probe during this edit returned
+> `Invalid connection id` from `dev.query(...)`, and `quack_active_connections()` returned
+> no rows. Before that disconnect, the old `ATTACH … (TYPE quack)` still worked even though
+> dev acquired
 > `__crawler_cache.cached_at DEFAULT current_timestamp` on Sep 20 03:34, and on DuckDB 1.5.5 a
 > single computed `DEFAULT` anywhere in the target catalog makes a quack ATTACH fail outright
 > with `Binder Error: Catalog "dev" does not exist!` (duckdb-quack#132 — fixed by #264 on
 > `main`, shipping with 1.6, not backportable). The sidecar attached three days before that
-> table existed, which is the only reason it works.
+> table existed, which is why it worked until the underlying Quack connection was lost.
 >
-> So the next `launchctl bootout`/`bootstrap`, reboot, or KeepAlive respawn takes this whole
-> door down until either the DEFAULT is dropped from `__crawler_cache` or DuckDB 1.6 lands.
+> The dev-reading part of this door is therefore already down. A `launchctl
+> bootout`/`bootstrap`, reboot, or KeepAlive respawn cannot restore it until either the DEFAULT
+> is dropped from `__crawler_cache` or DuckDB 1.6 lands.
 > Do not treat the MCP door as the fallback for the ATTACH bug — it has the same bug, deferred.
 > `quack_query` from a client is unaffected; it never loads the catalog. See `/duckstack:quack`.
+
+## Local extension capability — configured versus running
+
+`~/.duck/mcp-setup.sql` now lists all of the following `LOAD`s. The sidecar has **not** been
+restarted since those six new lines were added. They are configured capability, not live MCP
+capability today. A live `duckdb_functions()` probe returned zero rows for representative
+`read_yaml`, `md_to_html`, `is_parsable`, `html_to_duck_blocks`, `crawl`, and `gh_repo`
+functions. Do not claim otherwise and do not restart the service on an agent's initiative.
+
+| Extension | Listed in `mcp-setup.sql` | Running 9496 process now | Capability after a successful future restart |
+|---|---:|---|---|
+| `duckdb_mcp` | yes | loaded; six built-in MCP tools are live | MCP server/tools |
+| `quack` | yes | loaded; current `dev` connection is invalid | attach/query transport to gated dev, subject to the 1.5.5 attach bug above |
+| `yaml` | yes | **pending restart; not loaded** | YAML readers, native YAML type, extraction/conversion |
+| `markdown` | yes | **pending restart; not loaded** | Markdown readers, sections/blocks, extraction/conversion |
+| `parser_tools` | yes | **pending restart; not loaded** | SQL parse validation and table/function/WHERE introspection |
+| `webbed` | yes | **pending restart; not loaded** | typed HTML parsing and HTML-to-duck-block conversion |
+| `crawler` | yes | **pending restart; not loaded** | `agent_crawl(urls)` seed crawling on the MCP/9495 path; explicit correlated `crawl_url` only |
+| `gh` | yes | **pending restart; not loaded** | GitHub relations such as repository metadata |
+
+The future capability row is conditional: after a human-managed restart, re-run
+`duckdb_functions()` and the `dev.query($$FROM whoami()$$)` probe before describing any row as
+live. On this MCP/9495 path seed URLs use `agent_crawl(urls)`, never raw `crawl()`.
 
 ## What is reachable — the part the docs do not tell you
 
@@ -74,8 +100,9 @@ curl -s -X POST http://localhost:9496/mcp -H 'Content-Type: application/json' \
 
 `request_timeout_seconds 30` and `max_connections 10` **appear** in that output and are
 **not enforced** by a6b8648 — it reports fields it does not parse. Do not represent 30 s as a
-ceiling; there is none below the launchd process itself. After a planned dev restart, restart
-the sidecar too so it re-establishes the 9495 attachment.
+ceiling; there is none below the launchd process itself. Do not restart the sidecar as a repair:
+the 1.5.5 attach bug above must be cleared first, then a human-managed restart can re-establish
+the 9495 attachment.
 
 ## `review` — the sidecar against the duckdb_mcp docs (main, 23 commits ahead of a6b8648)
 
