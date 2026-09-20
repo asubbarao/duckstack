@@ -15,6 +15,20 @@ through the gated 9495 listener, serving duckdb_mcp over HTTP on 9496. Registere
 MCP in `~/.claude.json` and `~/.codex/config.toml`. Everything below was verified against the
 running sidecar on 2026-09-17 (duckdb_mcp a6b8648 = v2.3.0, quack c154811, DuckDB 1.5.5).
 
+> **This door is live on a stale attach, and will not come back from a restart.**
+> Verified 2026-09-20: the sidecar (`com.inframe.mcp`, pid 72875) has been up since
+> Sep 17 01:38 and its `ATTACH … (TYPE quack)` to dev still works. But dev acquired
+> `__crawler_cache.cached_at DEFAULT current_timestamp` on Sep 20 03:34, and on DuckDB 1.5.5 a
+> single computed `DEFAULT` anywhere in the target catalog makes a quack ATTACH fail outright
+> with `Binder Error: Catalog "dev" does not exist!` (duckdb-quack#132 — fixed by #264 on
+> `main`, shipping with 1.6, not backportable). The sidecar attached three days before that
+> table existed, which is the only reason it works.
+>
+> So the next `launchctl bootout`/`bootstrap`, reboot, or KeepAlive respawn takes this whole
+> door down until either the DEFAULT is dropped from `__crawler_cache` or DuckDB 1.6 lands.
+> Do not treat the MCP door as the fallback for the ATTACH bug — it has the same bug, deferred.
+> `quack_query` from a client is unaffected; it never loads the catalog. See `/duckstack:quack`.
+
 ## What is reachable — the part the docs do not tell you
 
 | Through the `query` tool | Result |
