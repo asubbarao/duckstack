@@ -74,7 +74,7 @@ verbatim, then let a reader type it. Never retype the content into SQL by hand.
    it carries `createdBy`/`updatedBy`/timestamps the content call omits.
 3. `table_rows_read` per table the content call reports.
 4. Write each response verbatim to a `.json` file, then `read_json` it from inside
-   `dev.query($$…$$)`. `references/land.sql` is the shape.
+   a `quack_query` body. `references/land.sql` is the shape.
 
 Canvas-typed cells come back as `{type, content, canvasUri}`; an empty cell has **no**
 `content` key at all, so the reader types it `NULL` rather than `''`. Rich-text cells come

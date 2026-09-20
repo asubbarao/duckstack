@@ -16,7 +16,7 @@ allowed-tools: Bash
 ## The wall, stated exactly (verified DuckDB 1.5.5, 2026-09-17)
 
 `glob()`, `ls()`, `lsr()`, `read_text()`, `read_csv()`, `read_blob()`, `crawl()`, `quack_query()`,
-`dev.query()` are **table functions: their arguments bind at parse time** — a literal, `getenv()`,
+`quack_query()` are **table functions: their arguments bind at parse time** — a literal, `getenv()`,
 `getvariable()`, or pure concatenation of those. A column is refused:
 
 ```

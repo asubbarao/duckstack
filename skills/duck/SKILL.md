@@ -32,7 +32,7 @@ DuckDB **1.5.5** osx_arm64. Server extensions: `~/.duck/extensions`; local CLI: 
 ## 2. The boundary (hard rules)
 
 1. **Nobody opens the file.** `~/.duck/dev.duckdb` is locked; even `-readonly` is refused.
-   A lock error means the caller is wrong. Attach the quack instead.
+   A lock error means the caller is wrong. Go through `quack_query` instead.
 2. **A `duckdb :memory:` is a stateless client.** It may `LOAD quack` and talk to an
    *explicitly selected* `quack:localhost:<port>`, call an explicitly selected localhost
    service, or use the `dev` MCP when `dev` is the target. Never assume there is only one
@@ -49,9 +49,9 @@ DuckDB **1.5.5** osx_arm64. Server extensions: `~/.duck/extensions`; local CLI: 
    needs goes in `setup.sql`, nowhere else.
 6. **Spell URIs `quack:host:port`.** That is the repo standard and what every secret `SCOPE`
    is written against (a literal prefix match). Verified 2026-09-17 on quack c154811: the
-   `quack://host:port` spelling *also* works for both `quack_query` and `ATTACH`, so the
-   inframe CONTEXT.md line "`quack://` is not dispatched" is stale — the rule is consistency
-   with the secrets, not a parser limit.
+   `quack://host:port` spelling *also* works for `quack_query`, so the inframe CONTEXT.md line
+   "`quack://` is not dispatched" is stale — the rule is consistency with the secrets, not a
+   parser limit.
 7. **The token is an environment variable on the shell line, never a literal in SQL, never in
    a file, never printed.** `QUACK_TOKEN="$(cat ~/.duck/token)" duckdb :memory: …` and
    `getenv('QUACK_TOKEN')` in the statement.
@@ -76,9 +76,10 @@ FROM quack_query('quack:localhost:9494', \$\$FROM whoami()\$\$, token := getenv(
 **A session in one process** — don't. Use `quack_query`; see `/duckstack:quack`. ATTACH is
 broken on DuckDB 1.5.5 (duckdb-quack#132) and was the weaker form before that.
 
-**A `.sql` artifact** — the deliverable when there is more than one statement. Head = those two
-lines; body = one table per statement, raw first; tail = verification queries as comments.
-Run it by path, `-f` keeps the rc floor:
+**A `.sql` artifact** — the deliverable when there is more than one statement. Head = `LOAD
+quack;` and the provenance comment; body = one table per statement, raw first, each inside a
+`quack_query` body; tail = verification queries as comments. Run it by path, `-f` keeps the rc
+floor:
 
 ```bash
 QUACK_TOKEN="$(cat ~/.duck/token)" duckdb :memory: -f crawl_duckdb_docs.sql
@@ -86,8 +87,6 @@ QUACK_TOKEN="$(cat ~/.duck/token)" duckdb :memory: -f crawl_duckdb_docs.sql
 
 `references/head.sql` is the head to copy. The artifact is also the surface a human edits
 (the console idea below): plain SQL, runnable blocks, `--#` lines are instructions to the agent.
-
-What each path can and cannot do:
 
 What each path can and cannot do. The `dev.` rows need an ATTACH and so are unavailable on
 1.5.5; they are kept because they say what the body should contain instead.
@@ -187,7 +186,7 @@ Verbatim source: `~/.duck/catalog/2026-09-15.md`. Breaking one is a procedural f
 - `read_html` is registered by **both** `crawler` and `webbed`; named parameters only.
   `record_element := 'tr'` silently ignores `attr_mode`/`attr_prefix`; `htmlpath(…'@href[*]')`
   returns NULL; `jq()` is first-match only.
-- `crawl()`/`crawl_url()`/`quack_query()`/`dev.query()` are table functions: arguments bind
+- `crawl()`/`crawl_url()`/`quack_query()` are table functions: arguments bind
   literals, `getenv`, `getvariable` or pure concatenation — never a column. The correlated form
   is `CROSS JOIN LATERAL crawl_url(rel.url, …)`; a previous stage's list rides in via
   `SET VARIABLE urls = (SELECT list(url) FROM …)`.

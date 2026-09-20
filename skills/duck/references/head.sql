@@ -5,13 +5,23 @@
 -- literal here. Pinned: DuckDB v1.5.5 osx_arm64; quack c154811; <other extension revs>.
 -- ============================================================================
 LOAD quack;
--- ATTACH uri AS name (TYPE quack, TOKEN ...) -- spell quack:host:port, never quack://
-ATTACH 'quack:localhost:9494' AS dev (TYPE quack, TOKEN getenv('QUACK_TOKEN'));
 
--- body: statements in dependency order, one table per statement, raw first; each runs on the
--- server inside dev.query($$ ... $$). Every function call carries a comment listing all its
--- parameters and defaults.
+-- body: statements in dependency order, one table per statement, raw first. Each runs on the
+-- server inside a quack_query body, written as if you were sitting on the server -- tables
+-- unqualified, joins and CREATE OR REPLACE TABLE all normal. Every function call carries a
+-- comment listing all its parameters and defaults.
+--
+-- quack_query(uri, sql, disable_ssl := false, token := ...) -> the server's result as rows
+--   spell it quack:host:port, never quack://
+--   no ATTACH: it does not connect on DuckDB 1.5.5 (duckdb-quack#132) and was the weaker
+--   form before that -- see /duckstack:quack
+FROM quack_query('quack:localhost:9494', $$
+  <one complete body>
+$$, token := getenv('QUACK_TOKEN'));
 
 -- verification (comments, run by hand):
---   FROM dev.query($$FROM whoami()$$);                                  -- name=dev
---   FROM dev.query($$SELECT table_name, estimated_size FROM duckdb_tables() WHERE NOT internal$$);
+--   FROM quack_query('quack:localhost:9494', $$FROM whoami()$$, token := getenv('QUACK_TOKEN'));
+--     -- name=dev
+--   FROM quack_query('quack:localhost:9494',
+--     $$SELECT table_name, estimated_size FROM duckdb_tables() WHERE NOT internal$$,
+--     token := getenv('QUACK_TOKEN'));

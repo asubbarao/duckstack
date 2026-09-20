@@ -275,4 +275,4 @@ select by name and the string surgery disappears. Hive keys under `git://` arriv
 - **Not on the dev quack.** `duck_tails` is installed for the local CLI
   (`~/.duckdb/extensions/v1.5.5/osx_arm64/duck_tails.duckdb_extension`), **not** in the server's
   `setup.sql`. Run it in the `:memory:` client; to persist a result, push it through
-  `dev.query($$CREATE TABLE … AS …$$)` per `/duckstack:duck` §3.
+  a `quack_query` body per `/duckstack:quack`.

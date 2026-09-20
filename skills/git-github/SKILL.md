@@ -17,7 +17,7 @@ whole row, `array_agg` over `count`).
 
 Both extensions are installed in `~/.duckdb/extensions` for the local client (verified 2026-09-17,
 DuckDB 1.5.5: `duck_tails` 742af7b, `gh` 10d642a). They are **not** on the dev server; run
-these in the `:memory:` client and, if a result should persist, `dev.query($$CREATE TABLE …$$)`
+these in the `:memory:` client and, if a result should persist, a `quack_query` body (`/duckstack:quack`)
 from a `COPY`/`INSERT … SELECT` of the client-side result, or attach dev and insert.
 
 ## Local repository — `duck_tails`
