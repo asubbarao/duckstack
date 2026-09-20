@@ -73,15 +73,8 @@ LOAD quack;
 FROM quack_query('quack:localhost:9494', \$\$FROM whoami()\$\$, token := getenv('QUACK_TOKEN'));"
 ```
 
-**A session in one process** — attach, then `dev.query($$…$$)` is the sticky server-side
-session (TEMP tables, `SET VARIABLE`, joins, table functions all run on dev):
-
-```sql
-LOAD quack;
--- ATTACH uri AS name (TYPE quack, TOKEN ...)  -- READ_ONLY only blocks the client catalog path; the gate is server-side
-ATTACH 'quack:localhost:9494' AS dev (TYPE quack, TOKEN getenv('QUACK_TOKEN'));
-FROM dev.query($$FROM whoami()$$);
-```
+**A session in one process** — don't. Use `quack_query`; see `/duckstack:quack`. ATTACH is
+broken on DuckDB 1.5.5 (duckdb-quack#132) and was the weaker form before that.
 
 **A `.sql` artifact** — the deliverable when there is more than one statement. Head = those two
 lines; body = one table per statement, raw first; tail = verification queries as comments.
@@ -96,17 +89,20 @@ QUACK_TOKEN="$(cat ~/.duck/token)" duckdb :memory: -f crawl_duckdb_docs.sql
 
 What each path can and cannot do:
 
+What each path can and cannot do. The `dev.` rows need an ATTACH and so are unavailable on
+1.5.5; they are kept because they say what the body should contain instead.
+
 | From the client | Result |
 |---|---|
-| `FROM dev.query($$…$$)` | on the server, sticky session; joins, aggregates, `CREATE`, table functions |
-| `SELECT … FROM dev.t` (one table) | works — a streaming scan through the attach |
-| `SELECT … FROM dev.a JOIN dev.b` client-side | **fails** "Multiple streaming scans" → push into `dev.query` |
-| client-side `duckdb_tables()` for dev | **0 rows** — the remote catalog is not mirrored; ask via `dev.query` |
+| `quack_query(uri, $$…$$)` | on the server; joins, aggregates, `CREATE`, table functions — the form to use |
+| `SELECT … FROM dev.t` (one table) | needs ATTACH — put the table in the body instead |
+| `SELECT … FROM dev.a JOIN dev.b` client-side | **fails** "Multiple streaming scans" → join inside the body |
+| client-side `duckdb_tables()` for dev | **0 rows** — the remote catalog is not mirrored; ask inside the body |
 | `quack_query('…9495', $$CREATE …$$)` | "Authorization failed" — the parser gate |
-| `dev.query($$SET …$$)` | "configuration has been locked" |
-| after a launchd restart | `DETACH dev; ATTACH …` — or just run the artifact again |
+| `quack_query(…, $$SET …$$)` | "configuration has been locked" |
+| after a launchd restart | nothing to re-establish — `quack_query` holds no session |
 
-Macros defined on dev do not resolve as `dev.main.macro()`; call them inside `dev.query()`.
+Macros defined on dev do not resolve client-side; call them inside the body.
 
 ## 4. The reference repos — what the pattern actually is
 
@@ -134,8 +130,8 @@ a scalar that runs SQL. Three forms verified on this machine 2026-09-17, all in
 rows; quackapi_serve(port)` in the same `:memory:` process, `array_agg(http_post_form(url,
 MAP{}, MAP{'q': q}))`, `UNNEST WITH ORDINALITY`, a JSON array of typed rows back, `quackapi_stop()`; (2) **two constant shellfs pipes** —
 an inner duckdb `COPY`s generated statements to stdout, a child duckdb (or `bash`) runs them;
-(3) **quack loopback** — `dev.query($$FROM quack_query('quack:localhost:9494', '…', token :=
-getenv('QUACK_TOKEN'))$$)`, the server calling itself. Posting `q=` to quack's own port is the
+(3) **quack loopback** — a body that itself calls `quack_query('quack:localhost:9494', '…',
+token := getenv('QUACK_TOKEN'))`, the server calling itself. Posting `q=` to quack's own port is the
 error every agent makes (`status -1`); the executor port is a parameter, not a fact.
 
 **duckdb-chrome-bridge** — *your logged-in Chrome is a set of DuckDB relations.* macOS
