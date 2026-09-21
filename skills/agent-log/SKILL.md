@@ -58,6 +58,10 @@ Invalid SQL returns the error to you and writes no row — fix it and call again
 shellfs), when it must read files outside the sidecar's allowed directories, or when no `dev`
 MCP is configured.
 
+**Codex, until duckdb_mcp answers notifications with 202:** Codex's MCP client drops the `dev` server
+at the handshake (`Deserialize error … when send initialized notification`), so `agent_log` is not
+attached there yet. Use the local form.
+
 ## Fallback: your own `duckdb :memory:`
 
 ### The prelude — every template starts with this, then one COPY
