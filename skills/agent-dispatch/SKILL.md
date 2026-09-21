@@ -49,6 +49,15 @@ log or diff.
 }
 ```
 
+**One worker is one git worktree on one branch of one repo.** `worktree_path` is a
+`git worktree add -b <worker-branch> <path> origin/<base>` path, never a second `git clone`
+— including for someone else's repo. A fresh worktree has submodules uninitialised; run
+`git submodule update --init --depth 1 --recursive` in it before dispatch, so the worker can
+build and run the suite instead of returning an untested patch. Give every worker its own
+branch name: worktrees share one branch namespace, and parallel workers given the same name
+collide. For Codex, launch with `-C <worktree>` (verified: it can branch and commit there;
+in a full clone `.git` is read-only) — see the codex skill's Worktrees section.
+
 `write_scope` is an **enforcement boundary**, not documentation: a worker with no
 declared boundary silently edits central files. Classify honestly — two workers on
 one file is `overlap-risk`, and the merge order gets named up front.
