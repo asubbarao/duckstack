@@ -43,8 +43,32 @@ every argument is a bound value, quotes and newlines included.
 | `notes` | no | markdown |
 | `session_id` | no | your `CLAUDE_CODE_SESSION_ID` / `CODEX_THREAD_ID`; the server cannot read your env |
 
+**Two ways to make the same call, to the same tool on the same server.** If your harness has
+attached `dev` (`mcp__dev__agent_log`), call that. If it has not — a different agent system, a
+client that dropped the server, a subagent with no MCP config — post the call over HTTP. Any agent
+with a shell can; the quoted heredocs (`<<'SQL'`) take the text verbatim and `jq --arg` builds the
+JSON, so **nothing is escaped**:
+
+```bash
+jq -n --arg agent '<AGENT>' --arg type '<type>' --arg session_id "${CODEX_THREAD_ID:-$CLAUDE_CODE_SESSION_ID}" \
+  --arg sql "$(cat <<'SQL'
+<SQL>
+SQL
+)" --arg notes "$(cat <<'MD'
+<NOTES>
+MD
+)" '{jsonrpc:"2.0", id:1, method:"tools/call",
+     params:{name:"agent_log", arguments:{$agent, $type, $session_id, $sql, $notes}}}' \
+| curl -s http://localhost:9496/mcp -H 'Content-Type: application/json' \
+       -H 'Accept: application/json, text/event-stream' -d @- | jq -c '.error // .result'
+```
+
+Verified 2026-09-21 with SQL and notes carrying `'`, `"`, `` ` ``, `$HOME` and `\` — all stored
+verbatim, result correct.
+
 Rows land in `~/.duck/agent_log/rows/type=<type>/<uuid>.parquet`. Read them back with the
-`query` tool — it refuses `read_parquet`, so go through the view:
+`query` tool (or the same curl with `"name":"query", "arguments":{"sql": …}`) — it refuses
+`read_parquet`, so go through the view:
 
 ```sql
 SELECT agent, query_was_ran, markdown_notes, * EXCLUDE (agent, query_was_ran, markdown_notes)
@@ -54,15 +78,10 @@ FROM agent_log WHERE type = '<type>' ORDER BY row_id;
 Invalid SQL returns the error to you and writes no row — fix it and call again. Verified
 2026-09-21: 12 concurrent calls, 12 files, all results correct.
 
-**Use the local form below instead** when the work is not SQL (Python, bash — the sidecar has no
-shellfs), when it must read files outside the sidecar's allowed directories, or when no `dev`
-MCP is configured.
+**The local form below is only for programs** (Python, bash — the sidecar has no shellfs) or for
+reading files outside the sidecar's allowed directories.
 
-**Codex, until duckdb_mcp answers notifications with 202:** Codex's MCP client drops the `dev` server
-at the handshake (`Deserialize error … when send initialized notification`), so `agent_log` is not
-attached there yet. Use the local form.
-
-## Fallback: your own `duckdb :memory:`
+## Programs: your own `duckdb :memory:`
 
 ### The prelude — every template starts with this, then one COPY
 
