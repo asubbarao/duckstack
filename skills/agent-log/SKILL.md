@@ -29,10 +29,29 @@ answer instead, the audit below catches it.
 `'<X>'` when the replacement must be a quoted literal, bare `<X>` when it is an identifier or a
 statement — the same convention as `'<DATEID-3>'` and `<TABLE:tablename>`.
 
+## The prelude — every template starts with this, then one COPY
+
+Paste it whole. It loads what the COPY needs, defines `agent_session()`, and creates `<DIR>` —
+`COPY … PARTITION_BY` does **not** create a missing parent directory; without this line a fresh
+directory fails with `Failed to create directory … No such file or directory`.
+
+```sql
+LOAD markdown; LOAD shellfs;
+CREATE OR REPLACE MACRO agent_session() AS {
+  'system': CASE
+              WHEN nullif(getenv('CODEX_THREAD_ID'), '') IS NOT NULL THEN 'codex'
+              WHEN nullif(getenv('CLAUDE_CODE_SESSION_ID'), '') IS NOT NULL THEN 'claude'
+              ELSE 'unknown' END,
+  'session_id': coalesce(nullif(getenv('CODEX_THREAD_ID'), ''),
+                         nullif(getenv('CLAUDE_CODE_SESSION_ID'), ''))
+};
+-- read_csv('<cmd> |', header := false, columns := {...}) : the pipe runs, the scan is the wait
+SELECT ok FROM read_csv('mkdir -p <DIR> && echo ok |', header := false, columns := {'ok': 'VARCHAR'});
+```
+
 ## SQL, scalar answer
 
 ```sql
-LOAD markdown;
 COPY (SELECT uuidv7() AS row_id, '<type>' AS type,
              '<AGENT>' AS agent, agent_session().system AS agent_system,
              agent_session().session_id AS session_id,
@@ -62,7 +81,6 @@ The code becomes a file first. **Nothing is escaped** — that is why this works
 program into SQL does not.
 
 ```sql
-LOAD shellfs;
 -- 1. write the artifact. QUOTE '' keeps it verbatim.
 COPY (SELECT '<CODE>') TO '<DIR>/<NAME>.py' (FORMAT csv, HEADER false, QUOTE '');
 
@@ -97,21 +115,11 @@ Swap `python3` for `bash`, `cmd /d /s /c`, `node` — the row shape does not cha
 
 ## agent_session()
 
-Define it in your **own** process; it cannot live on a server. Verified 2026-09-21: the dev quack
-on 9494 returns empty for both ids (its own launchd environment), and the MCP sidecar has `getenv`
-disabled by `enable_external_access = false`. A long-lived server sees its own environment, never a
-remote caller's.
-
-```sql
-CREATE OR REPLACE MACRO agent_session() AS {
-  'system': CASE
-              WHEN nullif(getenv('CODEX_THREAD_ID'), '') IS NOT NULL THEN 'codex'
-              WHEN nullif(getenv('CLAUDE_CODE_SESSION_ID'), '') IS NOT NULL THEN 'claude'
-              ELSE 'unknown' END,
-  'session_id': coalesce(nullif(getenv('CODEX_THREAD_ID'), ''),
-                         nullif(getenv('CLAUDE_CODE_SESSION_ID'), ''))
-};
-```
+It is in the prelude, and it must run in your **own** process: `getenv()` reads the environment
+of whichever DuckDB evaluates it. Your `:memory:` client has your session's ids. The dev quack on
+9494 and the MCP sidecar are launchd processes with their own environments — verified 2026-09-21,
+the quack returns empty for both ids and the sidecar has `getenv` disabled outright by
+`enable_external_access = false`.
 
 Codex is checked first deliberately: a Codex worker launched by Claude **inherits**
 `CLAUDE_CODE_SESSION_ID`, so the Claude id would otherwise mislabel the worker. Verified both ways.
