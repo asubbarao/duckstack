@@ -45,9 +45,12 @@ CREATE OR REPLACE MACRO agent_session() AS {
   'session_id': coalesce(nullif(getenv('CODEX_THREAD_ID'), ''),
                          nullif(getenv('CLAUDE_CODE_SESSION_ID'), ''))
 };
--- read_csv('<cmd> |', header := false, columns := {...}) : the pipe runs, the scan is the wait
-SELECT ok FROM read_csv('mkdir -p <DIR> && echo ok |', header := false, columns := {'ok': 'VARCHAR'});
+-- COPY ... TO '| <cmd>' pipes the rows to the command's stdin; mkdir ignores them and just runs.
+-- mkdir -p is a no-op when the directory exists, so running the prelude twice is harmless.
+COPY (SELECT 1) TO '| mkdir -p <DIR>';
 ```
+
+`getenv()` returns `''` for an unset variable, not NULL — that is why the `nullif` calls are there.
 
 ## SQL, scalar answer
 
