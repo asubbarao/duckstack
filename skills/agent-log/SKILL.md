@@ -1,20 +1,20 @@
 ---
 name: agent-log
 description: >
-  Log what you did as parquet, in one statement, so a human can read every agent's work in SQL.
+  Log what you did as parquet, in one call (the dev MCP `agent_log` tool), so a human can read every agent's work in SQL.
   Use whenever you run a query or a program worth keeping, and whenever you dispatch subagents —
-  they call this themselves, you do not collect their output. One COPY per artifact: the same
+  they call this themselves, you do not collect their output. One call per artifact: the same
   token is stored as text and executed, so the result cannot be invented; a crash is a row, not a
   lost turn. `FILENAME_PATTERN '{uuid}'` makes n writers into one directory safe with no lock.
   Works the same for SQL, Python, .bat or any other language.
 argument-hint: "<agent-name> [sql | code] [dir]"
-allowed-tools: Bash
+allowed-tools: Bash, mcp__dev__agent_log, mcp__dev__query
 ---
 
 # agent-log
 
-One statement. No setup, no server, no cleanup, nothing to read first. A subagent can be handed
-this and get it right without the dispatching agent checking up on it.
+One call. No setup, nothing to read first. A subagent can be handed this and get it right
+without the dispatching agent checking up on it.
 
 ## The rule
 
@@ -29,7 +29,38 @@ answer instead, the audit below catches it.
 `'<X>'` when the replacement must be a quoted literal, bare `<X>` when it is an identifier or a
 statement — the same convention as `'<DATEID-3>'` and `<TABLE:tablename>`.
 
-## The prelude — every template starts with this, then one COPY
+## Primary: the `agent_log` MCP tool (the `dev` server, 9496)
+
+For SQL, call the tool. The server binds `sql` once and uses it twice — stored as
+`query_was_ran`, executed by `query()` — so the rule above holds with **nothing to escape**:
+every argument is a bound value, quotes and newlines included.
+
+| argument | required | what |
+|---|---|---|
+| `agent` | yes | your model name: `opus`, `terra`, `luna`, `sol`, … — nothing derives it |
+| `type` | yes | the topic; becomes the partition `type=<type>/` |
+| `sql` | yes | the query, verbatim; one row or many, its columns land typed |
+| `notes` | no | markdown |
+| `session_id` | no | your `CLAUDE_CODE_SESSION_ID` / `CODEX_THREAD_ID`; the server cannot read your env |
+
+Rows land in `~/.duck/agent_log/rows/type=<type>/<uuid>.parquet`. Read them back with the
+`query` tool — it refuses `read_parquet`, so go through the view:
+
+```sql
+SELECT agent, query_was_ran, markdown_notes, * EXCLUDE (agent, query_was_ran, markdown_notes)
+FROM agent_log WHERE type = '<type>' ORDER BY row_id;
+```
+
+Invalid SQL returns the error to you and writes no row — fix it and call again. Verified
+2026-09-21: 12 concurrent calls, 12 files, all results correct.
+
+**Use the local form below instead** when the work is not SQL (Python, bash — the sidecar has no
+shellfs), when it must read files outside the sidecar's allowed directories, or when no `dev`
+MCP is configured.
+
+## Fallback: your own `duckdb :memory:`
+
+### The prelude — every template starts with this, then one COPY
 
 Paste it whole. It loads what the COPY needs, defines `agent_session()`, and creates `<DIR>` —
 `COPY … PARTITION_BY` does **not** create a missing parent directory; without this line a fresh
@@ -52,7 +83,7 @@ COPY (SELECT 1) TO '| mkdir -p <DIR>';
 
 `getenv()` returns `''` for an unset variable, not NULL — that is why the `nullif` calls are there.
 
-## SQL, scalar answer
+### SQL, scalar answer
 
 ```sql
 COPY (SELECT uuidv7() AS row_id, '<type>' AS type,
@@ -64,7 +95,7 @@ TO '<DIR>' (FORMAT parquet, PARTITION_BY (type), OVERWRITE_OR_IGNORE true,
             FILENAME_PATTERN '{uuid}');
 ```
 
-## SQL, many rows
+### SQL, many rows
 
 Same statement; the result arrives as typed columns instead of one string, so it stays queryable.
 
@@ -78,7 +109,7 @@ TO '<DIR>' (FORMAT parquet, PARTITION_BY (type), OVERWRITE_OR_IGNORE true,
 
 Readers of a directory holding both shapes need `union_by_name := true`.
 
-## Any other language
+### Any other language
 
 The code becomes a file first. **Nothing is escaped** — that is why this works where inlining a
 program into SQL does not.
@@ -157,5 +188,6 @@ SELECT status FROM quackapi_stop(19584);
 
 ## Dispatching subagents
 
-Give the worker its `<AGENT>` name and `<DIR>` and nothing else. It writes its own rows; you do
+Give the worker its `<AGENT>` name and a `type`, and tell it to call `agent_log` (or the local
+form, with `<DIR>`) — nothing else. It writes its own rows; you do
 not collect them, and a worker that fails writes a row saying so. Then read the directory.
