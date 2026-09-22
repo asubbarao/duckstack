@@ -5,13 +5,37 @@ description: >
   table function (glob, ls, lsr, read_text, read_csv, read_blob, crawl, quack_query, query) needs
   a value that lives in a column ("does not support lateral join column parameters"), whenever
   work must fan out per row, or whenever an agent is about to reach for SET VARIABLE, a macro, a
-  loop, Python or a shell script to get around that wall. Three verified forms on this machine:
-  quackapi in-process (the canonical one), the stock two-pipe form, and the quack loopback.
+  loop, Python or a shell script to get around that wall. On dev: `SELECT sd(<sql>)` — any SQL,
+  per row, nested — through the dev MCP `sql` tool or POST localhost:9498/sql. Other DuckDBs:
+  quackapi in-process, the two-pipe form, or the quack loopback.
 argument-hint: "[inprocess | pipe | quack] [what varies per row]"
 allowed-tools: Bash
 ---
 
 "Self-dispatch works. Every time. Agents never know how to use it." This skill is the how.
+
+## On this machine: dev already serves it — call `sd()`
+
+Dev runs quackapi in its own process. `sd(sql)` sends any SQL — SELECT, DDL, DML, several
+statements — through dev's own `/sql` and returns the rows as JSON. It nests, and it takes a
+column, so one query fans out per row. No server to start, no port or token to know.
+
+```sql
+SELECT q, sd(q) AS result
+FROM (VALUES ('SELECT 6 * 7 AS n'),
+             ('CREATE TEMP TABLE t AS SELECT 5 AS x; SELECT x * 2 AS n FROM t'),
+             ('SELECT sd(''SELECT 1 AS inner'') AS nested')) v(q);
+```
+
+Run that statement any of these ways — they are the same door:
+
+- the `dev` MCP's `sql` tool;
+- `curl -s -X POST localhost:9498/sql --data-urlencode 'sql=<SQL>'`;
+- `http_post_form('http://localhost:9498/sql', MAP {}, MAP {'sql': '<SQL>'})` from your own
+  `:memory:` DuckDB.
+
+Verified 2026-09-21 on live dev: all four rows above, through `/sql` and through the MCP.
+The forms below are for a DuckDB that is not dev.
 
 ## The wall, stated exactly (verified DuckDB 1.5.5, 2026-09-17)
 
