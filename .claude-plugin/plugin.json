@@ -1,7 +1,7 @@
 {
   "name": "duckstack",
   "description": "Personal fork of the DuckDB skills (quack/duckstack-targeted): read any data file, read and write PDFs, attach and query DuckDB databases, search DuckDB/DuckLake docs, search past session logs, and install/update DuckDB extensions.",
-  "version": "0.2.4-inframe.11",
+  "version": "0.2.4-inframe.12",
   "author": {
     "name": "Alok Subbarao",
     "url": "https://github.com/asubbarao"
