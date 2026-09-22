@@ -5,7 +5,7 @@ description: >
   table function (glob, ls, lsr, read_text, read_csv, read_blob, crawl, quack_query, query) needs
   a value that lives in a column ("does not support lateral join column parameters"), whenever
   work must fan out per row, or whenever an agent is about to reach for SET VARIABLE, a macro, a
-  loop, Python or a shell script to get around that wall. On dev: rows → statements → one array_agg of {row, response} → UNNEST,
+  loop, Python or a shell script to get around that wall. On dev: rows → statements → array_agg(http_post_form to /sql) → UNNEST,
   through the dev MCP `sql` tool or POST localhost:9498/sql. No macro. Other DuckDBs:
   quackapi in-process, the two-pipe form, or the quack loopback.
 argument-hint: "[inprocess | pipe | quack] [what varies per row]"
@@ -14,15 +14,14 @@ allowed-tools: Bash
 
 "Self-dispatch works. Every time. Agents never know how to use it." This skill is the how.
 
-## On this machine: dev serves `/sql` — the molecule is CTEs, no macro
+## On this machine: dev serves `/sql` — the molecule
 
-Dev runs quackapi in its own process; `POST /sql` runs any SQL. Self-dispatch is not a
-function you call per row. It is: a CTE of rows, a CTE that writes one statement per row
-(`replace()` on a template, or an array of tokens joined — never a `||` chain), one
-`array_agg` that fires every POST and carries each row next to its response, one `UNNEST`.
-Every intermediate column stays visible; pick the few you want at the end. One statement or
-ten thousand, same shape. No `VALUES`, no macro, no `SET VARIABLE`, no doubled quotes —
-`chr(39)` is the quote when one is needed.
+Dev runs quackapi in its own process; `POST /sql` runs any SQL. The molecule: a CTE of rows,
+a CTE that writes one statement per row (`replace()` on a template, or an array of tokens
+joined — never a `||` chain), `array_agg` of the `http_post_form` to self, `UNNEST` the array.
+The statement selects its own key so each response carries it. Every intermediate column stays
+visible; pick the few you want at the end. One statement or ten thousand, same shape.
+No `VALUES`, no macro, no `SET VARIABLE`, no `WITH ORDINALITY`, no doubled quotes — `chr(39)`.
 
 ```sql
 WITH tables AS (
@@ -34,27 +33,23 @@ WITH tables AS (
 ),
 statements AS (
   SELECT *,
-         'SELECT * FROM @TABLE_REF LIMIT 2' AS template,
-         replace(template, '@TABLE_REF', table_ref) AS statement
+         'SELECT @TABLE_REF_LITERAL AS table_ref, * FROM @TABLE_REF LIMIT 2' AS template,
+         replace(replace(template, '@TABLE_REF_LITERAL', chr(39) || table_ref || chr(39)), '@TABLE_REF', table_ref) AS statement
   FROM tables
 ),
-dispatched AS (
-  SELECT array_agg({row: statements, response: http_post_form(listen_url || '/sql', MAP {}, MAP {'sql': statement})}) AS calls
+fired AS (
+  SELECT array_agg(http_post_form(listen_url || '/sql', MAP {}, MAP {'sql': statement})) AS responses
   FROM statements, quackapi_servers()
-),
-responded AS (
-  SELECT unnest(call.row), call.response.status AS status, call.response.body AS body
-  FROM dispatched, UNNEST(calls) AS dispatched_calls(call)
 )
-SELECT table_ref, statement, status, json_extract_string(body, '$') AS rows_json
-FROM responded
+SELECT response.status AS status, json_extract_string(response.body, '$') AS rows_json
+FROM fired, UNNEST(responses) AS fired_responses(response)
 ```
 
 `quackapi_servers()` is the URL of the server the query runs in — nothing hardcoded.
 Submit the outer query through the `dev` MCP `sql` tool, `curl -X POST localhost:9498/sql
 --data-urlencode sql@file.sql`, or `quack_query(...)` from a `:memory:` DuckDB.
 
-Verified 2026-09-21 on live dev. Reference: `pgedge-rag/docs/techniques/self-dispatch-molecules.md`,
+Verified 2026-09-22 on live dev. Reference: `pgedge-rag/docs/techniques/self-dispatch-molecules.md`,
 `~/personal/self-dispatch/sql/`. The forms below are for a DuckDB that is not dev.
 
 ## The wall, stated exactly (verified DuckDB 1.5.5, 2026-09-17)
