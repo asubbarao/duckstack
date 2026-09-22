@@ -50,7 +50,7 @@ TO '/Users/aloksubbarao/.duck/agent_log/rows'
 - `query()` takes exactly one SELECT; a query that fails returns its error and writes nothing.
 
 No `dev` MCP attached? Same statement, same door, over HTTP:
-`curl -s -X POST localhost:9498/sql --data-urlencode sql@statement.sql`.
+`curl -s -X POST localhost:9495/sql --data-urlencode sql@statement.sql`.
 
 Read it back with the same tool:
 

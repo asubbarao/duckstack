@@ -6,7 +6,7 @@ description: >
   a value that lives in a column ("does not support lateral join column parameters"), whenever
   work must fan out per row, or whenever an agent is about to reach for SET VARIABLE, a macro, a
   loop, Python or a shell script to get around that wall. On dev: rows → statements → array_agg(http_post_form to /sql) → UNNEST,
-  through the dev MCP `sql` tool or POST localhost:9498/sql. No macro. Other DuckDBs:
+  through the dev MCP `sql` tool or POST localhost:9495/sql. No macro. Other DuckDBs:
   quackapi in-process, the two-pipe form, or the quack loopback.
 argument-hint: "[inprocess | pipe | quack] [what varies per row]"
 allowed-tools: Bash
@@ -46,7 +46,7 @@ FROM fired, UNNEST(responses) AS fired_responses(response)
 ```
 
 `quackapi_servers()` is the URL of the server the query runs in — nothing hardcoded.
-Submit the outer query through the `dev` MCP `sql` tool, `curl -X POST localhost:9498/sql
+Submit the outer query through the `dev` MCP `sql` tool, `curl -X POST localhost:9495/sql
 --data-urlencode sql@file.sql`, or `quack_query(...)` from a `:memory:` DuckDB.
 
 Verified 2026-09-22 on live dev. Reference: `pgedge-rag/docs/techniques/self-dispatch-molecules.md`,

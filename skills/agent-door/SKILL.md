@@ -2,7 +2,7 @@
 name: agent-door
 description: >
   How any agent reaches the dev DuckDB — the one always-on database on this machine. Three doors, one
-  database, no attach: the `dev` MCP (`query`, `sql` tools), POST localhost:9498/sql, or quack_query
+  database, no attach: the `dev` MCP (`query`, `sql` tools), POST localhost:9495/sql, or quack_query
   from your own `:memory:` DuckDB. Use before the first statement that touches dev, when a tool or port
   in your notes no longer answers, or when an agent without MCP needs to run SQL on dev.
 argument-hint: "[mcp | http | quack]"
@@ -19,17 +19,17 @@ inside that one process.
 |---|---|---|
 | `dev` MCP → `query` | tool call | one SELECT, at most 100 rows |
 | `dev` MCP → `sql` | tool call | anything — DDL, DML, `COPY`, several statements; last result, at most 100 rows |
-| HTTP `/sql` | `curl -s -X POST localhost:9498/sql --data-urlencode sql@file.sql` | anything, same as `sql`; JSON rows back |
+| HTTP `/sql` | `curl -s -X POST localhost:9495/sql --data-urlencode sql@file.sql` | anything, same as `sql`; JSON rows back |
 | quack | `quack_query('quack:localhost:9494', $q$<SQL>$q$, token := getenv('QUACK_TOKEN'))` from `duckdb :memory:` with `LOAD quack` | anything |
 
 Pick the first one your harness has. Claude Code has the `dev` MCP. Codex's MCP client cannot
 connect to duckdb_mcp until teaguesterling/duckdb_mcp#92 ships, so Codex uses HTTP `/sql` or quack.
 
-## The MCP is not a database
+## The MCP is dev
 
-`com.inframe.mcp` is a `:memory:` DuckDB (`~/.duck/mcp-setup.sql`) whose two tools forward to dev
-over quack: `query` → 9495, `sql` → 9494. It holds no tables. Anything created through it lands
-in dev.
+duckdb_mcp runs inside the dev process itself (`setup.sql`), on 9496. `query` runs `query($sql)`
+there; `sql` loops back through quack on 9494, which is what lets it run anything. There is no
+second DuckDB.
 
 ## `/sql` is quackapi inside dev
 

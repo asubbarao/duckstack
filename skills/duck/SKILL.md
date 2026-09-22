@@ -20,10 +20,9 @@ wrong here. This skill is the record label the other skills ship under.
 
 | Door | What | Token | Who |
 |---|---|---|---|
-| `dev` MCP (`query`, `sql` tools) | `:memory:` forwarder on `http://localhost:9496/mcp`; `query` → 9495, `sql` → 9494 | none, loopback | any agent with the MCP — `/duckstack:agent-door` |
-| `http://localhost:9498/sql` | quackapi route inside dev; runs any SQL | none, loopback | any agent with a shell; dev's own self-dispatch |
+| `dev` MCP (`query`, `sql` tools) | duckdb_mcp inside dev on `http://localhost:9496/mcp` | none, loopback | any agent with the MCP — `/duckstack:agent-door` |
+| `http://localhost:9495/sql` | quackapi route inside dev; runs any SQL | none, loopback | any agent with a shell; dev's own self-dispatch |
 | `quack:localhost:9494` | dev, read-write | `~/.duck/token` | `quack_query` from a `:memory:` client |
-| `quack:localhost:9495` | dev, one SELECT only | `~/.duck/token.ro` | the MCP `query` tool |
 | `quack:localhost:9497` + OTLP `:4318` | telemetry DuckDB | `~/.duck/telemetry/` | observability |
 
 `~/.duck/dev.duckdb` is held open by `com.inframe.quack` (launchd `KeepAlive`); `~/.duck/setup.sql`
@@ -98,7 +97,6 @@ What each path can and cannot do. The `dev.` rows need an ATTACH and so are unav
 | `SELECT … FROM dev.t` (one table) | needs ATTACH — put the table in the body instead |
 | `SELECT … FROM dev.a JOIN dev.b` client-side | **fails** "Multiple streaming scans" → join inside the body |
 | client-side `duckdb_tables()` for dev | **0 rows** — the remote catalog is not mirrored; ask inside the body |
-| `quack_query('…9495', $$CREATE …$$)` | "Authorization failed" — the parser gate |
 | `quack_query(…, $$SET …$$)` | "configuration has been locked" |
 | after a launchd restart | nothing to re-establish — `quack_query` holds no session |
 
