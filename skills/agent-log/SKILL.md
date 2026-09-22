@@ -75,7 +75,10 @@ SELECT agent, query_was_ran, markdown_notes, * EXCLUDE (agent, query_was_ran, ma
 FROM agent_log WHERE type = '<type>' ORDER BY row_id;
 ```
 
-Invalid SQL returns the error to you and writes no row — fix it and call again. Verified
+Invalid SQL returns the error to you and writes no row — fix it and call again. The server also
+refuses, before running anything, `count(*)`, `min`, `max`, `avg`, `regexp_*`, `LIKE`/`ILIKE`,
+`split_part` and `json_extract*` — anywhere in the query, subqueries included. The refusal names
+the function; rewrite and call again. Verified
 2026-09-21: 12 concurrent calls, 12 files, all results correct.
 
 **The local form below is only for programs** (Python, bash — the sidecar has no shellfs) or for
