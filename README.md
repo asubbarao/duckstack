@@ -1,178 +1,57 @@
 # duckstack
 
-Public fork of [duckdb/duckdb-skills](https://github.com/duckdb/duckdb-skills) retargeted at
-the **duckstack**: one persistent DuckDB per machine held locked by a `quack` server, agents as
-stateless `:memory:` clients, an MCP sidecar as the agent door, and this user's SQL process
-rules. The style guide is the user's own repos (`asubbarao/duckdb-ops-toolkit` conduit,
-`duckdb-chrome-bridge`, `claudes-console`), not upstream. Upstream stays mergeable —
-`git fetch upstream && git merge upstream/main`.
+Source-controlled DuckDB skill package for the planned **System Quack** runtime. It targets one
+Mac-owned DuckDB process and its three shared interfaces: Quack on `127.0.0.1:9494`, QuackAPI on
+`127.0.0.1:9495`, and user-wide native MCP `duckdb` on `127.0.0.1:9496/mcp`.
 
-| Skill | Status | What changed |
-|---|---|---|
-| `duck` | **new** | the record label: boundary, the three stateless client forms, the reference repos, SQL process rules, 1.5.5 gotchas |
-| `attach-db` | rewritten | pick the door (`dev` / `dev-ro` / `quack:host:port` / Superhuman doc / a file no server holds), probe it, list its catalog, hand back the two-line head — **no state file** |
-| `query` | rewritten | one statement via `-c`, anything longer is a single `.sql` artifact via `-f`; `--#` lines are the human's instructions; joins through `dev.query($$…$$)` |
-| `crawl` | **new** | crawler × webbed with all 13 `crawl()` parameters, the capability ladder, the shape catalog, and `--chrome` (duckdb-chrome-bridge) for SPAs/auth |
-| `agent-door` | **new** | what the 9496 MCP can reach (only `dev.query`), raw JSON-RPC, review of `mcp-setup.sql` against the duckdb_mcp docs |
-| `git-github` | **new** | `duck_tails` + `gh` extension + `gh` CLI, as tables |
-| `duck-tails` | **new** | the local repo half, corrected and verified: `git://` is a filesystem, so **every reader works over a commit — Parquet included** (66 hive-partitioned blobs, hive keys intact); the reference SQL's house style applied to git data |
-| `install-duckdb` | note added | client-side only; the server's extensions live in `setup.sql` |
-| `read-file`, `convert-file`, `s3-explore`, `spatial`, `duckdb-docs`, `read-memories` | upstream | untouched; they run sandboxed `duckdb :memory:` clients |
+This package does not deploy the runtime. Its endpoint, extension, and tool descriptions are the
+intended contract and must be discovered and verified against the live service after deployment.
+Never infer acceptance from these files, a port, or an installed cache.
 
-There is deliberately **no `state.sql`, no `.read`, no `-init`**: the persistent state is the
-server. Every statement carries `LOAD quack; ATTACH 'quack:localhost:9494' AS dev (TYPE quack,
-TOKEN getenv('QUACK_TOKEN'));` and the token is exported on the shell line
-(`QUACK_TOKEN="$(cat ~/.duck/token)"`). `-c`, `-f` and `-cmd` keep `~/.duckdbrc` (the resource
-floor); `-init` replaces it (verified: 15 threads / 38 GiB, no telemetry).
+## System Quack contract
 
-Install from the local clone:
+- The ordinary agent entry point is `duckdb.quack_query(sql)`: one complete body, defaulting to
+  writable `workspace`.
+- Native MCP discovery (`tools/list`) and live `duckdb_extensions()` / `duckdb_functions()` are
+  authoritative for tool schemas and SQL signatures.
+- Routine reads, workspace writes, and extension `INSTALL`/`LOAD` are authorized. `main` and
+  `public` changes require explicit task authorization; do not ask again within that authorized
+  work.
+- A connection failure is a failure of the selected service, not authorization to start a
+  sidecar, attach a scratch database, recreate startup/telemetry state, or substitute an endpoint.
+- ShellFS needs an explicit bounded pipeline. cronjob needs explicit scheduled SQL. Unknown
+  write outcomes are inspected, never automatically replayed.
 
-```
-/plugin marketplace add ~/duckdb-skills
-/plugin install duckstack@duckstack
-```
+## Catalog
 
-Codex reads the same manifest: `codex plugin marketplace add ~/duckdb-skills && codex plugin add duckstack@duckstack`.
-Both CLIs cache by version: after editing, `claude plugin uninstall duckstack@duckstack && claude plugin install duckstack@duckstack`
-and `codex plugin add duckstack@duckstack` again, or bump the version.
+| Skill | Role |
+|---|---|
+| `duck` | System Quack boundary, discovery, extension, ShellFS, and cronjob rules |
+| `agent-door` | native `duckdb` MCP discovery and planned 14-tool contract |
+| `query` | complete workspace SQL bodies or explicitly selected local files |
+| `quack` | native tool use and explicit Quack-protocol orchestration |
+| `attach-db` | explicitly selected non-System-Quack files, URIs, and document databases |
+| `self-dispatch` | relational fan-out through explicit QuackAPI, ShellFS, or Quack loops |
+| `crawl`, `read-file`, `convert-file`, `s3-explore`, `spatial` | source-specific data access |
+| `ducklake`, `markdown`, `yaml`, `parser_tools`, `pdf` | extension-specific SQL workflows |
+| `duck-tails`, `git-github`, `duck-hunt` | repository, GitHub, and CI data as relations |
+| `install-duckdb` | native MCP extension installation/loading and verification |
+| `dispatch-claude` | explicit-only Codex override for local Claude CLI delegation |
 
----
+## Source package refresh
 
-# duckdb-skills (upstream README — its `state.sql` / `-init` mechanism is NOT used in this fork)
-
-A [Claude Code](https://claude.ai/code) plugin that adds DuckDB-powered skills for data exploration and session memory.
-
-## Installation
-
-### From the Discover tab (coming soon)
-
-We are working on submitting this plugin to the official Anthropic marketplace. Once listed, it will appear in the **Discover** tab when you run `/plugin` inside Claude Code.
-
-### From GitHub (available now)
-
-Add the repository as a plugin source and install:
-
-```
-/plugin marketplace add duckdb/duckdb-skills
-```
-```
-/plugin install duckdb-skills@duckdb-skills
-```
-
-This registers the GitHub repo as a marketplace and installs the plugin. Skills will be available as `/duckstack:<skill-name>` in all future sessions.
-
-### Updating
-
-To pull the latest version, update the marketplace first and then the plugin:
-
-```
-/plugin marketplace update duckdb-skills
-/plugin update duckdb-skills@duckdb-skills
-```
-
-## Skills
-
-### `attach-db`
-Attach a DuckDB database file for interactive querying. Explores the schema (tables, columns, row counts) and writes a SQL state file so all other skills can restore the session automatically. You can choose to store state in the project directory (`.duckdb-skills/state.sql`) or in your home directory (`~/.duckdb-skills/<project>/state.sql`).
-
-```
-/duckstack:attach-db my_analytics.duckdb
-```
-
-Supports multiple databases — running `attach-db` again can append to the existing state file.
-
-### `query`
-Run SQL queries against attached databases or ad-hoc against files. Accepts raw SQL or natural language questions. Uses DuckDB's Friendly SQL dialect. Automatically picks up session state from `attach-db`.
-
-```
-/duckstack:query FROM sales LIMIT 10
-/duckstack:query "what are the top 5 customers by revenue?"
-/duckstack:query FROM 'exports.csv' WHERE amount > 100
-```
-
-### `read-file`
-Read and explore any data file — CSV, JSON, Parquet, Avro, Excel, spatial, SQLite, Jupyter notebooks, and more — locally or from remote storage (S3, GCS, Azure, HTTPS). Auto-detects the format by file extension using a built-in `read_any` table macro. Suggests `query` for further exploration.
-
-```
-/duckstack:read-file variants.parquet what columns does it have?
-/duckstack:read-file s3://my-bucket/data.parquet describe the schema
-/duckstack:read-file https://example.com/data.csv how many rows?
-```
-
-### `duckdb-docs`
-Search DuckDB and DuckLake documentation and blog posts using full-text search against the hosted search indexes. No local setup required — queries run over HTTPS by default, with an option to cache the index locally for faster offline searches.
-
-```
-/duckstack:duckdb-docs window functions
-/duckstack:duckdb-docs "how do I read a CSV with custom delimiters?"
-```
-
-### `read-memories`
-Search past Claude Code session logs to recover context from previous conversations — decisions made, patterns established, open TODOs. Offloads large result sets to a temporary DuckDB file for interactive drill-down.
-
-```
-/duckstack:read-memories duckdb --here
-```
-
-### `install-duckdb`
-Install or update DuckDB extensions. Supports `name@repo` syntax for community extensions and a `--update` flag that also checks whether your DuckDB CLI is on the latest stable version.
-
-```
-/duckstack:install-duckdb spatial httpfs
-/duckstack:install-duckdb gcs@community
-/duckstack:install-duckdb --update
-```
-
-## Session state
-
-All skills share a single `state.sql` file per project — a plain SQL file containing ATTACH/USE/LOAD statements, secrets, and macros. When state is first needed, you'll be asked where to store it:
-
-1. **In the project directory** (`.duckdb-skills/state.sql`) — colocated with the project, optionally gitignored
-2. **In your home directory** (`~/.duckdb-skills/<project>/state.sql`) — keeps the repo clean
-
-The file is append-only and idempotent. Any skill restores the session via `duckdb -init state.sql`.
-
-## Local development
-
-To test skills locally from a clone of this repo:
+After a source release/version update, refresh consumers rather than editing installed cache files:
 
 ```bash
-# 1. Clone the repo
-git clone https://github.com/duckdb/duckdb-skills.git
-cd duckdb-skills
-
-# 2. Launch Claude Code with the local plugin directory
-claude --plugin-dir .
+claude plugin marketplace update duckstack
+claude plugin update duckstack@duckstack
+codex plugin marketplace upgrade
+codex plugin remove duckstack@duckstack
+codex plugin add duckstack@duckstack
 ```
 
-This loads the plugin from disk instead of the marketplace, so any edits to `skills/*/SKILL.md` take effect immediately — just start a new conversation (or re-run the slash command) to pick up changes.
-
-You can test individual skills directly:
-
-```
-/duckstack:read-file some_local_file.parquet
-/duckstack:duckdb-docs pivot unpivot
-/duckstack:query SELECT 42
-```
-
-**Prerequisites:** DuckDB CLI must be installed. If it isn't, the skills will offer to install it via `/duckstack:install-duckdb`.
-
-## How the skills work together
-
-Skills reference each other where it makes sense:
-
-- `read-file` suggests `query` for follow-up exploration and `attach-db` for persisting large files
-- `query`, `read-file`, and `read-memories` all use `duckdb-docs` to troubleshoot DuckDB errors automatically
-- All skills share the same `state.sql` — secrets and macros set up by `read-file` are reused by `query`, and databases attached by `attach-db` are available everywhere
-
-## Platform support
-
-These skills have been tested on **macOS** and **Linux**. Windows is not yet fully supported — some shell commands and path handling may not work as expected. We plan to improve Windows compatibility in a future release.
-
-## Reporting issues & suggestions
-
-Found a bug or have an idea for improvement? Open an issue at:
-
-**https://github.com/duckdb/duckdb-skills/issues**
-
-For DuckDB-specific bugs (extension loading, SQL errors), please include the DuckDB version (`duckdb --version`) and the full error message.
+If either client reports an unchanged cached version, remove and install the package again through
+that client's normal plugin commands. Do not modify user configuration or installed plugin caches
+from this source repository. Point the user-wide MCP registration itself at
+`http://127.0.0.1:9496/mcp` under the name `duckdb`; this repository only carries the matching
+project manifest.

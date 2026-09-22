@@ -8,14 +8,15 @@ description: >
 
 # Markdown
 
-Read `/duckstack:duck` first. The selected dev server already has `markdown` and `webbed`
-loaded. Do not `LOAD` or `INSTALL` through dev. Run one read-only statement inside
-`quack_query`; keep Markdown as `MARKDOWN`/`md` and rendered markup as `HTML`, not strings to
-search with `LIKE` or `regexp_*`.
+Read `/duckstack:duck` first. Use native `duckdb.quack_query(sql)`, inspect current extensions
+and function signatures, and install/load missing `markdown` or `webbed` through MCP. Keep
+Markdown as `MARKDOWN`/`md` and rendered markup as `HTML`, not strings to search with `LIKE` or
+`regexp_*`.
 
 ## Verified function surface
 
-Verified against dev through `quack_query` on 2026-09-19 by selecting `function_name`,
+Historical signatures below were captured on 2026-09-19. Re-inspect through native `quack_query`
+by selecting `function_name`,
 `function_type`, `parameters`, `parameter_types`, and `varargs` from `duckdb_functions()`.
 `col0`, `col1`, and so on are the real positional names reported by the engine.
 

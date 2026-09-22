@@ -79,6 +79,24 @@ Codex models, ranked by the owner against the Claude models — pick by the diff
 A named defect with a reproduction goes to luna. Sol reviews the diff luna or terra produces before
 anything is committed. See `/codex` for the exact `-m` identifiers and the sandbox flags.
 
+### Terminal watchers
+
+The main agent must not spend its terminal turn polling a long-running build, test,
+download, or delegated worker. Launch a short-lived read-only watcher instead:
+
+- Prefer Luna or Haiku when available. An offline or private fallback may use a local
+  Ollama coding model whose total memory requirement is no more than 12 GB.
+- Give the watcher a continuation handle and a bounded deadline. A watcher with no
+  verifiable handle is a failed launch.
+- The watcher reports exactly one terminal state for each watched unit: passed,
+  failed, cancelled, or timed out. Include artifact paths and only the useful log tail.
+- The watcher exits immediately after its terminal report. It never remains idle.
+- A watcher is read-only by default. It may edit only when dispatched separately in
+  an explicit, bounded compiler-repair unit with scoped files, limited attempts, and
+  the exact failing check to rerun before exit.
+
+The main agent keeps reasoning and doing independent work while the watcher runs.
+
 ## 3. House rules every brief carries, at full strength
 
 State these as the end state, never as "do not *add* one" — softening a rule into a
@@ -99,8 +117,9 @@ property of the diff blesses every existing violation.
   where genuinely needed, run through `uv` (`uvx …`), never a hand-built venv.
 - **Delete nothing outside your own worktree** — list it for the main agent.
 - Nothing pushed, no PR, nothing another human can see, without his approval.
-- Never `-init` against DuckDB; it replaces `~/.duckdbrc`. Never `SET`/`INSTALL`/
-  `LOAD` against the dev quack.
+- For System Quack, inspect extensions through native MCP and `INSTALL`/`LOAD` missing ones in a
+  complete `quack_query` body when the task needs them. Do not recreate a sidecar, startup, or
+  telemetry process to obtain a capability.
 - Crude-oil repos are material to read, never services to depend on.
 
 ## 4. Evidence is false-first

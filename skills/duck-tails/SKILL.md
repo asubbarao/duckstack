@@ -272,7 +272,7 @@ select by name and the string surgery disappears. Hive keys under `git://` arriv
   statement chain (§3). Producing a commit is `git`'s job, outside the query.
 - **No remotes.** Local object store only — a ref must already be fetched. Remote GitHub is
   `/duckstack:git-github` (`gh` extension for public, `gh` CLI for private).
-- **Not on the dev quack.** `duck_tails` is installed for the local CLI
-  (`~/.duckdb/extensions/v1.5.5/osx_arm64/duck_tails.duckdb_extension`), **not** in the server's
-  `setup.sql`. Run it in the `:memory:` client; to persist a result, push it through
-  a `quack_query` body per `/duckstack:quack`.
+- **Selected process only.** Inspect `duckdb_extensions()` and `duckdb_functions()` in the
+  process selected for this task. For System Quack, install/load `duck_tails` through native MCP
+  when needed, then persist a result with a complete `duckdb.quack_query(sql)` body. Do not infer
+  service availability from a local CLI extension cache.

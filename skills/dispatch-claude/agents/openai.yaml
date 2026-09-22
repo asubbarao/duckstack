@@ -1,0 +1,6 @@
+interface:
+  display_name: "Dispatch Claude"
+  short_description: "Explicit Codex-only Claude delegation"
+  default_prompt: "Use $dispatch-claude to explicitly enable temporary Claude subagent routing."
+policy:
+  allow_implicit_invocation: false

@@ -1,90 +1,47 @@
 ---
 name: install-duckdb
 description: >
-  Install or update DuckDB extensions. Each argument is either a plain
-  extension name (installs from core) or name@repo (e.g. magic@community).
-  Pass --update to update extensions instead of installing.
-argument-hint: "[--update] [ext1 ext2@repo ext3 ...]"
-allowed-tools: Bash
+  Inspect, install, load, and verify DuckDB extensions through native System Quack MCP. Use for
+  a missing extension or an explicit extension update; do not create a local server substitute.
+argument-hint: "[--update] [extension | extension@repository ...]"
 ---
 
-Arguments: `$@`
+Read `/duckstack:duck` first. The planned native MCP tool is `duckdb.quack_query(sql)`, whose
+complete SQL body defaults to `workspace`. This source package is not proof the runtime is live;
+discover the native tools and inspect the running service before changing it.
 
-> **duckstack note.** This installs into the *local client's* extension directory
-> (`~/.duckdb/extensions`). The dev server (`~/.duck/dev.duckdb`, `quack:localhost:9494`) runs
-> with `autoinstall_known_extensions = false` and `lock_configuration = true`; nothing installed
-> here is visible there, and `INSTALL` on the server is refused. An extension the
-> server needs is added to `~/inframe/internal/duckdb/setup.sql` (pre-staged in
-> `~/.duck/extensions`) and the launchd job is restarted. See `/duckstack:duck`.
+## Inspect first
 
-Each extension argument has the form `name` or `name@repo`.
-- `name` → `INSTALL name;`
-- `name@repo` → `INSTALL name FROM repo;`
+Call native `tools/list`, then use `quack_query` to inspect the real extension catalog and the
+function fields available in this process:
 
-## Step 1 — Locate DuckDB
-
-```bash
-DUCKDB=$(command -v duckdb)
+```sql
+DESCRIBE SELECT * FROM duckdb_extensions();
+FROM duckdb_extensions() ORDER BY extension_name;
+DESCRIBE SELECT * FROM duckdb_functions();
 ```
 
-If not found, tell the user:
+For each requested `name` or `name@repository`, query its existing row. Do not use a remembered
+cache location or a local CLI as evidence about the service.
 
-> **DuckDB is not installed.** Install it first with one of:
-> - macOS:   `brew install duckdb`
-> - Linux:   `curl -fsSL https://install.duckdb.org | sh`
-> - Windows: `winget install DuckDB.cli`
->
-> Then re-run `/duckstack:install-duckdb`.
+## Install, load, verify
 
-Stop if DuckDB is not found.
+Routine installation/loading is authorized. Use a complete native body, prefer named dollar
+delimiters for nested SQL, and report both operations because they affect the service:
 
-## Step 2 — Check for --update flag
-
-If `--update` is present in `$@`, remove it from the argument list and set mode to **update**.
-Otherwise mode is **install**.
-
-## Step 3 — Build and run statements
-
-**Install mode:**
-
-Parse each remaining argument:
-- If it contains `@`, split on `@` → `INSTALL <name> FROM <repo>;`
-- Otherwise → `INSTALL <name>;`
-
-Run all in a single DuckDB call:
-
-```bash
-"$DUCKDB" :memory: -c "INSTALL <ext1>; INSTALL <ext2> FROM <repo2>; ..."
+```sql
+INSTALL <name> FROM <repository>;
+LOAD <name>;
+FROM duckdb_extensions() WHERE extension_name = '<name>';
+FROM duckdb_functions() WHERE extension_name = '<name>' ORDER BY function_name;
 ```
 
-**Update mode:**
+For a core extension omit `FROM <repository>`. Inspect the returned function signature fields,
+then make one bounded working invocation using the actual parameter names/defaults. A `LOAD` is
+process-wide; an extension update or force install may need separately authorized runtime restart
+before a loaded binary can change. Never recreate launchd, startup SQL, a sidecar, or telemetry to
+make an extension work.
 
-First, check if the DuckDB CLI itself is up to date:
-
-```bash
-CURRENT=$(duckdb --version | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
-LATEST=$(curl -fsSL https://duckdb.org/data/latest_stable_version.txt)
-```
-
-- If `CURRENT` == `LATEST` → report DuckDB CLI is up to date.
-- If `CURRENT` != `LATEST` → ask the user:
-  > **DuckDB CLI is outdated** (installed: `CURRENT`, latest: `LATEST`). Upgrade now?
-
-  If the user agrees, detect the platform and run the appropriate upgrade command:
-  - macOS (`brew` available): `brew upgrade duckdb`
-  - Linux: `curl -fsSL https://install.duckdb.org | sh`
-  - Windows: `winget upgrade DuckDB.cli`
-
-Then update extensions:
-
-- No extension names → update all: `UPDATE EXTENSIONS;`
-- With extension names → update in a single call (ignore `@repo`):
-  `UPDATE EXTENSIONS (<name1>, <name2>, ...);`
-
-```bash
-"$DUCKDB" :memory: -c "UPDATE EXTENSIONS;"
-# or
-"$DUCKDB" :memory: -c "UPDATE EXTENSIONS (<ext1>, <ext2>, ...);"
-```
-
-Report success or failure after the call completes.
+`--update` requires an explicit requested extension/update scope. Inspect installed metadata
+before and after, preserve the exact error on failure, and do not claim an update/restart happened
+unless it was actually verified in the running service.

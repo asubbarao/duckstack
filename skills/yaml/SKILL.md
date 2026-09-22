@@ -8,23 +8,17 @@ description: >
 
 # YAML
 
-Read `/duckstack:duck` first. On this machine the extension is already loaded on the selected
-dev server; do not `LOAD`, `INSTALL`, or change YAML settings through dev. Run one read-only
-statement inside `quack_query`:
-
-```bash
-QUACK_TOKEN="$(cat ~/.duck/token)" duckdb :memory: -c "
-LOAD quack;
-FROM quack_query('quack:localhost:9494', \$\$<one SELECT>\$\$,
-                 token := getenv('QUACK_TOKEN'));"
-```
+Read `/duckstack:duck` first. Use native `duckdb.quack_query(sql)` for System Quack and inspect
+`duckdb_extensions()` plus `duckdb_functions()` before relying on YAML functions. If missing,
+install/load `yaml` through MCP, re-inspect the signature, and make a bounded invocation.
 
 Use the YAML reader or `::YAML` type before extracting fields. Do not use `regexp_*`, string
 surgery, or `LIKE` against YAML text.
 
 ## Verified function surface
 
-Verified against dev through `quack_query` on 2026-09-19 with:
+Historical signatures below are reference material, not a runtime contract. Re-inspect through
+native `quack_query` before use with:
 
 ```sql
 SELECT function_name, function_type, parameters, parameter_types, varargs
@@ -85,7 +79,7 @@ option explicitly when its value matters.
 
 `yaml_agg(col0 ANY)` is an aggregate, not a scalar or table function. The `yaml_set_*`
 functions mutate connection settings; list them for completeness but do not call them on the
-shared dev server.
+shared System Quack service.
 
 ## Worked example — remote `description.yml`
 
@@ -131,4 +125,3 @@ The starting claim is correct: `read_yaml('<url>')` reads this URL directly and 
   report `maximum_file_size` and `strip_document_suffixes`. Trust the live catalog.
 - Schema inference is source-dependent. Keep the raw relation, run `DESCRIBE` at `LIMIT 1`, and
   only then select nested fields by name.
-

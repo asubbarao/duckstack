@@ -8,13 +8,15 @@ description: >
 
 # Parser tools
 
-Read `/duckstack:duck` first. The selected dev server has `parser_tools` available. Keep this
-as analysis of SQL text: `SELECT`s only, no execution of the parsed statements, no `regexp_*`,
-and no keyword `LIKE` scan pretending to be a parser.
+Read `/duckstack:duck` first. Discover the native tool and inspect the current extension/function
+surface through `duckdb.quack_query(sql)`; install/load `parser_tools` through MCP if missing.
+Keep this as analysis of SQL text: `SELECT`s only, no execution of the parsed statements, no
+`regexp_*`, and no keyword `LIKE` scan pretending to be a parser.
 
 ## Verified function surface
 
-Verified against dev through `quack_query` on 2026-09-19 with:
+Historical signatures below were captured on 2026-09-19. Re-inspect through native `quack_query`
+with:
 
 ```sql
 SELECT function_name, function_type, parameters, parameter_types, varargs
@@ -118,4 +120,3 @@ The starting claims are correct: `is_parsable(text)` distinguishes the two SQL b
   functions exist. It is a parser gate, not an execution guarantee.
 - Parse the text inside a fenced code block, not the backticks and language tag. Preserve the
   original block beside the parsed result as evidence.
-
