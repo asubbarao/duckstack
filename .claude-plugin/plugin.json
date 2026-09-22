@@ -27,7 +27,6 @@
     "data-exploration",
     "session-logs",
     "query",
-    "sql",
-    "attach-db"
+    "sql"
   ]
 }
