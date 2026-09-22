@@ -76,8 +76,8 @@ FROM agent_log WHERE type = '<type>' ORDER BY row_id;
 ```
 
 Invalid SQL returns the error to you and writes no row — fix it and call again. The server also
-refuses, before running anything, `count(*)`, `min`, `max`, `avg`, `regexp_*`, `LIKE`/`ILIKE`,
-`split_part` and `json_extract*` — anywhere in the query, subqueries included. The refusal names
+refuses, before running anything, `count(*)`, `min`, `max`, `avg`, `LIKE`/`ILIKE`, `json_extract*` and every
+`regexp_*` except `regexp_replace` (`split_part` and `regexp_replace` are allowed) — anywhere in the query, subqueries included. The refusal names
 the function; rewrite and call again. Verified
 2026-09-21: 12 concurrent calls, 12 files, all results correct.
 
