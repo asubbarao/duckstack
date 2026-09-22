@@ -6,7 +6,7 @@ description: >
   from your own `:memory:` DuckDB. Use before the first statement that touches dev, when a tool or port
   in your notes no longer answers, or when an agent without MCP needs to run SQL on dev.
 argument-hint: "[mcp | http | quack]"
-allowed-tools: Bash, mcp__dev__query, mcp__dev__sql
+allowed-tools: Bash, mcp__dev__query, mcp__dev__sql, mcp__dev__stream_search, mcp__dev__stream_session, mcp__dev__user_messages, mcp__dev__self_dispatch, mcp__dev__ext_docs
 ---
 
 # agent-door
@@ -20,6 +20,9 @@ inside that one process.
 | `dev` MCP → `query` | tool call | one SELECT, at most 100 rows |
 | `dev` MCP → `sql` | tool call | anything — DDL, DML, `COPY`, several statements; last result, at most 100 rows |
 | HTTP `/sql` | `curl -s -X POST localhost:9495/sql --data-urlencode sql@file.sql` | anything, same as `sql`; JSON rows back |
+| `dev` MCP → `stream_search`, `stream_session`, `user_messages` | tool call | the agent stream — `/duckstack:agent-stream` |
+| `dev` MCP → `self_dispatch` | tool call | fan a column of statements out through `/sql` — `/duckstack:self-dispatch` |
+| `dev` MCP → `ext_docs` | tool call | an extension's README and page — `/duckstack:ext-catalog` |
 | quack | `quack_query('quack:localhost:9494', $q$<SQL>$q$, token := getenv('QUACK_TOKEN'))` from `duckdb :memory:` with `LOAD quack` | anything |
 
 Pick the first one your harness has. Claude Code has the `dev` MCP. Codex's MCP client cannot

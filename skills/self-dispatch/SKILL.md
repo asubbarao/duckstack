@@ -16,6 +16,10 @@ allowed-tools: Bash
 
 ## On this machine: dev serves `/sql` — the molecule
 
+Fastest: the `dev` MCP tool `self_dispatch(rows_sql)` — give it a SELECT with a column named
+`statement`; it posts every statement to dev's `/sql` in one `array_agg` and returns one row
+per statement. Write the molecule yourself (below) when you need the results joined back.
+
 Dev runs quackapi in its own process; `POST /sql` runs any SQL. The molecule: a CTE of rows,
 a CTE that writes one statement per row (`replace()` on a template, or an array of tokens
 joined — never a `||` chain), `array_agg` of the `http_post_form` to self, `UNNEST` the array.
