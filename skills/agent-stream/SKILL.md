@@ -13,14 +13,14 @@ allowed-tools: Bash, mcp__dev__stream_search, mcp__dev__stream_session, mcp__dev
 # agent-stream
 
 Every transcript on this machine is read by `agent_data`'s `read_conversations()` into one table
-on dev, `agent.stream`, and indexed for BM25. A dev cron re-derives it every 5 minutes from the
+on dev, `agent.stream`, and indexed for BM25 in ordinary tables (`agent.bm25_*`). A dev cron re-derives it every 5 minutes from the
 JSONL files (`~/.duck/agent_stream/agent_stream.sql`), so it is never more than 5 minutes behind.
 
 ## The three calls (the `dev` MCP)
 
 | tool | argument | gives |
 |---|---|---|
-| `stream_search` | `q` — search words | the 50 best-matching messages, any role, with `session_id` |
+| `stream_search` | `q` — search words | one row per matching session, ranked by its best message, with those messages |
 | `stream_session` | `session_id` | that conversation hour by hour, in order |
 | `user_messages` | `hours` | what the user typed in the last N hours, per session per hour |
 
@@ -48,19 +48,25 @@ Also on dev: `agent.stream_hour` (a session's messages per hour, in order), `age
 
 BM25 directly:
 
-```sql
-SELECT s.session_id, s.ts, s.message_role, left(s.message_content, 300) AS snippet, h.score
-FROM (SELECT id, fts_agent_stream.match_bm25(id, 'duckdb checkpoint crash') AS score FROM agent.stream) AS h
-JOIN agent.stream AS s USING (id)
-WHERE h.score IS NOT NULL
-ORDER BY h.score DESC LIMIT 20;
-```
+The query `stream_search` runs is `~/.duck/agent_stream/agent_stream_search.sql`: the search words
+are tokenized exactly as the messages were (fts's own `stem()` and stopwords), then BM25 in the fts
+extension's form (k1 = 1.2, b = 0.75) scores each message over `agent.bm25_posting` /
+`agent.bm25_length`, and a session ranks by its best message (MaxP). On 224 known-answer probes it
+scores MRR 0.491 / 0.499 / 0.313 (title / whole-chat / moment) against 0.416 / 0.385 / 0.272 for
+hour documents. Copy it and change the one literal in its `asked` CTE to run it by hand.
+
+## Never build an FTS index on dev
+
+BM25 here is ordinary tables — `agent.bm25_posting` (term, tf per message) and `agent.bm25_length` —
+kept by the 5-minute cron with inserts and deletes. Do not run `PRAGMA create_fts_index` or
+`drop_fts_index` against dev: an index drop left in the write-ahead log does not replay on DuckDB
+1.5.5, and dev then fails to start (2026-09-22). Search with `stream_search` or the tables.
 
 ## Without the MCP
 
 Same SQL, `curl -s -X POST localhost:9495/sql --data-urlencode sql@query.sql` (see
 `/duckstack:agent-door`).
 
-Verified 2026-09-22: `stream_search` for "force checkpoint fts crash" returned this session's
-tool calls from minutes earlier; `user_messages` and `stream_session` returned rows; the index
-survives a dev restart.
+Verified 2026-09-22: a word typed at 15:11 had no postings, then 4 after the 15:15 run, and
+`stream_search` found it after a dev restart; every message in agent.stream has a length row and
+its term counts sum to it; `user_messages` and `stream_session` return rows.
