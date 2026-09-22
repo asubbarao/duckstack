@@ -20,9 +20,10 @@ wrong here. This skill is the record label the other skills ship under.
 
 | Door | What | Token | Who |
 |---|---|---|---|
-| `quack:localhost:9494` | dev, read-write | `~/.duck/token` | humans and the main agent |
-| `quack:localhost:9495` | dev, read-only, gated | `~/.duck/token.ro` | agents; `dev_gate` refuses anything the parser does not see as exactly one SELECT |
-| `http://localhost:9496/mcp` | the MCP sidecar (`dev` in Claude/Codex MCP config) | none, loopback | agents that only have MCP — `/duckstack:agent-door` |
+| `dev` MCP (`query`, `sql` tools) | `:memory:` forwarder on `http://localhost:9496/mcp`; `query` → 9495, `sql` → 9494 | none, loopback | any agent with the MCP — `/duckstack:agent-door` |
+| `http://localhost:9498/sql` | quackapi route inside dev; runs any SQL | none, loopback | any agent with a shell; dev's own self-dispatch |
+| `quack:localhost:9494` | dev, read-write | `~/.duck/token` | `quack_query` from a `:memory:` client |
+| `quack:localhost:9495` | dev, one SELECT only | `~/.duck/token.ro` | the MCP `query` tool |
 | `quack:localhost:9497` + OTLP `:4318` | telemetry DuckDB | `~/.duck/telemetry/` | observability |
 
 `~/.duck/dev.duckdb` is held open by `com.inframe.quack` (launchd `KeepAlive`); `~/.duck/setup.sql`
@@ -214,10 +215,9 @@ Verbatim source: `~/.duck/catalog/2026-09-15.md`. Breaking one is a procedural f
 
 | Want | Skill |
 |---|---|
-| pick a door, probe it, list what is on it | `/duckstack:attach-db` |
 | run SQL — one statement, or a `.sql` artifact | `/duckstack:query` |
 | pages as tables: crawler × webbed, or logged-in Chrome for SPAs/auth | `/duckstack:crawl` |
-| what the MCP sidecar can reach, raw JSON-RPC | `/duckstack:agent-door` |
+| which door to use — MCP, `/sql`, quack | `/duckstack:agent-door` |
 | a table function needs a column; per-row fan-out; "lateral join column parameters" | `/duckstack:self-dispatch` |
 | git history / GitHub as tables (`duck_tails`, `gh`) | `/duckstack:git-github` |
 | a data file locally or over HTTP/S3 | `/duckstack:read-file` |

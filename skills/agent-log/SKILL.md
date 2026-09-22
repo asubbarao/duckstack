@@ -1,14 +1,14 @@
 ---
 name: agent-log
 description: >
-  Log what you did as parquet, in one call (the dev MCP `agent_log` tool), so a human can read every agent's work in SQL.
+  Log what you did as parquet, in one call (a COPY through the dev MCP `sql` tool), so a human can read every agent's work in SQL.
   Use whenever you run a query or a program worth keeping, and whenever you dispatch subagents —
   they call this themselves, you do not collect their output. One call per artifact: the same
   token is stored as text and executed, so the result cannot be invented; a crash is a row, not a
   lost turn. `FILENAME_PATTERN '{uuid}'` makes n writers into one directory safe with no lock.
   Works the same for SQL, Python, .bat or any other language.
 argument-hint: "<agent-name> [sql | code] [dir]"
-allowed-tools: Bash, mcp__dev__agent_log, mcp__dev__query
+allowed-tools: Bash, mcp__dev__sql
 ---
 
 # agent-log
@@ -29,60 +29,40 @@ answer instead, the audit below catches it.
 `'<X>'` when the replacement must be a quoted literal, bare `<X>` when it is an identifier or a
 statement — the same convention as `'<DATEID-3>'` and `<TABLE:tablename>`.
 
-## Primary: the `agent_log` MCP tool (the `dev` server, 9496)
+## Primary: one `sql` call on the `dev` MCP
 
-For SQL, call the tool. The server binds `sql` once and uses it twice — stored as
-`query_was_ran`, executed by `query()` — so the rule above holds with **nothing to escape**:
-every argument is a bound value, quotes and newlines included.
+The `dev` MCP's `sql` tool runs any SQL on dev, `COPY` included. Dollar-quote the query and the
+notes (`$query$…$query$`, `$notes$…$notes$`) and **nothing is escaped** — quotes, newlines and
+`$HOME` go through as written. The same `$query$…$query$` token is stored and executed.
 
-| argument | required | what |
-|---|---|---|
-| `agent` | yes | your model name: `opus`, `terra`, `luna`, `sol`, … — nothing derives it |
-| `type` | yes | the topic; becomes the partition `type=<type>/` |
-| `sql` | yes | the query, verbatim; one row or many, its columns land typed |
-| `notes` | no | markdown |
-| `session_id` | no | your `CLAUDE_CODE_SESSION_ID` / `CODEX_THREAD_ID`; the server cannot read your env |
-
-**Two ways to make the same call, to the same tool on the same server.** If your harness has
-attached `dev` (`mcp__dev__agent_log`), call that. If it has not — a different agent system, a
-client that dropped the server, a subagent with no MCP config — post the call over HTTP. Any agent
-with a shell can; the quoted heredocs (`<<'SQL'`) take the text verbatim and `jq --arg` builds the
-JSON, so **nothing is escaped**:
-
-```bash
-jq -n --arg agent '<AGENT>' --arg type '<type>' --arg session_id "${CODEX_THREAD_ID:-$CLAUDE_CODE_SESSION_ID}" \
-  --arg sql "$(cat <<'SQL'
-<SQL>
-SQL
-)" --arg notes "$(cat <<'MD'
-<NOTES>
-MD
-)" '{jsonrpc:"2.0", id:1, method:"tools/call",
-     params:{name:"agent_log", arguments:{$agent, $type, $session_id, $sql, $notes}}}' \
-| curl -s http://localhost:9496/mcp -H 'Content-Type: application/json' \
-       -H 'Accept: application/json, text/event-stream' -d @- | jq -c '.error // .result'
+```sql
+COPY (SELECT uuidv7() AS row_id, '<type>' AS type, '<AGENT>' AS agent, '<SESSION_ID>' AS session_id,
+             $query$<SQL>$query$ AS query_was_ran, r.*,
+             $notes$<NOTES>$notes$ AS markdown_notes, now() AS ts
+      FROM query($query$<SQL>$query$) r)
+TO '/Users/aloksubbarao/.duck/agent_log/rows'
+   (FORMAT parquet, PARTITION_BY (type), OVERWRITE_OR_IGNORE true, FILENAME_PATTERN '{uuid}');
 ```
 
-Verified 2026-09-21 with SQL and notes carrying `'`, `"`, `` ` ``, `$HOME` and `\` — all stored
-verbatim, result correct.
+- `<AGENT>` is your model name: `opus`, `terra`, `luna`, `sol`, … Nothing derives it.
+- `<SESSION_ID>` is your `CLAUDE_CODE_SESSION_ID` or `CODEX_THREAD_ID`. Pass it as a literal —
+  `getenv()` on dev reads the server's environment, not yours.
+- `query()` takes exactly one SELECT; a query that fails returns its error and writes nothing.
 
-Rows land in `~/.duck/agent_log/rows/type=<type>/<uuid>.parquet`. Read them back with the
-`query` tool (or the same curl with `"name":"query", "arguments":{"sql": …}`) — it refuses
-`read_parquet`, so go through the view:
+No `dev` MCP attached? Same statement, same door, over HTTP:
+`curl -s -X POST localhost:9498/sql --data-urlencode sql@statement.sql`.
+
+Read it back with the same tool:
 
 ```sql
 SELECT agent, query_was_ran, markdown_notes, * EXCLUDE (agent, query_was_ran, markdown_notes)
-FROM agent_log WHERE type = '<type>' ORDER BY row_id;
+FROM read_parquet('/Users/aloksubbarao/.duck/agent_log/rows/**/*.parquet',
+                  hive_partitioning := true, union_by_name := true)
+WHERE type = '<type>' ORDER BY row_id;
 ```
 
-Invalid SQL returns the error to you and writes no row — fix it and call again. The server also
-refuses, before running anything, `count(*)`, `min`, `max`, `avg`, `LIKE`/`ILIKE`, `json_extract*` and every
-`regexp_*` except `regexp_replace` (`split_part` and `regexp_replace` are allowed) — anywhere in the query, subqueries included. The refusal names
-the function; rewrite and call again. Verified
-2026-09-21: 12 concurrent calls, 12 files, all results correct.
-
-**The local form below is only for programs** (Python, bash — the sidecar has no shellfs) or for
-reading files outside the sidecar's allowed directories.
+Verified 2026-09-22 through the `dev` MCP `sql` tool: row written and read back, `it's` and
+`$HOME` stored verbatim.
 
 ## Programs: your own `duckdb :memory:`
 
@@ -202,7 +182,7 @@ than text.
 
 Because every row carries the query that produced it, re-run it and compare. `query_was_ran` is a
 column and a table function binds literals, so build the statement per row and post it to your own
-route (`/duckstack:self-dispatch` Form 1). Verified: two honest agents matched, one that
+route (`/duckstack:self-dispatch` — on dev, rows → statements → array_agg of the posts to `/sql` → UNNEST). Verified: two honest agents matched, one that
 hand-wrote `99` for `SELECT 6 * 7` was caught.
 
 ```sql
@@ -214,6 +194,6 @@ SELECT status FROM quackapi_stop(19584);
 
 ## Dispatching subagents
 
-Give the worker its `<AGENT>` name and a `type`, and tell it to call `agent_log` (or the local
-form, with `<DIR>`) — nothing else. It writes its own rows; you do
+Give the worker its `<AGENT>` name, its session id and a `type`, and tell it to run the COPY above
+through the `dev` MCP `sql` tool (or the local form, with `<DIR>`, for programs) — nothing else. It writes its own rows; you do
 not collect them, and a worker that fails writes a row saying so. Then read the directory.

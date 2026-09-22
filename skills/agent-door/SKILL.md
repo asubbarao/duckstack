@@ -1,140 +1,49 @@
 ---
 name: agent-door
 description: >
-  What the `dev` MCP sidecar (duckdb_mcp on http://localhost:9496/mcp) can actually reach and
-  how to call it — including the raw JSON-RPC form for debugging. Use when an agent only has
-  MCP access, when a `dev.<table>` lookup through MCP says the table does not exist, when
-  deciding between the MCP door and a quack attach, or when reviewing/changing mcp-setup.sql.
-argument-hint: "[probe | call <tool> <json> | review]"
-allowed-tools: Bash
+  How any agent reaches the dev DuckDB — the one always-on database on this machine. Three doors, one
+  database, no attach: the `dev` MCP (`query`, `sql` tools), POST localhost:9498/sql, or quack_query
+  from your own `:memory:` DuckDB. Use before the first statement that touches dev, when a tool or port
+  in your notes no longer answers, or when an agent without MCP needs to run SQL on dev.
+argument-hint: "[mcp | http | quack]"
+allowed-tools: Bash, mcp__dev__query, mcp__dev__sql
 ---
 
-The agent door is a second launchd-owned DuckDB (`com.inframe.mcp`, `~/.duck/mcp-setup.sql`)
-whose main database is a throwaway `~/.duck/scratch.duckdb`, with `dev` attached `READ_ONLY`
-through the gated 9495 listener, serving duckdb_mcp over HTTP on 9496. Registered as the `dev`
-MCP in `~/.claude.json` and `~/.codex/config.toml`. Everything below was verified against the
-running sidecar on 2026-09-17 (duckdb_mcp a6b8648 = v2.3.0, quack c154811, DuckDB 1.5.5).
+# agent-door
 
-> **This door's process is live, but its stale dev attachment is no longer usable.**
-> The sidecar has been up since Sep 17 01:38. A live probe during this edit returned
-> `Invalid connection id` from `dev.query(...)`, and `quack_active_connections()` returned
-> no rows. Before that disconnect, the old `ATTACH … (TYPE quack)` still worked even though
-> dev acquired
-> `__crawler_cache.cached_at DEFAULT current_timestamp` on Sep 20 03:34, and on DuckDB 1.5.5 a
-> single computed `DEFAULT` anywhere in the target catalog makes a quack ATTACH fail outright
-> with `Binder Error: Catalog "dev" does not exist!` (duckdb-quack#132 — fixed by #264 on
-> `main`, shipping with 1.6, not backportable). The sidecar attached three days before that
-> table existed, which is why it worked until the underlying Quack connection was lost.
->
-> The dev-reading part of this door is therefore already down. A `launchctl
-> bootout`/`bootstrap`, reboot, or KeepAlive respawn cannot restore it until either the DEFAULT
-> is dropped from `__crawler_cache` or DuckDB 1.6 lands.
-> Do not treat the MCP door as the fallback for the ATTACH bug — it has the same bug, deferred.
-> `quack_query` from a client is unaffected; it never loads the catalog. See `/duckstack:quack`.
+There is one database: `~/.duck/dev.duckdb`, held open by launchd (`com.inframe.quack`,
+`~/.duck/setup.sql`). Nobody opens the file. Nobody ATTACHes it. Every door below runs your SQL
+inside that one process.
 
-## Local extension capability — configured versus running
+| door | how | what it runs |
+|---|---|---|
+| `dev` MCP → `query` | tool call | one SELECT, at most 100 rows |
+| `dev` MCP → `sql` | tool call | anything — DDL, DML, `COPY`, several statements; last result, at most 100 rows |
+| HTTP `/sql` | `curl -s -X POST localhost:9498/sql --data-urlencode sql@file.sql` | anything, same as `sql`; JSON rows back |
+| quack | `quack_query('quack:localhost:9494', $q$<SQL>$q$, token := getenv('QUACK_TOKEN'))` from `duckdb :memory:` with `LOAD quack` | anything |
 
-`~/.duck/mcp-setup.sql` now lists all of the following `LOAD`s. The sidecar has **not** been
-restarted since those six new lines were added. They are configured capability, not live MCP
-capability today. A live `duckdb_functions()` probe returned zero rows for representative
-`read_yaml`, `md_to_html`, `is_parsable`, `html_to_duck_blocks`, `crawl`, and `gh_repo`
-functions. Do not claim otherwise and do not restart the service on an agent's initiative.
+Pick the first one your harness has. Claude Code has the `dev` MCP. Codex's MCP client cannot
+connect to duckdb_mcp until teaguesterling/duckdb_mcp#92 ships, so Codex uses HTTP `/sql` or quack.
 
-| Extension | Listed in `mcp-setup.sql` | Running 9496 process now | Capability after a successful future restart |
-|---|---:|---|---|
-| `duckdb_mcp` | yes | loaded; six built-in MCP tools are live | MCP server/tools |
-| `quack` | yes | loaded; current `dev` connection is invalid | attach/query transport to gated dev, subject to the 1.5.5 attach bug above |
-| `yaml` | yes | **pending restart; not loaded** | YAML readers, native YAML type, extraction/conversion |
-| `markdown` | yes | **pending restart; not loaded** | Markdown readers, sections/blocks, extraction/conversion |
-| `parser_tools` | yes | **pending restart; not loaded** | SQL parse validation and table/function/WHERE introspection |
-| `webbed` | yes | **pending restart; not loaded** | typed HTML parsing and HTML-to-duck-block conversion |
-| `crawler` | yes | **pending restart; not loaded** | `agent_crawl(urls)` seed crawling on the MCP/9495 path; explicit correlated `crawl_url` only |
-| `gh` | yes | **pending restart; not loaded** | GitHub relations such as repository metadata |
+## The MCP is not a database
 
-The future capability row is conditional: after a human-managed restart, re-run
-`duckdb_functions()` and the `dev.query($$FROM whoami()$$)` probe before describing any row as
-live. On this MCP/9495 path seed URLs use `agent_crawl(urls)`, never raw `crawl()`.
+`com.inframe.mcp` is a `:memory:` DuckDB (`~/.duck/mcp-setup.sql`) whose two tools forward to dev
+over quack: `query` → 9495, `sql` → 9494. It holds no tables. Anything created through it lands
+in dev.
 
-## What is reachable — the part the docs do not tell you
+## `/sql` is quackapi inside dev
 
-| Through the `query` tool | Result |
-|---|---|
-| `SELECT * FROM dev.query($$SELECT … FROM some_dev_table$$)` | **works** — the only way to read dev |
-| `SELECT * FROM dev.some_dev_table` | **fails**: "Catalog Error: Table … does not exist" — the quack attach mirrors no catalog |
-| `list_tables`, `database_info`, `FROM duckdb_tables()` | scratch only (`_mcp_server_config`, `_mcp_server_status`, `agent_scratch`, the `mcp_*_log` views) |
-| `dev.query($$CREATE …$$)`, `quack_query(...)` writes, `ATTACH`, `LOAD`, `SET` | refused — server gate on 9495 (parse = exactly one SELECT) plus the sidecar's tool policy (`execute_allow_load/attach/set false`) |
-| unqualified `CREATE TABLE t AS …` via `execute` | lands in **scratch**; that is the point — a rogue `DROP … CASCADE` costs nothing |
-| `read_text('~/.duck/token')` etc. | refused — `enable_external_access = false`; `allowed_directories` = `~/inframe`, `~/.duck/ingest`, `~/.duck/logs` |
+`setup.sql` loads quackapi in the same process as quack and defines
+`CREATE ROUTE sql POST '/sql' AS SELECT * FROM quack_query('quack:localhost:9494', $sql, …)`, so
+dev can post to itself — which is what self-dispatch does (`/duckstack:self-dispatch`).
 
-So an agent on the door lists dev tables with
-`SELECT * FROM dev.query($$SELECT table_name, estimated_size FROM duckdb_tables() WHERE NOT internal$$)`
-and reads them with `dev.query($$…$$)` — joins included, since the join then runs on dev.
-Each tool call is a **fresh connection**: no TEMP tables or variables survive between calls;
-put the whole thing in one `dev.query`.
+## Rules that apply at every door
 
-## Tools exposed (tools/list, live)
+- `SELECT` with `LIMIT` first, widen after. The MCP caps rows at 100.
+- `getenv()` runs on dev: it reads the server's environment, not yours. Pass your own values
+  (session id, paths) as literals.
+- No `SET`, `INSTALL`, `LOAD` against dev — `setup.sql` owns the server's configuration.
 
-`query` (read-only SELECT; `format`: json | jsonl | csv | markdown, default markdown),
-`describe`, `list_tables`, `database_info`, `export` (file output **off**), `execute`
-(DDL/DML into scratch; LOAD/ATTACH/SET off). No custom tools are published yet.
-
-## Calling it raw (debugging, or from a shell without an MCP client)
-
-```bash
-curl -s http://localhost:9496/health                                   # {"status":"ok"}
-curl -s -X POST http://localhost:9496/mcp -H 'Content-Type: application/json' \
-  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
-curl -s -X POST http://localhost:9496/mcp -H 'Content-Type: application/json' \
-  -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"query","arguments":{"sql":"SELECT * FROM dev.query($$FROM whoami()$$)","format":"markdown"}}}'
-```
-
-No auth header: `require_auth false`, loopback only. Errors come back as JSON-RPC `error`
-objects with the DuckDB message (`code -32003` for SQL errors).
-
-## `probe` — is it up, what does it think it is
-
-```bash
-curl -s -X POST http://localhost:9496/mcp -H 'Content-Type: application/json' \
-  -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"query","arguments":{"sql":"SELECT * FROM mcp_server_config()","format":"markdown"}}}'
-```
-
-`request_timeout_seconds 30` and `max_connections 10` **appear** in that output and are
-**not enforced** by a6b8648 — it reports fields it does not parse. Do not represent 30 s as a
-ceiling; there is none below the launchd process itself. Do not restart the sidecar as a repair:
-the 1.5.5 attach bug above must be cleared first, then a human-managed restart can re-establish
-the 9495 attachment.
-
-## `review` — the sidecar against the duckdb_mcp docs (main, 23 commits ahead of a6b8648)
-
-Findings to carry into any change of `~/inframe/internal/duckdb/agent-gateway/mcp-setup.sql`:
-
-1. **Markdown cells with newlines split rows in a6b8648.** `default_result_format` is
-   `markdown`; upstream's unreleased fix (#84) notes `EscapeMarkdownCell()` escaped only `|`, so
-   a cell containing `\n` (every `html.document`, every readability text) renders as extra
-   rows/columns and row counts change silently. Until the sidecar ships a build with that fix,
-   agents reading page text through the door should request `format: "json"` or select
-   bounded scalar columns (`len(...)`, `title`) rather than bodies.
-2. **A failed `mcp_publish_*` used to report a successful start** (#84, fixed on main).
-   Irrelevant today (nothing is published) but relevant the moment a curated tool is added.
-3. **The blind `list_tables` is fixable without raw SQL.** `mcp_publish_tool` accepts `$param`
-   inside table-function arguments and `dev.query` is a table function, so a curated
-   `dev_tables` tool (`SELECT * FROM dev.query('SELECT table_name … FROM duckdb_tables()')`)
-   and a `dev_describe` tool (`… DESCRIBE $table …` via `format`) would give agents a catalog
-   without handing them `execute`. `builtin_tools: false` + `enable_query_tool: true` would then
-   shrink the surface to `query` + curated tools. Not applied here — it is a `setup`-side change.
-4. **`export_allow_file_output false` is right** and `execute`'s lack of a file denylist is
-   covered only by `enable_external_access = false` — keep the `ATTACH`-before-`external_access`
-   ordering exactly as the file has it (`getenv()` dies after that line).
-5. **stdio is not used** (HTTP transport), so the `.mode trash` / fd-1 ownership fixes on
-   main do not apply; keep `.mode trash` anyway for a clean init log.
-6. **`mcp_lock_servers = true` then `lock_configuration = true`** after `background: true`
-   start — matches the documented init-script pattern; nothing to change.
-7. Extension pin: the shipped binary is 23 commits behind main, "mostly silent-corruption
-   fixes" (JSON/CSV escaping, response-id correlation, glob paging). Re-verify at 2.0.0
-   (2026-10-21) per the README; do not `UPDATE EXTENSIONS` on a running server.
-
-## `call <tool> <json>`
-
-Wrap the given tool name and arguments in the JSON-RPC envelope above, POST, print the
-`result.content[0].text`. For `query`, default `format` to `json` when the SQL can return
-text bodies (finding 1), `markdown` otherwise.
+Verified 2026-09-22: `query` returned dev tables; `query` refused `CREATE` ("Authorization
+failed"); `sql` ran `CREATE TEMP TABLE …; SELECT …` and a `COPY … TO` parquet; `/sql` returned
+JSON rows; `quack_query` to 9494 ran a multi-statement body.
