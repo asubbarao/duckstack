@@ -20,7 +20,7 @@ JSONL files (`~/.duck/agent_stream/agent_stream.sql`), so it is never more than 
 
 | tool | argument | gives |
 |---|---|---|
-| `stream_search` | `q` — search words | one row per matching session, ranked by its best message, with those messages |
+| `stream_search` | `q` — search words or a question | one row per matching session (BM25 + vector, fused), with its best messages |
 | `stream_session` | `session_id` | that conversation hour by hour, in order |
 | `user_messages` | `hours` | what the user typed in the last N hours, per session per hour |
 
@@ -51,9 +51,11 @@ BM25 directly:
 The query `stream_search` runs is `~/.duck/agent_stream/agent_stream_search.sql`: the search words
 are tokenized exactly as the messages were (fts's own `stem()` and stopwords), then BM25 in the fts
 extension's form (k1 = 1.2, b = 0.75) scores each message over `agent.bm25_posting` /
-`agent.bm25_length`, and a session ranks by its best message (MaxP). On 224 known-answer probes it
-scores MRR 0.491 / 0.499 / 0.313 (title / whole-chat / moment) against 0.416 / 0.385 / 0.272 for
-hour documents. Copy it and change the one literal in its `asked` CTE to run it by hand.
+`agent.bm25_length`, and a session ranks by its best message (MaxP). The same text is embedded in
+dev (`embed()`) and each session ranked by its nearest message vector (`agent.stream_vec`); the two
+rankings are fused by reciprocal rank (k = 60). On 224 known-answer probes (MRR title / whole-chat /
+moment): fused 0.607 / 0.462 / 0.317, BM25 alone 0.51 / 0.466 / 0.302, vector alone 0.599 / 0.395 /
+0.319, the old hour search 0.416 / 0.385 / 0.272. Copy it and change the one literal in its `asked` CTE to run it by hand.
 
 ## Never build an FTS index on dev
 
