@@ -50,7 +50,9 @@ link-following, depth, cache and result limit did not happen.
 --       user_agent := crawler_user_agent, max_results := -1, extract := [])
 --   -> url, status, content_type, html STRUCT(document, js, opengraph, schema, readability),
 --      error, extract, response_time_ms, depth
---   cache := false: the landed table IS the cache; fetched_at says when.
+--   cache := false, ALWAYS. The extension default is true, and a cached call creates
+--   __crawler_cache with a computed DEFAULT, which breaks every quack ATTACH on 1.5.5
+--   and is a table nobody wants. The landed table IS the cache; fetched_at says when.
 --   state_table := 'x': crawler's own incremental machine — a second run fetches only new URLs.
 ```
 
@@ -95,7 +97,7 @@ Tables: `html_extract_tables(doc)` — never walk `<tr>/<td>`. URLs are strings 
 ## Step 1 — Land the raw pages (one statement, every column, nothing dropped)
 
 ```sql
-FROM dev.query($$
+FROM quack_query('quack:localhost:9494', $$
 -- <what this is for>. Every column crawl() returns, nothing dropped.
 -- crawl(urls VARCHAR[], cache := true, cache_ttl := 24, timeout := 30, delay := 1000, workers := 4,
 --       batch_size := 10, respect_robots := true, follow := '', max_depth := 1, state_table := '',
@@ -118,7 +120,7 @@ FROM crawl(
     cache_ttl      := 24,
     max_results    := <n urls>
 )
-$$);
+$$, token := getenv('QUACK_TOKEN'));
 ```
 
 Seeds only on the first pass — never `follow`/`max_depth > 1` until the raw table has been
