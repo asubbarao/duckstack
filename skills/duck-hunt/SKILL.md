@@ -80,6 +80,8 @@ Dated one-liners. Add to this list; don't rewrite it.
   with `string_split` (see `vitest_phases`), or capture the value with a named group.
 - 2026-09-23: broken in duck_hunt 68ca1c4. `parse_duck_hunt_workflow_log` returns 0 rows, and
   `duck_hunt_match_command_patterns` errors because RE2 does not support lookaheads.
+- 2026-09-23: duck_tails. A relative `git://path@ref` resolves only when the working directory is
+  the repo root. From a subfolder it returns 0 rows with no error, so use `git:///<abs repo root>/path@ref`.
 - 2026-09-23: `status_badge(status)` and `status_badge(errors, warnings[, running])` return `[FAIL]`,
   `[WARN]`, `[ OK ]`, `[ .. ]` or `[ ?? ]`. Useful as a page's status column.
 
