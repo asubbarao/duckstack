@@ -1,17 +1,87 @@
 ---
 name: duck-hunt
 description: >
-  Test results, build output, lint output and CI job logs as tables — "readable CI". duck_hunt
-  parses 110 tool formats plus GitHub Actions / GitLab / Jenkins / Docker workflow logs into one
-  39-column event schema (status, severity, ref_file, ref_line, test_name, fingerprint, …). Use
-  when asked why CI is red, what a run's tests did, to diff two runs, to cluster build errors, or
-  to land a job log on dev as rows, or to time tests from a log that prints no durations
-  (pytest-xdist per-test ms from the Actions timestamps, vitest per-file ms, timeout plateaus).
-  Regex on log text is allowed. Pairs with ci-timing (the run, its jobs and steps), git-github
-  (`gh` CLI fetches the run, duck_hunt reads it) and duck_tails (blame the ref_file:ref_line the parser points at).
+  Test results, build output, lint output and CI job logs as tables ("readable CI"). duck_hunt
+  parses 110 tool formats and GitHub Actions / GitLab / Jenkins / Docker workflow logs into one
+  40-column event schema (status, severity, ref_file, ref_line, test_name, fingerprint, …). Ships
+  a growing library of tested views in recipes.sql: pytest_xdist_tests, vitest_files,
+  vitest_phases, gha_steps, gha_errors, biome_diagnostics, failure_clusters,
+  recurring_diagnostics. Every CI/CD analysis adds its new readings there and its new gotchas to
+  Learned. Use when asked why CI is red, what a run's tests did, to diff two runs, to cluster
+  failures by fingerprint, to find failures that recur across runs, to land a job log as rows, or
+  to time tests from a log that prints no durations. Regex on log text is allowed. Pairs with
+  ci-timing (runs, jobs, steps), duck_tails (blame the ref_file:ref_line the parser points at)
+  and live-page (render the result).
 argument-hint: "<run id | log path | 'this PR'> [question]"
-allowed-tools: Bash
+allowed-tools: Bash, mcp__dev__ci_hunt
 ---
+
+**After every CI/CD analysis, add each new log reading to `recipes.sql` as a view, with the
+question it answers and one verified line. Add each new gotcha to §Learned as a dated one-liner.
+Don't inline one-offs.** The library only improves if every analysis leaves something in it.
+
+Where it runs: this doc and `recipes.sql` (next to it), in your own `duckdb :memory:` or through
+`uvx --from duckdb duckdb`. The `dev` MCP tool `ci_hunt(zip, glob, format)` is a shortcut for one
+read over an Actions log zip. Recipes are views, never macros. A page built from them is
+`/duckstack:live-page`.
+
+## Recipes: `recipes.sql`
+
+Land each job's log as `raw/joblog-<job_id>.txt`:
+
+```bash
+gh api --allow-escape-sequences repos/o/r/actions/jobs/<id>/logs > raw/joblog-<id>.txt
+```
+
+Then `LOAD duck_hunt; .read <skill dir>/recipes.sql` from that folder. Every view carries `job_id`,
+parsed from the file name, so you can join it back to the jobs API.
+
+| View | Question | Verified 2026-09-23 |
+|---|---|---|
+| `pytest_xdist_tests` | how long did each backend test take? Measured as the gap to the previous line on its xdist worker | 19,187 tests over 3 shards |
+| `vitest_files` | which vitest files are slow? | 545 files; RequestPicker.test.tsx 14.8 s |
+| `vitest_phases` | where does a vitest shard's wall time go (import, environment, tests)? | phases = 95% of wall: files run one at a time |
+| `gha_steps` | when did each step start and how long did it run, from the log alone? | pytest step 566.6 s, API 566 s |
+| `gha_errors` | which `##[error]` annotations did each job raise? | 5 failed jobs |
+| `biome_diagnostics` | which lint rule fired where, and which one failed the job? Uses `context := 3` | the one `×` error found |
+| `failure_clusters` | which error messages repeat, and in which jobs? Keyed on `fingerprint` | 1 cluster, 5 jobs, 3 runs |
+| `recurring_diagnostics` | which lint findings recur across jobs and runs? Keyed on rule + file | noArrayIndexKey in 3 of 3 |
+
+Each view re-parses its logs whenever it is queried, which takes about 10 s per 7 MB. An analysis
+that reads a view more than once lands it first: `CREATE OR REPLACE TABLE x AS FROM <view>`.
+
+## Learned
+
+Dated one-liners. Add to this list; don't rewrite it.
+
+- 2026-09-23: fetching per-job logs.
+  - Save the per-job log to a file first with `gh api --allow-escape-sequences …/jobs/<id>/logs > f`,
+    then read the file. Piping gh straight into shellfs failed.
+  - The per-job log needs no zip and no zipfs.
+- 2026-09-23: `regexp:` readers and globs.
+  - `regexp:` readers take a glob and fill `log_file`, although the docs say globs are unsupported.
+  - Each file with no match adds one `info` row reading "No matches found …". Filter it out.
+- 2026-09-23: the workflow parser on per-job logs.
+  - `read_duck_hunt_workflow_log` takes a single file. Given a glob it returns one summary row.
+  - On a per-job log it names most steps "Unnamed Step" and folds the test run into "Job Level".
+    Take step times from the jobs API, or from `gha_steps`.
+  - `read_duck_hunt_log(…, 'github_actions')` returns 0 rows on a per-job log.
+- 2026-09-23: `regexp:` pattern quirks.
+  - A plain `( )` group shifts the mapping of the named groups after it. Write non-captured parts as `(?:…)`.
+  - A `status` group is ignored. Status comes only from `severity`/`level`.
+- 2026-09-23: clustering keys.
+  - `pattern_id` is renumbered on every call. Cluster and join on `fingerprint`, which is a hash of
+    the normalized message and is stable across calls.
+  - `similarity_score` was always 1.0.
+  - A timestamp captured into `message` makes every fingerprint unique. Capture it into `code` instead.
+- 2026-09-23: `context := N` adds `context STRUCT(line_number, content, is_event)[]`, N lines each
+  side. Use it to read the line after a match, such as Biome's `×` / `!` severity.
+- 2026-09-23: `regexp_extract` is hook-banned in SQL. Split a log line on its literal punctuation
+  with `string_split` (see `vitest_phases`), or capture the value with a named group.
+- 2026-09-23: broken in duck_hunt 68ca1c4. `parse_duck_hunt_workflow_log` returns 0 rows, and
+  `duck_hunt_match_command_patterns` errors because RE2 does not support lookaheads.
+- 2026-09-23: `status_badge(status)` and `status_badge(errors, warnings[, running])` return `[FAIL]`,
+  `[WARN]`, `[ OK ]`, `[ .. ]` or `[ ?? ]`. Useful as a page's status column.
 
 Everything below was verified on this machine (2026-09-17, extended 2026-09-22): DuckDB 1.5.5
 osx_arm64, `duck_hunt` 68ca1c4 and `zipfs`. Parse in your own `:memory:` client

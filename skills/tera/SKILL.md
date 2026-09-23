@@ -11,15 +11,14 @@ description: >
   non-strings), how to read and bisect its errors, and when minijinja is the better engine.
   Use when writing or debugging a tera_render call or a .tera template, when a .sql must
   generate another .sql, or when an agent is about to reach for a .sh, Python or string
-  concatenation to produce text. The page recipe on top of this is /duckstack:one-pager.
+  concatenation to produce text. The page recipe on top of this is /duckstack:live-page.
 argument-hint: "[template path or the error text]"
 allowed-tools: Bash
 ---
 
 Read `/duckstack:duck` first; its process rules apply to everything that feeds a template.
-This skill is the **engine reference**. The recipe for a shareable HTML report (granica memo
-style, quickjs charts, the Verdict / tiles / scoreboard blocks) is `/duckstack:one-pager` —
-it assumes what is here and does not repeat it.
+This skill is the **engine reference**. How to make a page from it (quickjs charts, css_select, jsonata, the file and the live server) is
+`/duckstack:live-page`, which keeps only the tera gotchas that bite most.
 
 A tera error is the template's fault or the context's, not tera's. Every claim below was run
 in `duckdb :memory:` with `SET extension_directory='/Users/aloksubbarao/.duck/extensions'; LOAD tera;`.
@@ -85,7 +84,7 @@ SET VARIABLE ctx = {
 
 `json_merge_patch(getvariable('ctx'), {more: …}::JSON)` adds fields to an existing context
 (granica `run.sql`). Never alias a context field or a view with an existing table's name —
-see `/duckstack:one-pager` §4.
+see `/duckstack:live-page` (tera gotchas).
 
 Everything the template prints is **finished in SQL**: durations
 (`printf('%dm %02ds', s // 60, s % 60)`), pixel widths (`v * 420 // top`), percentages,
@@ -152,7 +151,7 @@ Verified: the markdown table rendered in place and the missing key fell through 
 **Render an HTML page** — `~/inframe/internal/ci/duckdb/slow.sql` (§7 Render). One
 `SET VARIABLE ctx = {…}::JSON` with a `list({…} ORDER BY …)` per table the page shows and
 precomputed strings for every duration, then the whole page inline as `$tpl$<!doctype html>
-… </html>$tpl$` into `COPY … TO 'slow.html'`. The page design is `/duckstack:one-pager`.
+… </html>$tpl$` into `COPY … TO 'slow.html'`. The page design is `/duckstack:live-page`.
 
 ## 5. Template syntax that works in this build
 

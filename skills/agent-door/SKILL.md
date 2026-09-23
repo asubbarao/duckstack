@@ -29,7 +29,7 @@ inside that one process.
 | `dev` MCP → `git_tree(repo, ref)` | tool call | a repo on this machine's disk at a ref: `file_path, file_ext, kind, size_bytes, git_uri` — `/duckstack:duck-tails` |
 | `dev` MCP → `git_read(repo, path, ref)` | tool call | one file of that repo: `file_path, text` (the ref travels in a `git://…@ref` uri) — `/duckstack:duck-tails` |
 | `dev` MCP → `ci_hunt(zip, glob, format)` | tool call | `read_duck_hunt_log('zip://' \|\| zip \|\| '/' \|\| glob, format)` over a landed Actions log zip — `/duckstack:duck-hunt` |
-| `dev` MCP → `render(template_path, ctx_json, out)` | tool call | `tera_render` of a template file with a JSON context, `COPY`'d to `out` — `/duckstack:one-pager` |
+| `dev` MCP → `render(template, ctx)` | tool call | `tera_render` of a template file with a JSON context, returned as text (write it with the `sql` tool's `COPY`) — `/duckstack:live-page` |
 | quack | `quack_query('quack:localhost:9494', $q$<SQL>$q$, token := getenv('QUACK_TOKEN'))` from `duckdb :memory:` with `LOAD quack` | anything |
 
 Pick the first one your harness has. Claude Code has the `dev` MCP. Codex's MCP client cannot

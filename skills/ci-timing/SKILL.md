@@ -6,20 +6,26 @@ description: >
   through shellfs, every response landed under raw/ with a UTC timestamp, then runs / jobs /
   steps / PR-files tables and the questions that matter: the long pole, setup vs suite inside a
   job, whether the change-detection gate runs jobs a PR did not need, and whether test shards
-  are balanced. Use when asked why CI is slow, what a run spent its time on, for a CI or PR
-  review page, or for any timing evidence a teammate may see — never from local logs. Worked
-  example: ~/inframe/internal/ci/duckdb/ (review.sql, slow.sql).
+  are balanced. It is the CI/CD analysis: test-level times and failures come from the job logs
+  through duck-hunt's recipe views, and live-page renders the result. Use when asked why CI is
+  slow, what a run or shard spends its time on, for a CI or PR review page, a brief page on one
+  CI finding, or any timing evidence a teammate may see. Never use local logs. Worked examples:
+  ~/inframe/internal/ci/duckdb/ (review.sql, slow.sql) and the INF-1390 shard brief (§5).
 argument-hint: "<owner/repo> [workflow] [question]"
 allowed-tools: Bash, mcp__dev__ci_hunt, mcp__dev__query
 ---
 
-Read `/duckstack:duck` first; its process rules apply. Test-level timing inside a job comes
-from the log through `/duckstack:duck-hunt`; the page is `/duckstack:one-pager`. This skill is
-the GitHub half: which runs, which jobs, which steps, which files.
+Read `/duckstack:duck` first; its process rules apply. This skill is the GitHub half of a CI/CD
+analysis: which runs, which jobs, which steps, which files. Test-level timing and failures come from
+the job logs through the recipe views in `/duckstack:duck-hunt` (`recipes.sql`). Render the page
+with `/duckstack:live-page`. After an analysis, add each new log reading to those recipes and each
+new gotcha to duck-hunt's Learned list.
 
 **Evidence a teammate may see reads from GitHub, not from this laptop.** A query over local
 logfiles or session transcripts cannot be handed to anyone. Everything below needs only
-`gh auth status` on the repo.
+`gh auth status` on the repo. **Measure execution, not waiting.** Use a job's
+`started_at → completed_at`, which excludes queueing and approvals. Never make run wall-clock
+(`createdAt → updatedAt`) the headline.
 
 ## 1. Fetch — shellfs, raw/ first, never overwritten
 
@@ -145,3 +151,30 @@ reader.
 
 Run from that folder: `duckdb :memory: -c ".read slow.sql" && open slow.html`. `raw/` is
 gitignored and grows with every run; the tables are rebuilt from it alone.
+
+## 5. A brief finding page (the INF-1390 shard brief, 2026-09-23)
+
+The shape for one finding, such as "every PR waits on Backend Tests Shard 1":
+
+1. **Scope the runs with gh**: `gh run list --workflow ci.yml --user <login> --created ">=<date>"`,
+   then `gh api …/actions/runs/{id}/jobs?per_page=100` per run, concatenated into one
+   `raw/jobs-<ts>.json`. Read it with `read_json(…, format := 'unstructured')`, then
+   `unnest(jobs)`.
+2. **A view, not a table**, so a live page re-fetches. Gate the fetch on the newest raw file's
+   age: `find raw -name "jobs-*.json" -mmin -30 | grep -q . || <fetch>; cat $(ls -t raw/jobs-*.json | head -1)`.
+3. **Keep only runs with the usual layout.** Count shard jobs per run: experiment branches run
+   other shard counts, and their shard 1 is not the same job.
+4. **Per job:** `array_agg(job_s ORDER BY job_s)`, the median read off that list, and the median
+   run's `html_url` for the link. Keep every point for a strip chart.
+5. **Typical run:** the one whose wall is nearest the median wall. Land its shard logs as
+   `raw/joblog-<job_id>.txt` and read them with the duck-hunt recipes. Parse each log once into a
+   table, since a landed log never changes.
+6. **Room for "after":** a one-row params view (`after_since TIMESTAMP`, NULL until the fix's runs
+   exist) gives every run a `series`. The charts draw the after bar only when it has rows.
+7. **The cause, from git:** `.test_durations` read with duck_tails (`read_text('git:///…@origin/staging')`,
+   `json_keys`), and its age from `git_blame` (newest `author_date`). Coverage is a `LEFT JOIN`
+   of the tests that ran against its keys.
+
+What it found: shard 1 had a median of 9m 43s against 5m 45s–7m 04s for the other shards.
+`.test_durations` was last written 2026-06-12 and covered 28% of 19,248 tests. 69% of shard 1's
+worker time was in tests it had no entry for.
