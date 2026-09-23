@@ -217,3 +217,25 @@ Cross-run questions are then joins on `(job_name, unit, fingerprint)`; the flaky
 
 `references/duck_hunt.md` in this repo — every function, every format string with maturity, all
 docs examples, and the 20-odd places the docs and the shipped source disagree.
+
+## JUnit artifacts beat log timestamps (verified 2026-09-22)
+
+When CI uploads JUnit XML (`pytest --junitxml`, vitest `--reporter=junit` — inframe PR #1314),
+`junit_xml` (priority 100 in `duck_hunt_formats()`) reads it with each test's own
+`execution_time`; no `regexp:` reader, no timestamp gaps:
+
+```sql
+-- gh run download <run_id> -n test-report-backend-1 -D reports
+-- read_duck_hunt_log(source, format, severity_threshold := 'all', content := 'full', context := 0)
+SELECT log_file, test_name, status, execution_time
+FROM read_duck_hunt_log('reports/*/*.xml', 'junit_xml') ORDER BY execution_time DESC;
+-- run 35254556687: 4,673 backend tests / 641 s in one shard, 2,186 vitest tests / 105 s; the
+-- 5.02 s create_pool cluster shows up identically to the timestamp method.
+```
+
+The docs to read first: https://duck-hunt.readthedocs.io/en/latest/schema/ (the 39-column
+event schema: `execution_time` is seconds; `status` upper, `severity` lower) and
+https://github.com/teaguesterling/duck_hunt/blob/main/docs/examples.md (pytest JSON, Go test,
+GitHub Actions, `context := N` for surrounding lines, cross-run `fingerprint` joins).
+Prefer, in order: a native test report (`junit_xml`, `pytest_json`) → the workflow parser
+for step units → the `regexp:` reader over timestamped lines.
