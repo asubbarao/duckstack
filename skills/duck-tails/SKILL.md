@@ -7,8 +7,9 @@ description: >
   and all). The history tables (`git_log`, `git_tree`, `git_read`, `git_status`, blame, diffs) are
   the other half. Use when asked to read a repo at a revision, read data committed to a repo,
   compare a dataset across commits, inventory what a repo contains, or when about to shell out to
-  `git show`/`git archive` to get a file's bytes. Read `/duckstack:duck` first — its SQL process
-  rules apply to git data too.
+  `git show`/`git archive`, `gh api` or curl to get a file's bytes — including a file in a GitHub
+  repo, which is `git clone --bare` first, then read here (dev MCP tools: git_tree, git_read).
+  Read `/duckstack:duck` first — its SQL process rules apply to git data too.
 argument-hint: "<repo path> [file | ref | question]"
 allowed-tools: Bash
 ---
@@ -21,6 +22,35 @@ second language in the data path.
 
 `/duckstack:git-github` is the companion: `gh` for **remote** GitHub, `gh` CLI for private repos.
 This skill is the **local** repository, and it corrects three things `git-github` states wrongly.
+
+**Reading a repo — any repo, including one on GitHub — is this skill, not `gh api`, curl,
+`git show` or a scratch download.** On the dev MCP it is two tools (`/duckstack:agent-door`):
+`git_tree(repo, ref)` → `file_path, file_ext, kind, size_bytes, git_uri`, and
+`git_read(repo, path, ref)` → `file_path, text`.
+
+## 0. The repo has to be on disk first
+
+A remote URL is not a repository to `duck_tails`. In the local client (742af7b, 2026-09-22)
+`git_tree('https://github.com/o/r', 'HEAD')`, `git_log(repo_path := <url>)`, `git_read('git://https://…')`
+and `read_text('git://github.com/…@HEAD')` all fail with *No git repository found … found no .git
+directory*; earlier the same day a remote read came back as **zero rows with no error**. Either
+way the answer is the same: get the object store local, then read it.
+
+```bash
+# private repos clone over the personal-account SSH alias
+git clone --bare git@github-asubbarao:asubbarao/<repo>.git ~/worktrees/<repo>.git
+# or, if you will also work in it: a worktree off an existing clone (never a second clone of a repo you already have)
+```
+
+A bare clone is a full repo to duck_tails (verified: `git_tree('/abs/x.git', 'HEAD')` → 74 files;
+`git_read('analysis/report.html', repo_path := '/abs/x.git')` and
+`read_text('git:///abs/x.git/analysis/report.html@HEAD')` → the same 26,765 characters).
+`git fetch` in it later moves the refs; nothing is checked out.
+
+**The `_each` twins take no `repo_path`: a bare `file_path` resolves against the cwd.** From
+outside the repo, `git_read_each(t.file_path)` fails (*No git repository found for path
+'git://README.md@HEAD'*); `git_read_each(t.git_uri)` works (23 of 23 `.md` files of a bare
+clone). Feed the `_each` twins `git_uri` — it is absolute — or `cd` into the repo first.
 
 ## 1. The rule that decides everything
 
@@ -270,9 +300,10 @@ select by name and the string surgery disappears. Hive keys under `git://` arriv
 
 - **No writes.** `git://` is read-only, and `COPY … TO` it raises an INTERNAL Error that stops the
   statement chain (§3). Producing a commit is `git`'s job, outside the query.
-- **No remotes.** Local object store only — a ref must already be fetched. Remote GitHub is
-  `/duckstack:git-github` (`gh` extension for public, `gh` CLI for private).
-- **Not on the dev quack.** `duck_tails` is installed for the local CLI
-  (`~/.duckdb/extensions/v1.5.5/osx_arm64/duck_tails.duckdb_extension`), **not** in the server's
-  `setup.sql`. Run it in the `:memory:` client; to persist a result, push it through
-  a `quack_query` body per `/duckstack:quack`.
+- **No remotes.** Local object store only — a ref must already be fetched (§0). GitHub
+  *metadata* (issues, PRs, runs) is `/duckstack:git-github`; a repo's *files* are a bare clone
+  read here.
+- **Where it runs.** `~/duckdb-skills/server/setup.sql` loads `duck_tails` on dev, and the dev
+  MCP publishes `git_tree` / `git_read` over it. In your own `:memory:` client
+  `INSTALL duck_tails FROM community; LOAD duck_tails;` is always allowed. Dev reads paths on
+  this machine, so the repo must be on this machine's disk either way.

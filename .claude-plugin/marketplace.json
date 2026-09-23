@@ -9,7 +9,7 @@
       "name": "duckstack",
       "source": "./",
       "description": "Personal fork of the DuckDB skills (quack/duckstack-targeted): read any data file, attach and query DuckDB databases, search DuckDB/DuckLake docs, search past session logs, and install/update DuckDB extensions.",
-      "version": "0.2.4-inframe.7",
+      "version": "0.2.4-inframe.19",
       "homepage": "https://github.com/asubbarao/duckstack",
       "repository": "https://github.com/asubbarao/duckstack",
       "license": "MIT",

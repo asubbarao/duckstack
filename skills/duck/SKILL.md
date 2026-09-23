@@ -26,7 +26,7 @@ wrong here. This skill is the record label the other skills ship under.
 | `quack:localhost:9497` + OTLP `:4318` | telemetry DuckDB | `~/.duck/telemetry/` | observability |
 
 `~/.duck/dev.duckdb` is held open by `com.inframe.quack` (launchd `KeepAlive`); `~/.duck/setup.sql`
-is THE server, identical on every machine (source: `~/inframe/internal/duckdb/setup.sql`).
+is THE server, identical on every machine (a symlink to the copy in git, `~/duckdb-skills/server/setup.sql`).
 DuckDB **1.5.5** osx_arm64. Server extensions: `~/.duck/extensions`; local CLI: `~/.duckdb/extensions`.
 
 ## 2. The boundary (hard rules)

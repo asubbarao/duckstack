@@ -54,7 +54,7 @@ This is the question that keeps coming up. Three server-side reasons, all verifi
 - **The dev server** (`~/.duck/setup.sql`) ends with `lock_configuration = true` and runs
   `autoinstall_known_extensions = false`. No `SET`, `INSTALL` or `LOAD` reaches it afterwards.
   Adding the extension means editing the source of truth
-  (`~/inframe/internal/duckdb/setup.sql`), putting the token there as a secret, and a launchd
+  (`~/duckdb-skills/server/setup.sql`), putting the token there as a secret, and a launchd
   `bootout` + `bootstrap`. That is a deliberate change, not something a skill does silently.
 - **The token is a secret, not a setting.** If it ever goes server-side it goes in `setup.sql`
   like every other endpoint and region, never in a client `SET`.

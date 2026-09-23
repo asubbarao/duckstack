@@ -112,7 +112,7 @@ Housekeeping is explicit and belongs in a maintenance window, never in a refresh
 An `s3://` data path therefore fails at the first data read, not at `ATTACH`, which reads as a
 DuckLake problem and is not one.
 
-Credentials are a server concern. They belong in `~/inframe/internal/duckdb/setup.sql` as a
+Credentials are a server concern. They belong in `~/duckdb-skills/server/setup.sql` as a
 `CREATE SECRET`, never in a client `SET`, never as a literal. Endpoints, regions and URL styles
 are secrets here too, not settings. Adding one means editing the source of truth plus a launchd
 `bootout` + `bootstrap` — a deliberate change, not something a skill does on its own. Until one

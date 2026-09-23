@@ -3,10 +3,12 @@ name: agent-dispatch
 description: >
   Use before fanning work out to subagents in this user's repos. Encodes his written
   orchestration practices (private repo asubbarao/devx-takeaways, agent-orchestration/)
-  as a dispatch packet plus the house rules every worker must carry: no .sh files
-  (shellfs inside .sql), no regexp, no selector-taking extractors, no lossy aggregation,
-  and evidence that is false-first. Covers launch-evidence-before-promotion, write-scope
-  as an enforcement boundary, bounded rounds, and recombination.
+  as a dispatch packet plus the house rules every worker must carry: Opus 5.5 set
+  explicitly unless a model is named (say which and why), no .sh or Python in the data path
+  (shellfs inside .sql), regex only on web and log text, no selector-taking extractors, no
+  lossy aggregation, and evidence that is false-first and read from CI/GitHub. Covers
+  launch-evidence-before-promotion, write-scope as an enforcement boundary, bounded rounds,
+  and recombination.
 ---
 
 # Dispatching agents in Alok's repos
@@ -67,6 +69,17 @@ terminal statuses. `pending` and `awaiting` are never terminal.
 
 ## Which model does the work
 
+**Claude subagents: Opus 5.5, set explicitly** — `model: "opus"` on every `Agent` call. Never
+leave it unset (the worker then inherits whatever the session was switched to), and never pick
+Sonnet or Haiku on your own for "scoped" work or searches. The owner overrides by naming a model
+("send a sonnet", "send a fable"). The one standing exception, his words: a *highly
+parallelizable* fan-out of small, identical, mechanical reads — one worker per folder, per repo,
+per month — goes to Sonnet, and the merge of what they return stays with Opus. The test is the
+shape of the task, not its importance; anything with judgement in it is Opus.
+
+**Always say which model you sent and why**, in the dispatch message and in the report ("Opus
+5.5 — the analysis needs judgement"). A model is a stated decision, never an accident of timing.
+
 Codex models, ranked by the owner against the Claude models — pick by the difficulty of the task:
 
 | model | sits | use for |
@@ -90,13 +103,24 @@ property of the diff blesses every existing violation.
   parameters explicitly — `delim`, `header`, `columns`/`names`, `types`, `quote` —
   and never leave a `column0`. The only legitimate shell artifact is a daemonizing
   plist. Starting a server for the length of a measurement is pipeline, not daemon.
-- **No `regexp_*`** without his explicit approval. **No selector-taking extractors**
+- **Regex: allowed on web pages and log lines, banned on backend queries.** Unstructured text
+  from outside — a fetched page, a CI or tool log (duck_hunt's `regexp:` format) — may be
+  matched with a regex; say so in one line. Anything structured (paths, hive keys, JSON,
+  timestamps) and any query against a backend database (Postgres in any environment, the app's
+  CRUD code, DuckDB over structured backend data) stays `regexp_*`-free without his explicit
+  approval. **No selector-taking extractors**
   (`json_extract`, `html_extract_text(doc,'//path')`) in committed code — readers
   only; mechanical test is positional arity ≥ 2 in `duckdb_functions()`.
 - **No `COUNT(*)`, `min`, `max`, `avg`.** `array_agg(DISTINCT c) AS cs, len(cs) AS n`.
 - **No enumeration** — no `split_part`, no positional indexing of structure.
-- One `.sql` per deliverable, built a layer at a time. No macros yet. Python only
-  where genuinely needed, run through `uv` (`uvx …`), never a hand-built venv.
+- One `.sql` per deliverable, built a layer at a time. No macros yet. **No Python and no
+  `.sh` in the data path** — fetch through shellfs, parse with readers, render with tera. A
+  scratch script a worker writes to get unstuck is removed before it reports (inside its
+  worktree; anywhere else it is listed for the main agent), and the deliverable must not
+  depend on it. Python outside the data path only where genuinely needed,
+  through `uv` (`uvx …`), never a hand-built venv.
+- **A name in backticks is an extension**: `INSTALL <name> FROM community; LOAD <name>;` in the
+  worker's own `:memory:` client is always allowed — say so in the brief.
 - **Delete nothing outside your own worktree** — list it for the main agent.
 - Nothing pushed, no PR, nothing another human can see, without his approval.
 - Never `-init` against DuckDB; it replaces `~/.duckdbrc`. Never `SET`/`INSTALL`/
@@ -110,7 +134,13 @@ counts as evidence of anything** — a total is evidence of exactly one thing: t
 file aborted early, if it drops.
 
 Every worker returns, per claim: the mutant applied, the failing output, the
-restored passing output. "Not null" and "length > 0" are not assertions. Quality
+restored passing output.
+
+**Evidence a teammate may see comes from CI and GitHub, not from this laptop.** Timing,
+test health and PR verification read GitHub Actions runs, jobs and steps (`gh run list/view
+--json` through shellfs — `/duckstack:ci-timing`) and the PR's own checks. A query over local
+logfiles, session transcripts or a `pytest | tail` capture cannot be handed to anyone; local
+runs are for iteration only. "Not null" and "length > 0" are not assertions. Quality
 gates run in a context that cannot silently edit what it reviews.
 
 ## 5. Recombination is routine

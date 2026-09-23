@@ -5,20 +5,25 @@ description: >
   parses 110 tool formats plus GitHub Actions / GitLab / Jenkins / Docker workflow logs into one
   39-column event schema (status, severity, ref_file, ref_line, test_name, fingerprint, …). Use
   when asked why CI is red, what a run's tests did, to diff two runs, to cluster build errors, or
-  to land a job log on dev as rows. Pairs with git-github (`gh` CLI fetches the run, duck_hunt
-  reads it) and with duck_tails (blame the ref_file:ref_line the parser points at).
+  to land a job log on dev as rows, or to time tests from a log that prints no durations
+  (pytest-xdist per-test ms from the Actions timestamps, vitest per-file ms, timeout plateaus).
+  Regex on log text is allowed. Pairs with ci-timing (the run, its jobs and steps), git-github
+  (`gh` CLI fetches the run, duck_hunt reads it) and duck_tails (blame the ref_file:ref_line the parser points at).
 argument-hint: "<run id | log path | 'this PR'> [question]"
 allowed-tools: Bash
 ---
 
-Everything below was verified 2026-09-17 on this machine: DuckDB 1.5.5 osx_arm64, `duck_hunt`
-68ca1c4 and `zipfs` installed in `~/.duckdb/extensions` for the **local client only**. Neither is
-on the dev server, so this is the one case where the parse genuinely happens client-side: parse
-in the `:memory:` client, then land the results on dev with
+Everything below was verified on this machine (2026-09-17, extended 2026-09-22): DuckDB 1.5.5
+osx_arm64, `duck_hunt` 68ca1c4 and `zipfs`. Parse in your own `:memory:` client
+(`INSTALL duck_hunt FROM community; LOAD duck_hunt; INSTALL zipfs FROM community; LOAD zipfs;`
+— always allowed), or on dev: `~/duckdb-skills/server/setup.sql` loads both and the dev MCP
+publishes `ci_hunt(zip, glob, format)` over `read_duck_hunt_log('zip://' || zip || '/' || glob, format)`
+(`/duckstack:agent-door`). Land client-side results on dev with
 `quack_query('quack:localhost:9494', $$CREATE OR REPLACE TABLE … AS …$$, token := getenv('QUACK_TOKEN'))`
 or write them out with `COPY … TO` parquet. Read `/duckstack:duck` §4 and `/duckstack:quack`
 first — the SQL process rules apply (reader first, keep the row, `array_agg` over `count` in
-base layers).
+base layers). Where the run and its zip come from, and the timing questions, are
+`/duckstack:ci-timing`.
 
 ## Get the log as a file, then read it
 
@@ -70,12 +75,14 @@ diagnostics; **delegation (hierarchy_level 4) did not fire on either repo** — 
 `docker run` and inframe's steps are `uv run pytest …`, neither matches the `Run <cmd>` patterns.
 Read the job file a second time with the tool parser you expect.
 
-## pytest-xdist: the petition and the reader
+## pytest-xdist: the reader
 
-`regexp_*` in SQL stays banned. This is duck_hunt's own `regexp:` *format* — the reader for a shape
-no built-in parser covers — and the petition is the row above: `pytest_text` returns 0 rows on
-xdist output. Named groups map onto schema columns (`severity`, `file`, `test_name`, `message`,
-`line`, `code`, `tool`).
+Regex on log text is allowed (Alok, 2026-09-22: "I don't care if you use regex on websites";
+CI and tool logs are the same case — unstructured text no reader infers). It stays banned on
+backend queries and on anything structured (paths, hive keys, JSON, timestamps). Say so in one
+line when you use it. duck_hunt's own `regexp:` *format* is the reader for a shape no built-in
+parser covers — `pytest_text` returns 0 rows on xdist output (row above). Named groups map onto
+schema columns (`severity`, `file`, `test_name`, `message`, `line`, `code`, `tool`).
 
 ```sql
 CREATE TEMP TABLE tests AS
@@ -89,6 +96,68 @@ FROM tests WHERE outcome <> 'PASSED' GROUP BY ALL;
 -- the summary lines, same reader
 FROM read_duck_hunt_log('zip://run.zip/*Backend Tests Shard*.txt', 'regexp:=+ (?P<message>\d+ passed.*) =+');
 ```
+
+### Per-test time from the Actions timestamps
+
+xdist prints no durations, but every Actions log line starts with a UTC timestamp. Keep it in
+`message` and the worker in `code`; a test's wall time is the gap to the previous result line
+**on the same worker** (so it includes that test's fixtures — the number a human cares about):
+
+```sql
+-- read_duck_hunt_log(source, format := 'auto', severity_threshold := 'all', content := 'full', context := 0)
+CREATE OR REPLACE TABLE raw_tests AS
+SELECT * FROM read_duck_hunt_log('zip://raw/run-<id>.zip/*Backend Tests Shard*.txt',
+  'regexp:(?P<message>\S+Z) \[(?P<code>gw\d+)\] \[\s*\d+%\] (?P<severity>PASSED|FAILED|SKIPPED|ERROR|XFAIL|XPASS) (?P<file>[^:\s]+)::(?P<test_name>\S+)');
+
+CREATE OR REPLACE TABLE tests AS
+SELECT log_file, right(message, 28)::TIMESTAMP AS ts, error_code AS gw, severity AS outcome,
+       ref_file AS file, test_name,
+       date_diff('millisecond', lag(ts) OVER (PARTITION BY log_file, gw ORDER BY ts), ts) AS ms
+FROM raw_tests;
+```
+
+- `right(message, 28)` — the first line of each job file carries a UTF-8 BOM before the
+  timestamp; the last 28 characters are the timestamp alone.
+- `PARTITION BY log_file, gw` — one shard file, one xdist worker. The first test on each worker
+  has `ms` NULL (no previous line); keep the row.
+- Per shard: `list_sum(array_agg(ms) FILTER (WHERE ms IS NOT NULL))` is its worker-seconds —
+  the shard-balance number `/duckstack:ci-timing` compares.
+
+**Plateaus are timeouts, not work.** A test that lands within a few ms of a round number of
+seconds (5.0 s, 10.0 s) is waiting on a timeout or a retry sleep — the cheapest seconds to win:
+
+```sql
+SELECT round(ms / 1000.0) AS plateau_s,
+       array_agg(file || '::' || test_name ORDER BY file, test_name) AS names, len(names) AS n
+FROM tests
+WHERE ms IS NOT NULL AND abs(ms - round(ms / 1000.0) * 1000) < 150 AND ms >= 2000
+GROUP BY plateau_s ORDER BY plateau_s DESC;
+```
+
+## vitest: the per-file reader
+
+vitest prints one line per test file: `✓ src/…/X.test.tsx (83 tests) 15247ms`, wrapped in ANSI
+colour codes. Verified 2026-09-22 on inframe run 35796637550 (three frontend shards):
+
+```sql
+CREATE OR REPLACE TABLE raw_fe AS
+SELECT * FROM read_duck_hunt_log('zip://raw/run-<id>.zip/*Frontend Tests Shard*.txt',
+  'regexp:(?P<message>\S+Z)  \S+ (?P<file>src/\S+) \S*?\(\S*?(?P<code>\d+) tests\S* (?P<line>\d+)\S*ms');
+-- ref_file = the test file, error_code = its test count (VARCHAR), ref_line = its wall ms (INTEGER)
+SELECT log_file, ref_file, error_code::INTEGER AS n_tests, ref_line AS file_ms
+FROM raw_fe ORDER BY file_ms DESC;
+```
+
+| pattern around `(?P<code>\d+)` | result on that run |
+|---|---|
+| `\S*?\(\S*?` (non-greedy) | **545 files, 6,651 tests** — against 553 files / 6,659 tests in the shards' own summary lines; the 8 missing files print no `✓` line |
+| `\S*\(\S*` (greedy) | 545 files but only 2,641 tests: the greedy `\S*` eats every digit but the last, so `83` reads as `3` |
+| `\S*\(\D*` | 3 rows, `code` empty — `\D` matches nothing in duck_hunt's regexp engine; don't use it |
+
+The `\S+`/`\S*?` around `✓` and the parentheses swallow the ANSI escapes; the summary lines
+(`Test Files … 185 passed`, `Tests … 2384 passed`, `Duration 383.58s (transform, setup, import, tests, environment)`)
+read with `'regexp:(?P<message>\s+(Test Files|Tests|Duration)\s.*)'` — plus one stray row per shard
+from the `Frontend Tests Shard N` header line; `import` (≈150 s) rivals `tests` (≈125 s).
 
 The permanent fix is upstream of DuckDB: add `--json-report --json-report-file=report.json` to
 the pytest step and upload it; `pytest_json` (priority 100, `execution_time` in seconds, one row
@@ -127,12 +196,18 @@ parser); a glob or `context := 1` forces batch mode and fills them. `fingerprint
 
 ## Landing it on dev
 
+ATTACH to a quack server is blocked on this machine; the result travels as a file. Parse in the
+client, write parquet, then read that file on dev (the `sql` MCP tool, or `quack_query`):
+
 ```sql
--- one run → one table, raw first, then the views
-LOAD quack; ATTACH 'quack:localhost:9494' AS dev (TYPE quack, TOKEN getenv('QUACK_TOKEN'));
-CREATE TEMP TABLE run AS FROM read_duck_hunt_workflow_log('run.zip', 'github_actions_zip');
--- ci_events(run_id, job_order, job_name, unit, unit_status, severity, status, tool_name, ref_file, ref_line, message, started_at, fingerprint)
-INSERT INTO dev.ci_events SELECT 35195699417 AS run_id, job_order, job_name, unit, unit_status, severity, status, tool_name, ref_file, ref_line, message, started_at, fingerprint FROM run;
+-- client (duckdb :memory:): one run → one parquet file, raw first
+LOAD zipfs; LOAD duck_hunt;
+COPY (SELECT 35195699417 AS run_id, * FROM read_duck_hunt_workflow_log('run.zip', 'github_actions_zip'))
+  TO 'raw/ci_events-35195699417.parquet' (FORMAT parquet);
+
+-- dev (the `sql` tool): the table is the union of every landed run
+CREATE OR REPLACE TABLE ci_events AS
+SELECT * FROM read_parquet('/abs/path/raw/ci_events-*.parquet', union_by_name := true, filename := true);
 ```
 
 Cross-run questions are then joins on `(job_name, unit, fingerprint)`; the flaky-test question is

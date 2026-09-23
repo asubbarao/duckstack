@@ -1,178 +1,65 @@
 # duckstack
 
-Public fork of [duckdb/duckdb-skills](https://github.com/duckdb/duckdb-skills) retargeted at
-the **duckstack**: one persistent DuckDB per machine held locked by a `quack` server, agents as
-stateless `:memory:` clients, an MCP sidecar as the agent door, and this user's SQL process
-rules. The style guide is the user's own repos (`asubbarao/duckdb-ops-toolkit` conduit,
-`duckdb-chrome-bridge`, `claudes-console`), not upstream. Upstream stays mergeable —
-`git fetch upstream && git merge upstream/main`.
+Alok's DuckDB skills for the **duckstack**: one persistent DuckDB per machine
+(`~/.duck/dev.duckdb`) held locked by an always-on server, agents as stateless `:memory:`
+clients, the `dev` MCP as the agent door, and his SQL process rules. The server itself is in
+this repo — `server/setup.sql`, which `~/.duck/setup.sql` links to. The style guide is his own
+repos (`duckdb-ops-toolkit` conduit, `duckdb-chrome-bridge`, `claudes-console`,
+`takehome-granica`); upstream `duckdb/duckdb-skills` is reference material, not a base.
 
-| Skill | Status | What changed |
-|---|---|---|
-| `duck` | **new** | the record label: boundary, the three stateless client forms, the reference repos, SQL process rules, 1.5.5 gotchas |
-| `attach-db` | rewritten | pick the door (`dev` / `dev-ro` / `quack:host:port` / Superhuman doc / a file no server holds), probe it, list its catalog, hand back the two-line head — **no state file** |
-| `query` | rewritten | one statement via `-c`, anything longer is a single `.sql` artifact via `-f`; `--#` lines are the human's instructions; joins through `dev.query($$…$$)` |
-| `crawl` | **new** | crawler × webbed with all 13 `crawl()` parameters, the capability ladder, the shape catalog, and `--chrome` (duckdb-chrome-bridge) for SPAs/auth |
-| `agent-door` | **new** | what the 9496 MCP can reach (only `dev.query`), raw JSON-RPC, review of `mcp-setup.sql` against the duckdb_mcp docs |
-| `git-github` | **new** | `duck_tails` + `gh` extension + `gh` CLI, as tables |
-| `duck-tails` | **new** | the local repo half, corrected and verified: `git://` is a filesystem, so **every reader works over a commit — Parquet included** (66 hive-partitioned blobs, hive keys intact); the reference SQL's house style applied to git data |
-| `install-duckdb` | note added | client-side only; the server's extensions live in `setup.sql` |
-| `read-file`, `convert-file`, `s3-explore`, `spatial`, `duckdb-docs`, `read-memories` | upstream | untouched; they run sandboxed `duckdb :memory:` clients |
-
-There is deliberately **no `state.sql`, no `.read`, no `-init`**: the persistent state is the
-server. Every statement carries `LOAD quack; ATTACH 'quack:localhost:9494' AS dev (TYPE quack,
-TOKEN getenv('QUACK_TOKEN'));` and the token is exported on the shell line
-(`QUACK_TOKEN="$(cat ~/.duck/token)"`). `-c`, `-f` and `-cmd` keep `~/.duckdbrc` (the resource
-floor); `-init` replaces it (verified: 15 threads / 38 GiB, no telemetry).
-
-Install from the local clone:
-
-```
-/plugin marketplace add ~/duckdb-skills
-/plugin install duckstack@duckstack
-```
-
-Codex reads the same manifest: `codex plugin marketplace add ~/duckdb-skills && codex plugin add duckstack@duckstack`.
-Both CLIs cache by version: after editing, `claude plugin uninstall duckstack@duckstack && claude plugin install duckstack@duckstack`
-and `codex plugin add duckstack@duckstack` again, or bump the version.
-
----
-
-# duckdb-skills (upstream README — its `state.sql` / `-init` mechanism is NOT used in this fork)
-
-A [Claude Code](https://claude.ai/code) plugin that adds DuckDB-powered skills for data exploration and session memory.
-
-## Installation
-
-### From the Discover tab (coming soon)
-
-We are working on submitting this plugin to the official Anthropic marketplace. Once listed, it will appear in the **Discover** tab when you run `/plugin` inside Claude Code.
-
-### From GitHub (available now)
-
-Add the repository as a plugin source and install:
-
-```
-/plugin marketplace add duckdb/duckdb-skills
-```
-```
-/plugin install duckdb-skills@duckdb-skills
-```
-
-This registers the GitHub repo as a marketplace and installs the plugin. Skills will be available as `/duckstack:<skill-name>` in all future sessions.
-
-### Updating
-
-To pull the latest version, update the marketplace first and then the plugin:
-
-```
-/plugin marketplace update duckdb-skills
-/plugin update duckdb-skills@duckdb-skills
-```
+There is deliberately **no `state.sql`, no `-init`, no ATTACH to the server**: the persistent
+state is the server. An agent reaches it through the `dev` MCP (`query`, `sql`, and the task
+tools), `POST localhost:9495/sql`, or `quack_query('quack:localhost:9494', $$…$$, token :=
+getenv('QUACK_TOKEN'))` from its own `duckdb :memory:` — see `/duckstack:agent-door`. `-c`, `-f`
+and `-cmd` keep `~/.duckdbrc` (the resource floor); `-init` replaces it.
 
 ## Skills
 
-### `attach-db`
-Attach a DuckDB database file for interactive querying. Explores the schema (tables, columns, row counts) and writes a SQL state file so all other skills can restore the session automatically. You can choose to store state in the project directory (`.duckdb-skills/state.sql`) or in your home directory (`~/.duckdb-skills/<project>/state.sql`).
+Generated from each `skills/*/SKILL.md` frontmatter (`read_yaml_frontmatter('skills/*/SKILL.md')`
+→ `COPY … (FORMAT markdown)`); regenerate it the same way when a description changes.
+
+| Skill | What it is for |
+|---|---|
+| `agent-dispatch` | Use before fanning work out to subagents in this user's repos. Encodes his written orchestration practices (private repo asubbarao/devx-takeaways, agent-orchestration/) as a dispatch packet plus the house rules every worker must carry: Opus 5.5 set explicitly unless a model is named (say which and why), no .sh or Python in the data path (shellfs inside .sql), regex only on web and log text, no selector-taking extractors, no lossy aggregation, and evidence that is false-first and read from CI/GitHub. Covers launch-evidence-before-promotion, write-scope as an enforcement boundary, bounded rounds, and recombination. |
+| `agent-door` | How any agent reaches the dev DuckDB — the one always-on database on this machine. Three doors, one database, no attach: the `dev` MCP (`query`, `sql` tools), POST localhost:9495/sql, or quack_query from your own `:memory:` DuckDB. Also the task tools: git_tree and git_read (a repo through duck_tails), ci_hunt (an Actions log zip through duck_hunt), render (a tera template to a file), ext_docs, and the agent-stream tools. Use before the first statement that touches dev, when a tool or port in your notes no longer answers, or when an agent without MCP needs to run SQL on dev. |
+| `agent-log` | Log what you did as parquet, in one call (a COPY through the dev MCP `sql` tool), so a human can read every agent's work in SQL. Use whenever you run a query or a program worth keeping, and whenever you dispatch subagents — they call this themselves, you do not collect their output. One call per artifact: the same token is stored as text and executed, so the result cannot be invented; a crash is a row, not a lost turn. `FILENAME_PATTERN '{uuid}'` makes n writers into one directory safe with no lock. Works the same for SQL, Python, .bat or any other language. |
+| `agent-stream` | Search and read every agent conversation on this machine — Claude Code, Claude Desktop, Codex — as one table on dev, refreshed every 5 minutes. Use when asked to find a past conversation ("the codex chat about X", "what did I say about Y"), to read what the user typed recently, to continue earlier work, or to check what an agent actually ran. MCP tools: stream_search, stream_session, user_messages. Never grep transcript files or read ~/.claude by hand. |
+| `ci-timing` | GitHub Actions timing as tables — where CI minutes go, read from GitHub so anyone with `gh` access can re-run it. `gh run list/view --json` and `gh api` (a PR's files, a run's log zip) through shellfs, every response landed under raw/ with a UTC timestamp, then runs / jobs / steps / PR-files tables and the questions that matter: the long pole, setup vs suite inside a job, whether the change-detection gate runs jobs a PR did not need, and whether test shards are balanced. Use when asked why CI is slow, what a run spent its time on, for a CI or PR review page, or for any timing evidence a teammate may see — never from local logs. Worked example: ~/inframe/internal/ci/duckdb/ (review.sql, slow.sql). |
+| `convert-file` | Convert any data file to another format: CSV, Parquet, JSON, Excel, GeoJSON, and more. Use when the user says "convert to parquet", "save as xlsx", "export as JSON", "make this a CSV", "turn into parquet", or any variation of format-to-format conversion for data files. Also triggers when the user wants to write Parquet, Excel, or other binary formats that Claude cannot produce natively. |
+| `crawl` | Pages as tables. crawler × webbed on the dev quack for anything a plain HTTP fetch can reach; the logged-in Chrome (duckdb-chrome-bridge) for SPAs and authenticated pages. Use when the user says crawl, scrape, fetch these URLs, hit these links, get the page, read the docs at, or gives URLs to read. States every crawl() parameter, lands the raw response first, parses by the capability ladder — never regex, never uncorrelated laterals, never an error page as a seed, never chrome_open to read. |
+| `duck` | The DuckDB execution boundary and SQL process rules for this machine — read before any DuckDB work. One persistent dev DuckDB is held locked by a quack server; every agent is a stateless `:memory:` client that LOADs quack and talks to it — one statement, or one `.sql` artifact. Use whenever a task touches DuckDB, the duckstack, quack, the dev MCP, crawler/webbed, Chrome-as-relations, or when an agent is about to write SQL for this user. Every other duckdb-skills skill assumes this one. |
+| `duck-hunt` | Test results, build output, lint output and CI job logs as tables — "readable CI". duck_hunt parses 110 tool formats plus GitHub Actions / GitLab / Jenkins / Docker workflow logs into one 39-column event schema (status, severity, ref_file, ref_line, test_name, fingerprint, …). Use when asked why CI is red, what a run's tests did, to diff two runs, to cluster build errors, or to land a job log on dev as rows, or to time tests from a log that prints no durations (pytest-xdist per-test ms from the Actions timestamps, vitest per-file ms, timeout plateaus). Regex on log text is allowed. Pairs with ci-timing (the run, its jobs and steps), git-github (`gh` CLI fetches the run, duck_hunt reads it) and duck_tails (blame the ref_file:ref_line the parser points at). |
+| `duck-tails` | A git repository as a filesystem, not just as a log. `LOAD duck_tails` registers the `git://` filesystem, and **every DuckDB reader works over it — including Parquet** (verified: 66 hive-partitioned Parquet blobs read straight out of a commit, hive keys intact, `parquet_metadata` and all). The history tables (`git_log`, `git_tree`, `git_read`, `git_status`, blame, diffs) are the other half. Use when asked to read a repo at a revision, read data committed to a repo, compare a dataset across commits, inventory what a repo contains, or when about to shell out to `git show`/`git archive`, `gh api` or curl to get a file's bytes — including a file in a GitHub repo, which is `git clone --bare` first, then read here (dev MCP tools: git_tree, git_read). Read `/duckstack:duck` first — its SQL process rules apply to git data too. |
+| `duckdb-docs` | Search DuckDB and DuckLake documentation and blog posts. Returns relevant doc chunks for a question or keyword using full-text search against a locally cached index. |
+| `ducklake` | Landing raw pulls in a DuckLake so a re-pull is a snapshot instead of an overwrite, and reaching a DuckLake catalog from this machine. Use when attaching a lake, when an insert produces a lake with no parquet in it, when a `ducklake:` ATTACH fails, when asked to backfill or re-pull a window, or when deciding where a raw table should live. |
+| `ext-catalog` | The DuckDB community extension catalog on dev — every extension's community page, README and function tables, parsed into rows. Use before using an extension you have not used today, when asked what an extension does or which functions/settings/parameters it has, when choosing an extension for a job, or when the user half-remembers a name ("mini something", "the js one") — find it with contains() on agents.ext_catalog, never by guessing or web search. MCP tool: ext_docs. Read this instead of guessing parameters or fetching the docs site. |
+| `git-github` | Git history and GitHub as tables — "readable git". duck_tails for any local repository (git_log, git_tree, git_read, git_status, blame, diffs, git:// paths at any revision), the gh extension for public GitHub metadata and gh:// file reads, and the gh CLI (authenticated) for private repos and raw file contents landed into DuckDB. Use when asked to read a repo, look at what changed, hit a GitHub URL, list issues/PRs, or compare files across commits. |
+| `install-duckdb` | Install or update DuckDB extensions. Each argument is either a plain extension name (installs from core) or name@repo (e.g. magic@community). Pass --update to update extensions instead of installing. |
+| `markdown` | Read, analyze, convert, or emit Markdown with DuckDB's markdown extension. Reach for this when .md files, Markdown text, headings, sections, code blocks, links, tables, frontmatter, or conversion to typed document blocks are the data source. |
+| `one-pager` | Turn a DuckDB analysis into a shareable, self-contained HTML one-pager rendered by DuckDB itself: one .sql file that fetches through shellfs, lands raw responses under raw/, builds tables and page views, draws charts as SVG with the `quickjs` extension (miniplot second), and renders the page with `tera` (tera_render) in the granica memo style — amber Verdict, scoreboard card, "What we ran" tiles. No .sh, no Python, no hand-written HTML file, no dash. Use when asked for "something to share", "a one pager", "a report page", "a dashboard", "charts of X", or when a GUI would be the wrong deliverable. Exemplars: takehome-granica analysis/report.html + tera/recommend.sql, and ~/inframe/internal/ci/duckdb/slow.sql and review.sql. |
+| `parser_tools` | Validate SQL and inspect its parsed tables, functions, statements, and WHERE conditions with DuckDB's native parser. Reach for this when SQL text or extracted code blocks must be structurally classified without regex, keyword matching, or executing the SQL. |
+| `pdf` | PDFs as tables, with the `pdf` community extension — never poppler CLI, pypdf, pdfplumber or any Python library. Use when the user gives a .pdf path or URL, says read/extract/parse this PDF, asks what a document says, wants its tables, forms, metadata, signatures or page images, or wants a PDF merged, split, rotated, redacted or written. Reads at five grains (page, line, word+bbox, layout element, retrieval chunk) and renders pages to PNG without pdftoppm. |
+| `quack` | How to call the Quack server: quack_query, one complete body, no attach. Use before any statement that touches the server, when a table "does not exist", when a join fails with "Multiple streaming scans", or when reaching for ATTACH / .read / SET VARIABLE to set up. |
+| `query` | Run SQL on the dev quack (or another explicitly selected door) or ad-hoc against files. Accepts raw SQL, a natural-language question, or a path to a .sql artifact. One statement runs with `duckdb :memory: -c`; anything longer is a single .sql artifact run by path with `-f` — no state file, the ATTACH is in the head. Uses DuckDB Friendly SQL and this user's SQL process rules; `--#` lines in an artifact are the human's instructions. |
+| `read-file` | Read any data file (CSV, JSON, Parquet, Avro, Excel, spatial, SQLite, Markdown, YAML, HTML, XML, PDF) or remote URL (S3, HTTPS). For deeper PDF work (multiple grains, OCR, forms, redaction, writing) use /duckstack:pdf instead. Use when user references a data file, asks "what's in this file", or wants to preview/profile a dataset. Not for source code. |
+| `read-memories` | Search past Claude Code session logs to recall prior decisions, patterns, or unresolved work. Use when user says "do you remember", "what did we do", references past conversations, or you need context from prior sessions. |
+| `s3-explore` | Explore and query data on S3, Cloudflare R2, GCS, MinIO, or any S3-compatible storage. Use when the user mentions an s3://, r2://, gs://, or gcs:// URL, asks "what's in this bucket", wants to list remote files, preview remote Parquet/CSV/JSON, or query data on object storage without downloading it. Also triggers when the user wants to know the size, schema, or row count of remote datasets. |
+| `self-dispatch` | Self-dispatch — the database writes the statement it cannot bind, then runs it. Use whenever a table function (glob, ls, lsr, read_text, read_csv, read_blob, crawl, quack_query, query) needs a value that lives in a column ("does not support lateral join column parameters"), whenever work must fan out per row, or whenever an agent is about to reach for SET VARIABLE, a macro, a loop, Python or a shell script to get around that wall. On dev: rows → statements → array_agg(http_post_form to /sql) → UNNEST, through the dev MCP `sql` tool or POST localhost:9495/sql. No macro. Other DuckDBs: quackapi in-process, the two-pipe form, or the quack loopback. |
+| `spatial` | Answer questions about spatial data using DuckDB. Use when the user mentions locations, coordinates, lat/lng, distances, maps, addresses, "near", "within", "closest", geographic names, or spatial file formats (GeoJSON, Shapefile, GeoPackage, GPX, GeoParquet). Also triggers when the user wants to find places, buildings, or roads — Overture Maps provides free global data on S3 with zero API keys. Handles spatial joins, distance calculations, containment checks, density analysis, and format conversions for geographic data. |
+| `superhuman-docs` | Read a Superhuman Docs (ex-Coda) document and land it on the dev quack as tables. Two independent doors: the Superhuman Docs MCP connector (OAuth, reads page prose AND tables) and the `superhuman_docs` DuckDB community extension (API token, ATTACH, tables only). Use when given a docs.superhuman.com or coda.io URL, when asked to read an InFrame HUB page, or when deciding which door a Superhuman doc should come through. |
+| `yaml` | Read, inspect, validate, extract, convert, or write YAML with DuckDB's yaml extension. Reach for this when the source is .yaml/.yml, YAML frontmatter, an inline YAML value, or a remote description.yml that should become typed relational columns. |
+
+## Install
+
+From the local clone — the marketplace registers as `duckdb-skills`, the plugin is `duckstack`:
 
 ```
-/duckstack:attach-db my_analytics.duckdb
+/plugin marketplace add ~/duckdb-skills
+/plugin install duckstack@duckdb-skills
 ```
 
-Supports multiple databases — running `attach-db` again can append to the existing state file.
-
-### `query`
-Run SQL queries against attached databases or ad-hoc against files. Accepts raw SQL or natural language questions. Uses DuckDB's Friendly SQL dialect. Automatically picks up session state from `attach-db`.
-
-```
-/duckstack:query FROM sales LIMIT 10
-/duckstack:query "what are the top 5 customers by revenue?"
-/duckstack:query FROM 'exports.csv' WHERE amount > 100
-```
-
-### `read-file`
-Read and explore any data file — CSV, JSON, Parquet, Avro, Excel, spatial, SQLite, Jupyter notebooks, and more — locally or from remote storage (S3, GCS, Azure, HTTPS). Auto-detects the format by file extension using a built-in `read_any` table macro. Suggests `query` for further exploration.
-
-```
-/duckstack:read-file variants.parquet what columns does it have?
-/duckstack:read-file s3://my-bucket/data.parquet describe the schema
-/duckstack:read-file https://example.com/data.csv how many rows?
-```
-
-### `duckdb-docs`
-Search DuckDB and DuckLake documentation and blog posts using full-text search against the hosted search indexes. No local setup required — queries run over HTTPS by default, with an option to cache the index locally for faster offline searches.
-
-```
-/duckstack:duckdb-docs window functions
-/duckstack:duckdb-docs "how do I read a CSV with custom delimiters?"
-```
-
-### `read-memories`
-Search past Claude Code session logs to recover context from previous conversations — decisions made, patterns established, open TODOs. Offloads large result sets to a temporary DuckDB file for interactive drill-down.
-
-```
-/duckstack:read-memories duckdb --here
-```
-
-### `install-duckdb`
-Install or update DuckDB extensions. Supports `name@repo` syntax for community extensions and a `--update` flag that also checks whether your DuckDB CLI is on the latest stable version.
-
-```
-/duckstack:install-duckdb spatial httpfs
-/duckstack:install-duckdb gcs@community
-/duckstack:install-duckdb --update
-```
-
-## Session state
-
-All skills share a single `state.sql` file per project — a plain SQL file containing ATTACH/USE/LOAD statements, secrets, and macros. When state is first needed, you'll be asked where to store it:
-
-1. **In the project directory** (`.duckdb-skills/state.sql`) — colocated with the project, optionally gitignored
-2. **In your home directory** (`~/.duckdb-skills/<project>/state.sql`) — keeps the repo clean
-
-The file is append-only and idempotent. Any skill restores the session via `duckdb -init state.sql`.
-
-## Local development
-
-To test skills locally from a clone of this repo:
-
-```bash
-# 1. Clone the repo
-git clone https://github.com/duckdb/duckdb-skills.git
-cd duckdb-skills
-
-# 2. Launch Claude Code with the local plugin directory
-claude --plugin-dir .
-```
-
-This loads the plugin from disk instead of the marketplace, so any edits to `skills/*/SKILL.md` take effect immediately — just start a new conversation (or re-run the slash command) to pick up changes.
-
-You can test individual skills directly:
-
-```
-/duckstack:read-file some_local_file.parquet
-/duckstack:duckdb-docs pivot unpivot
-/duckstack:query SELECT 42
-```
-
-**Prerequisites:** DuckDB CLI must be installed. If it isn't, the skills will offer to install it via `/duckstack:install-duckdb`.
-
-## How the skills work together
-
-Skills reference each other where it makes sense:
-
-- `read-file` suggests `query` for follow-up exploration and `attach-db` for persisting large files
-- `query`, `read-file`, and `read-memories` all use `duckdb-docs` to troubleshoot DuckDB errors automatically
-- All skills share the same `state.sql` — secrets and macros set up by `read-file` are reused by `query`, and databases attached by `attach-db` are available everywhere
-
-## Platform support
-
-These skills have been tested on **macOS** and **Linux**. Windows is not yet fully supported — some shell commands and path handling may not work as expected. We plan to improve Windows compatibility in a future release.
-
-## Reporting issues & suggestions
-
-Found a bug or have an idea for improvement? Open an issue at:
-
-**https://github.com/duckdb/duckdb-skills/issues**
-
-For DuckDB-specific bugs (extension loading, SQL errors), please include the DuckDB version (`duckdb --version`) and the full error message.
+Codex reads the same manifest: `codex plugin marketplace add ~/duckdb-skills && codex plugin add duckstack@duckdb-skills`.
+Both CLIs cache by version: bump `version` in `.claude-plugin/plugin.json` and
+`.claude-plugin/marketplace.json` together, then
+`claude plugin uninstall duckstack@duckdb-skills && claude plugin install duckstack@duckdb-skills`
+(and `codex plugin add duckstack@duckdb-skills` again).
