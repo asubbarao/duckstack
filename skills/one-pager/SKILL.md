@@ -112,7 +112,7 @@ row of bars and quickjs would add nothing.
 
 | Rule | Why |
 |---|---|
-| Precompute in SQL: `printf('%dm %02ds', s // 60, s % 60) AS txt`, `(v * 420 // max_v) AS px` | tera has no `//`; `a / 12 \| round` fails to parse. Keep the template dumb: pixels, labels and text arrive finished |
+| Precompute in SQL: `printf('%dm %02ds', s // 60, s % 60) AS txt`, `(v * 420 // max_v) AS px` | tera has no `//`; `a / 12 \| round` parses as round(a/12), but a filter in parentheses inside arithmetic or a comparison does not. Keep the template dumb: pixels, labels and text arrive finished |
 | Don't use the `escape` filter on struct-derived values | it failed at render on them; escape in SQL or in the quickjs chart, render with `autoescape := false` |
 | `{{ loop.index0 }}`, `{{ list \| length }}`, `{{ s \| truncate(length=48) }}`, `{{ s \| replace(from="a", to="b") }}`, `{{ s \| split(pat="/") \| last }}`, `{{ x \| default(value="…") }}` | the filters that work; `jobs.0.name` indexes a list |
 | Never alias a column or a view with an existing table's name (`runs`, `tests`, `jobs`) | it binds to the table's struct: `+(STRUCT…)` / `len(STRUCT…)` errors that look like nonsense |

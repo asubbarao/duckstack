@@ -63,7 +63,7 @@ link-following, depth, cache and result limit did not happen.
 | `sitemap(url, filter, timeout, user_agent, discover, max_depth, recursive)` | XML sitemap → rows; often an empty `<urlset/>` — check |
 | `read_html(...)` | registered by **both** crawler and webbed, resolves by arity: named parameters only |
 | `html_extract_links(doc)`, `html_extract_text(doc, xpath)`, `html_extract_tables(doc)`, `xml_to_json`, `::HTML` | webbed — parse what you hold |
-| `jq`, `htmlpath`, `css_select` | crawler CSS on raw strings — prefer the typed cast + webbed |
+| `css_select(col0, col1, col2)`, `jq(col0, col1[, col2])`, `htmlpath(col0, col1)` | crawler CSS on raw strings — `css_select` is the known-shape reach, see "CSS selectors" below |
 
 `CRAWL … INTO` statement syntax is **not** registered in this build (syntax error, server and
 CLI alike). The README documents a different codebase than the shipped build; `duckdb_functions()`
@@ -82,6 +82,43 @@ on dev wins.
 
 Tables: `html_extract_tables(doc)` — never walk `<tr>/<td>`. URLs are strings — literal
 `string_split` / `starts_with` / `netquack`, not `LIKE`, not regex.
+
+## CSS selectors: css_select
+
+Verified 2026-09-22 in `duckdb :memory:` (DuckDB 1.5.5, crawler 7725ede). **crawler**
+registers it, not webbed: with `autoload_known_extensions = false`, `LOAD crawler` alone lists
+`css_select` in `duckdb_functions()` and `LOAD webbed` alone does not.
+
+```sql
+-- css_select(html VARCHAR, selector VARCHAR, mode VARCHAR) -> VARCHAR
+--   all three required (a two-argument call is a Binder Error); first match only
+--   mode 'text'        -> the match's text, descendants included, outer whitespace trimmed
+--   mode 'html'        -> the match's outer HTML (attributes re-serialised in sorted order)
+--   mode 'attr:<name>' -> that attribute of the match
+SELECT css_select('<div class="a"><p id="p1">hi <b>there</b></p></div>', 'div.a p', 'text');     -- hi there
+SELECT css_select('<div class="a"><p id="p1">hi <b>there</b></p></div>', 'div.a p', 'html');     -- <p id="p1">hi <b>there</b></p>
+SELECT css_select('<a class="l" href="/x">one</a><a href="/y">two</a>', 'a', 'attr:href');        -- /x
+SELECT css_select(page.doc, 'li:nth-child(2)', 'text') FROM page;                                 -- a column works, per row
+```
+
+Exactly those three modes exist. Every other mode string tried — `all`, `list`, `count`,
+`inner`, `outer`, `inner_html`, `outer_html`, `innerHTML`, `outerHTML`, `json`, `texts`,
+`first`, `attr`, `href`, `''`, and `HTML` (modes are case-sensitive) — is **silently treated as
+`text`**; `attr:` with no name returns `''`. The quiet cases: no match, a missing attribute,
+and an invalid selector (`'p['`) all return `''`, not NULL — only a NULL argument gives NULL.
+So an empty result does not mean the element is empty; check with `'html'` before trusting it.
+Passing webbed's `::HTML` works (implicit cast to VARCHAR).
+
+Where it sits: **ingest whole first** when the shape is unknown — the Step 2 look, `read_html`
+/ `html.readability` / `html.schema`, `DESCRIBE`. Once the page's shape is known and the
+datum is one element, `css_select` with a CSS selector is the reach, **before** any
+`html_extract_text(doc, xpath)` or `html_extract_*` path; XPath only when CSS cannot express
+it (axes, text predicates). It returns one match, so it is for a known single element per
+page, not for lists — lists are `html_extract_links` / `html_extract_tables`. When you want
+that one element whole rather than one mode of it, `jq(html, selector)` returns the first match
+as `STRUCT(text VARCHAR, html VARCHAR, attr MAP(VARCHAR, VARCHAR))` (verified; its `html` is
+the inner HTML, and it is NULL on no match). The selector string belongs in a column of an upstream
+relation, not hand-written per SELECT item.
 
 ## The shape catalog (conduit `scraping.md`) — pick before writing
 
