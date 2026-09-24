@@ -16,14 +16,43 @@ program; it is two decisions — **crawl topology** (how the URL space is discov
 **section delimiter** (what bounds the datum on a page) — answered with crawler and webbed used
 raw. The deliverable is one `.sql` artifact whose `SELECT *` is a tabular grid of the pages.
 
+## Working method
+
+Use **crawler** to fetch, **webbed** to parse HTML, **JSONata or QuickJS** for transformations,
+**json_schema** for validation, and **Tera** for rendering. Use only the parts that simplify
+the task. Use urlpattern for URL operations and encoding, ScalarFS to expose stored content
+to readers, and separate `.tera` files when a template helps. Search `agents.ext_catalog`
+or `agents.ext_docs` for capabilities and documented parameters before checking live signatures.
+
+Keep raw responses, source URLs, fetch times, extracted links, dispatch receipts and errors
+alongside derived columns. Parse stored content again instead of fetching it again; refresh
+only missing or stale sources. An existing authoritative raw source needs no duplicate copy.
+Keep missing values NULL. `nullif(value, '')` is fine; replacing NULL with an empty string is
+reserved for a final ML input that explicitly requires it. Alternate real sources can use COALESCE.
+
+Self-dispatch is the default composition: source rows → complete SQL per row → scalar posts
+to the explicitly selected existing service → receipt array → CROSS JOIN UNNEST. Each dispatched
+statement binds its own literal arguments, allowing table functions to consume values from an
+outer row without requiring correlated table-function support. Preserve the generated SQL and
+inner errors: this handles outer binding restrictions, not invalid SQL or unsupported functions.
+
+Expect to iterate. Start with one representative extension or page, inspect actual rows and
+raw/parsed content, then refine the query. Verify required information survives parsing before
+expanding the crawl. Verify a fresh rerun skips fetches. Save the useful pattern and any observed
+version limitations in the reusable guidance; do not treat a first query or HTTP 200 as completion.
+Keep the pipeline readable, with intermediate columns available and a compact final projection.
+Use ordinary SQL for the pipeline; reserve macros for genuine reusable primitives.
+
 Input: `$@` — URLs; `--name` for the raw table (default `raw_<slug>`); `--shape` if the
 topology is known; `--chrome` when the page needs the user's session or a rendered SPA.
 
 ## Where it runs
 
-On **dev** (`quack:localhost:9494`), where `crawler`, `webbed`, `netquack`, `urlpattern`,
-`markdown` are loaded and the table is then queryable by every client and the agent door.
-The artifact:
+Use the explicitly selected existing service; do not infer a port from this guide. Install and
+load needed community extensions there. On the MCP/9495 path, use `agent_crawl(urls)` for seeds
+as required by the workspace instructions. The older direct-Quack example below applies only
+when that endpoint has been explicitly selected; replace its address with the selected address.
+Keep persistent tables on that service, with `:memory:` acting as a client/orchestrator.
 
 ```sql
 -- crawl_<name>.sql — crawler × webbed. QUACK_TOKEN="$(cat ~/.duck/token)" duckdb :memory: -f crawl_<name>.sql
@@ -66,8 +95,8 @@ link-following, depth, cache and result limit did not happen.
 | `css_select(col0, col1, col2)`, `jq(col0, col1[, col2])`, `htmlpath(col0, col1)` | crawler CSS on raw strings — `css_select` is the known-shape reach, see "CSS selectors" below |
 
 `CRAWL … INTO` statement syntax is **not** registered in this build (syntax error, server and
-CLI alike). The README documents a different codebase than the shipped build; `duckdb_functions()`
-on dev wins.
+CLI alike). This is a version-specific observation. Start with the extension catalog, then
+check the selected service's actual signatures and execute a small proof when docs disagree.
 
 ## The capability ladder — the first "yes" decides (conduit `parsing-with-crawler-and-webbed.md`)
 
