@@ -37,17 +37,29 @@ notes (`$query$…$query$`, `$notes$…$notes$`) and **nothing is escaped** — 
 
 ```sql
 COPY (SELECT uuidv7() AS row_id, '<type>' AS type, '<AGENT>' AS agent, '<SESSION_ID>' AS session_id,
+             '<AGENT>-<SESSION_ID>' AS agent_signature,
              $query$<SQL>$query$ AS query_was_ran, r.*,
              $notes$<NOTES>$notes$ AS markdown_notes, now() AS ts
       FROM query($query$<SQL>$query$) r)
-TO '/Users/aloksubbarao/.duck/agent_log/rows'
-   (FORMAT parquet, PARTITION_BY (type), OVERWRITE_OR_IGNORE true, FILENAME_PATTERN '{uuid}');
+TO '/Users/aloksubbarao/.duck/agent_log/signed'
+   (FORMAT parquet, PARTITION_BY (type, agent_signature), OVERWRITE_OR_IGNORE true, FILENAME_PATTERN '{uuid}');
 ```
 
-- `<AGENT>` is your model name: `opus`, `terra`, `luna`, `sol`, … Nothing derives it.
+- `<AGENT>` is `<system>-<model>-<version>`, plus `-<thinking level>` when you know it:
+  `claude-opus-5.5`, `claude-sonnet-5`, `codex-terra-5.6-high`, `codex-luna-5.6-medium`.
+  Nothing derives it — a bare `terra` does not say which Terra or how hard it thought.
+- `agent_signature` is `<AGENT>-<SESSION_ID>`, and it is the second partition. `type` comes
+  first because it is what a reader filters on; the signature partition is there for safety —
+  each writer owns its own directory, so with `OVERWRITE_OR_IGNORE` and
+  `FILENAME_PATTERN '{uuid}'` no writer can touch another's files.
+- `markdown_notes` is always present: what you'd tell the reader about this row. NULL only when
+  there is genuinely nothing to add.
 - `<SESSION_ID>` is your `CLAUDE_CODE_SESSION_ID` or `CODEX_THREAD_ID`. Pass it as a literal —
   `getenv()` on dev reads the server's environment, not yours.
 - `query()` takes exactly one SELECT; a query that fails returns its error and writes nothing.
+- `signed/` is the `(type, agent_signature)` layout. The older `rows/` beside it is `(type)`
+  only; never mix the two depths in one directory — `read_parquet('**/*.parquet',
+  hive_partitioning := true)` fails with "Hive partition mismatch … key agent_signature not found".
 
 No `dev` MCP attached? Same statement, same door, over HTTP:
 `curl -s -X POST localhost:9495/sql --data-urlencode sql@statement.sql`.
@@ -56,7 +68,7 @@ Read it back with the same tool:
 
 ```sql
 SELECT agent, query_was_ran, markdown_notes, * EXCLUDE (agent, query_was_ran, markdown_notes)
-FROM read_parquet('/Users/aloksubbarao/.duck/agent_log/rows/**/*.parquet',
+FROM read_parquet('/Users/aloksubbarao/.duck/agent_log/signed/**/*.parquet',
                   hive_partitioning := true, union_by_name := true)
 WHERE type = '<type>' ORDER BY row_id;
 ```
@@ -95,9 +107,10 @@ COPY (SELECT 1) TO '| mkdir -p <DIR>';
 COPY (SELECT uuidv7() AS row_id, '<type>' AS type,
              '<AGENT>' AS agent, agent_session().system AS agent_system,
              agent_session().session_id AS session_id,
+             '<AGENT>-' || coalesce(agent_session().session_id, 'no-session') AS agent_signature,
              '<SQL>' AS query_was_ran, (<SQL>)::VARCHAR AS result,
              '<NOTES>' AS markdown_notes, md_valid('<NOTES>') AS notes_ok, now() AS ts)
-TO '<DIR>' (FORMAT parquet, PARTITION_BY (type), OVERWRITE_OR_IGNORE true,
+TO '<DIR>' (FORMAT parquet, PARTITION_BY (type, agent_signature), OVERWRITE_OR_IGNORE true,
             FILENAME_PATTERN '{uuid}');
 ```
 
@@ -107,9 +120,10 @@ Same statement; the result arrives as typed columns instead of one string, so it
 
 ```sql
 COPY (SELECT uuidv7() AS row_id, '<type>' AS type, '<AGENT>' AS agent,
+             '<AGENT>-' || coalesce(agent_session().session_id, 'no-session') AS agent_signature,
              '<SQL>' AS query_was_ran, '<NOTES>' AS markdown_notes, now() AS ts, r.*
       FROM (<SQL>) r)
-TO '<DIR>' (FORMAT parquet, PARTITION_BY (type), OVERWRITE_OR_IGNORE true,
+TO '<DIR>' (FORMAT parquet, PARTITION_BY (type, agent_signature), OVERWRITE_OR_IGNORE true,
             FILENAME_PATTERN '{uuid}');
 ```
 
@@ -126,13 +140,14 @@ COPY (SELECT '<CODE>') TO '<DIR>/<NAME>.py' (FORMAT csv, HEADER false, QUOTE '')
 
 -- 2. store the same token and run it. `2>&1; true` is required, see below.
 COPY (SELECT uuidv7() AS row_id, 'programs' AS type, '<AGENT>' AS agent,
+             '<AGENT>-' || coalesce(agent_session().session_id, 'no-session') AS agent_signature,
              'python3 <NAME>.py' AS ran, '<CODE>' AS code,
              (SELECT string_agg(line, chr(10)) FROM read_csv(
                 'python3 <DIR>/<NAME>.py 2>&1; true |',
                 header := false, columns := {'line':'VARCHAR'}, ignore_errors := true)
              ) AS result,
              '<NOTES>' AS markdown_notes, now() AS ts)
-TO '<DIR>' (FORMAT parquet, PARTITION_BY (type), OVERWRITE_OR_IGNORE true,
+TO '<DIR>' (FORMAT parquet, PARTITION_BY (type, agent_signature), OVERWRITE_OR_IGNORE true,
             FILENAME_PATTERN '{uuid}');
 ```
 
@@ -150,8 +165,8 @@ Swap `python3` for `bash`, `cmd /d /s /c`, `node` — the row shape does not cha
 - **`try()` cannot rescue a broken scalar subquery** — `TRY can not be used in combination with a
   scalar subquery`. For SQL, a broken query means no row at all; that is honest, and the missing
   row is itself the signal.
-- **`<AGENT>` is yours to supply** (`opus`, `terra`, `luna`, …). Nothing derives it. `agent_session()`
-  supplies only the system and session id.
+- **`<AGENT>` is yours to supply** (`claude-opus-5.5`, `codex-terra-5.6-high`, …). Nothing derives
+  it. `agent_session()` supplies only the system and session id.
 
 ## agent_session()
 
@@ -194,6 +209,6 @@ SELECT status FROM quackapi_stop(19584);
 
 ## Dispatching subagents
 
-Give the worker its `<AGENT>` name, its session id and a `type`, and tell it to run the COPY above
+Give the worker its full `<AGENT>` label (system-model-version-thinking), its session id and a `type`, and tell it to run the COPY above
 through the `dev` MCP `sql` tool (or the local form, with `<DIR>`, for programs) — nothing else. It writes its own rows; you do
 not collect them, and a worker that fails writes a row saying so. Then read the directory.
