@@ -14,8 +14,15 @@ description: >
 # Dispatching agents in Alok's repos
 
 Read this before spawning workers. The source of truth is his private repo
-`asubbarao/devx-takeaways` under `agent-orchestration/` — `gh auth switch --user
-asubbarao` first, or private repos read as nonexistent under the work account.
+`asubbarao/devx-takeaways` under `agent-orchestration/`. Read it with `duck_tails`
+(`git_tree` / `git_read` via the `dev` MCP) from the bare clone
+`~/reviews/devx-takeaways.git`, refreshed with `git -C ~/reviews/devx-takeaways.git fetch
+origin '+refs/heads/*:refs/heads/*'` over the `github-asubbarao` SSH alias.
+
+**Never `gh auth switch` to read.** `gh` stays on `asubbarao-ifr`; the switch is global
+and breaks every other session's InFrame push. Personal repos are read and pushed over
+SSH. The only reason to switch is a `gh` write that must come from the personal account,
+such as a PR to `duckdb/community-extensions`; switch back to `asubbarao-ifr` right after.
 
 ## 1. A launch is not a worker
 
