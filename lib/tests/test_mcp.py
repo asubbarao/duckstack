@@ -43,7 +43,7 @@ def test_mcp_tools_over_stdio(tmp_path: Path) -> None:
                 "params": {
                     "name": "render_step",
                     "arguments": {
-                        "name": "orders_day",
+                        "create": "orders_day",
                         "sql": "SELECT * FROM <TABLE:orders>",
                         "ds": "2026-09-22",
                         "to_lake": True,
@@ -58,7 +58,7 @@ def test_mcp_tools_over_stdio(tmp_path: Path) -> None:
         assert "ATTACH IF NOT EXISTS '<pg_dsn>' AS pg_orders_day" in text
         assert "secret" not in text
         assert '$pg$SELECT * FROM "orders"$pg$' in text  # pg source: no test_ prefix
-        assert "DATE '2026-09-22'" in text
+        assert "'2026-09-22'::VARCHAR AS ds" in text
         assert "TO '/tmp/lake/orders_day'" in text
         ran = call(
             {
@@ -67,10 +67,10 @@ def test_mcp_tools_over_stdio(tmp_path: Path) -> None:
                 "params": {
                     "name": "run_step",
                     "arguments": {
-                        "name": "t",
+                        "create": "t",
                         "sql": "SELECT 1 AS a, 2 AS b",
                         "ds": "2026-09-22",
-                        "group": "mart",
+                        "namespace": "mart",
                         "mode": "insert",
                         "to_lake": True,
                         "lake": str(tmp_path),
@@ -79,7 +79,7 @@ def test_mcp_tools_over_stdio(tmp_path: Path) -> None:
             }
         )
         result = json.loads(ran["result"]["content"][0]["text"])
-        assert 'INSERT INTO mart."test_t" BY NAME' in result["bundle"]
+        assert 'INSERT INTO "test_t" BY NAME' in result["bundle"]
         assert result["receipt"] == [["mart", "test_t", 1, 3]]
         assert [p.name for p in tmp_path.rglob("*.parquet")] == ["part0.parquet"]
     finally:

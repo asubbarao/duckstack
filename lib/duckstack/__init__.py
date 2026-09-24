@@ -3,8 +3,8 @@
 from duckstack.ducks import Duck, Quack, run
 from duckstack.operators import (
     LOCAL,
-    DuckDBCreateTable,
-    DuckDBWaitForPartitionsOperator,
+    DuckDBOperator,
+    DuckDBWaitForPartitionOperator,
     DuckDBWaitForTableOperator,
     Env,
     Operator,
@@ -15,8 +15,8 @@ from duckstack.operators import (
 __all__ = [
     "LOCAL",
     "Duck",
-    "DuckDBCreateTable",
-    "DuckDBWaitForPartitionsOperator",
+    "DuckDBOperator",
+    "DuckDBWaitForPartitionOperator",
     "DuckDBWaitForTableOperator",
     "Env",
     "Operator",

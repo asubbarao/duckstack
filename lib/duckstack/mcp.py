@@ -1,4 +1,4 @@
-"""DuckDBCreateTable as MCP tools, over stdio.
+"""DuckDBOperator as MCP tools, over stdio.
 
 Two tools and nothing else. `render_step` builds the operator and returns the exact bundle a
 run would ship — read it before running it. `run_step` builds, ships and returns the bundle
@@ -12,24 +12,24 @@ from typing import Any
 
 from mcp.server.mcpserver import MCPServer
 
-from duckstack import Duck, DuckDBCreateTable, Env, Operator, Quack, render, run
+from duckstack import Duck, DuckDBOperator, Env, Operator, Quack, render, run
 
 server = MCPServer("duckstack")
 
 
 def _op(args: dict[str, Any]) -> Operator:
-    keys = "name sql group schema partition mode pg_attach to_lake pre_sql post_sql fmt".split()
-    return DuckDBCreateTable(**{k: args[k] for k in keys})
+    keys = "sql create namespace partition mode key pg_attach to_lake pre_sql post_sql fmt".split()
+    return DuckDBOperator(**{k: args[k] for k in keys})
 
 
 @server.tool()
 def render_step(
-    name: str,
+    create: str,
     sql: str,
     ds: str,
-    group: str = "stg",
-    schema: str | None = None,
-    partition: list[str] | None = None,
+    namespace: str = "stg",
+    key: str | None = None,
+    partition: dict[str, str] | None = None,
     mode: str = "overwrite",
     pg_attach: bool = False,
     to_lake: bool = False,
@@ -41,22 +41,23 @@ def render_step(
     pg_dsn: str = "",
 ) -> str:
     """The exact bundle a run would ship for one partition date — every macro and placeholder
-    resolved. group.<TABLE:name> from sql, partitioned by partition (default ["ds"], filled
-    from ds). mode is overwrite (INSERT OVERWRITE PARTITION, the default), replace, insert,
-    insert_or_ignore or insert_or_replace; <TABLE:x> and <DATEID> are the only macros. Returns
-    SQL, one statement per line, the last being the receipt."""
+    resolved. sql is written into partition (default {"ds": "<DATEID>"}) of <TABLE:create> in
+    namespace; the operator writes the CREATE TABLE. mode is overwrite (INSERT OVERWRITE
+    PARTITION, the default), replace, insert, insert_or_ignore or insert_or_replace (key names
+    the unique columns). sql filters with WHERE ds = '<DATEID>' or '<LATEST_DS:x>' and reads
+    FROM <TABLE:x>. Returns SQL, one statement per line, the last being the receipt."""
     bundle = render(_op(locals()), ds, Env(prod=prod, lake=lake, pg_dsn=pg_dsn))
     return bundle.replace(pg_dsn, "<pg_dsn>") if pg_dsn else bundle
 
 
 @server.tool()
 def run_step(
-    name: str,
+    create: str,
     sql: str,
     ds: str,
-    group: str = "stg",
-    schema: str | None = None,
-    partition: list[str] | None = None,
+    namespace: str = "stg",
+    key: str | None = None,
+    partition: dict[str, str] | None = None,
     mode: str = "overwrite",
     pg_attach: bool = False,
     to_lake: bool = False,
