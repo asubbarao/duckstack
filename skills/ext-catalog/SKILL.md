@@ -1,72 +1,145 @@
 ---
 name: ext-catalog
 description: >
-  The DuckDB community extension catalog on dev — every extension's community page, README and
-  function tables, parsed into rows. Use before using an extension you have not used today, when
-  asked what an extension does or which functions/settings/parameters it has, when choosing an
-  extension for a job, or when the user half-remembers a name ("mini something", "the js one") —
-  find it with contains() on agents.ext_catalog, never by guessing or web search. MCP tool:
-  ext_docs. Read this instead of guessing parameters or fetching the docs site.
-argument-hint: "[extension name | half-remembered fragment]"
+  Search stored DuckDB extension READMEs with glob patterns, read relevant lines through
+  ScalarFS, or parse Markdown/HTML into DuckBlocks. Discover extension functions and all
+  documented parameters before inspecting runtime signatures. Raw responses stay available.
+argument-hint: "[extension name | glob | function or parameter]"
 allowed-tools: mcp__dev__ext_docs, mcp__dev__query
 ---
 
-# ext-catalog
+# Extension catalog
 
-The catalog lives on dev, built by crawler × webbed from duckdb.org's community extension list,
-each extension's page, and its GitHub README. 270 extensions; 248 have parsed function tables
-(2026-09-22).
+Use the selected dev service at `http://localhost:9495/sql`. `agents.ext_docs` is the
+agent entrypoint: `SELECT extension_name, readme FROM agents.ext_docs`.
+The MCP tool `ext_docs(extension)` returns a complete README; for a specific question, query matching
+lines or blocks first. Do not dump a whole README or save it to a temporary file to search it.
 
-## Found from a half-remembered name
+Preserve raw source data as a general rule. Derive parsed fields, previews and search indexes
+from it. An existing authoritative source does not require another raw copy. Never replace
+missing values with empty strings; `nullif(value, '')` can normalize genuinely empty values.
 
-"There's textplot, but there's another, mini something" is a lookup, not a research task:
+## Glob search and line context
+
+Install and load the needed community extensions on the selected connection. These calls
+are idempotent; a missing extension is a reason to install it, not stop.
 
 ```sql
--- the `query` tool; contains(string, search) — plain substring, no LIKE, no regex
-SELECT extension_name, github_repo
-FROM agents.ext_catalog
-WHERE contains(extension_name, 'mini') OR contains(extension_name, 'js')
+INSTALL read_lines FROM community; LOAD read_lines;
+INSTALL scalarfs FROM community; LOAD scalarfs;
+
+SELECT extension_name
+FROM agents.ext_docs
+WHERE extension_name GLOB '*lines*'
 ORDER BY extension_name;
--- minijinja, miniplot, quickjs, jsonata, … (verified 2026-09-22)
 
--- or by what it does: the function names, across every extension
-SELECT array_agg(DISTINCT extension_name || '.' || function_name) AS hits
-FROM agents.ext_catalog_functions
-WHERE contains(function_name, 'chart');
--- [miniplot.bar_chart, miniplot.line_chart, miniplot.area_chart, miniplot.scatter_chart, miniplot.scatter_3d_chart]
+SELECT e.extension_name, l.line_number, l.content
+FROM agents.ext_docs e
+CROSS JOIN LATERAL read_lines_lateral(to_scalarfs_uri(e.readme), NULL, 'right') l
+WHERE e.extension_name GLOB '*lines*'
+  AND l.content GLOB '*Parameter*'
+ORDER BY e.extension_name, l.line_number;
 ```
 
-Then `INSTALL <name> FROM community; LOAD <name>;` in your own `:memory:` client — always
-allowed — and check `duckdb_functions()` for the real signatures.
+`GLOB` supports `*`, `?` and character classes and is case-sensitive. Apply `lower()` to
+the searched text with a lowercase pattern when case should not matter. The same pattern
+works across all stored READMEs by omitting the extension-name predicate.
 
-## The call (the `dev` MCP)
+Self-dispatch is the default general composition pattern: source rows generate complete SQL
+statements, scalar posts execute each statement on the selected service, and receipts remain
+attached to their input rows. Column values become literals inside independently bound table
+function calls, bypassing the outer query's column/lateral binding restrictions. It need not
+wait for a binder error. Valid function names, signatures and SQL are still required inside
+each statement; preserve and inspect the returned errors.
 
-`ext_docs(extension)` — the extension's community page, then its GitHub README, as ordered
-blocks: `element_type` is `paragraph`, `code`, `table` (the function and settings tables arrive
-as JSON with `headers` and `rows`), `link`, and so on. Read the `code` blocks for usage and the
-`table` blocks for every function, overload and setting.
+The correlated lateral example above is also verified. After finding a line, its second
+argument can be a range or context selection such as `'203 +/-12'`. The installed lateral
+reader accepts the path column but requires a literal line selection; self-dispatch supports
+a different selection per source row. Always order returned lines explicitly. Put filesystem
+patterns directly in readers, such as `read_lines('/explicit/root/**/*.sql')`, rather than
+enumerating them with `glob()` first.
 
-**The output is large** (about 200 blocks for a typical extension). When the harness saves it to
-a file instead of showing it, search that saved file for the function name or the word you need
-rather than paging through it, and read only the blocks around the hit.
-
-## The tables, for anything else (the `query` tool)
-
-| table | one row per |
-|---|---|
-| `agents.ext_catalog` | extension: `extension_name`, `github_repo`, `metadata` (JSON), `community_blocks`, `community_tables`, `github_blocks`, `github_tables`, `github_markdown`, the fetch statuses and `fetched_at` |
-| `agents.ext_catalog_functions` | row of a function table: `extension_name`, `function_name`, `function_type`, `description`, `examples`, plus the table's `headers` / `row_data` |
-| `agents.ext_catalog_function_docs` | view over the function rows |
-| `main.ext_blocks`, `main.ext_readme` | block of an extension's page / README (the crawl's landed layers) |
-| `main.ext_catalog_frontier` | the crawl's frontier view over the community list |
+For the full named-parameter API, capture a single README and read it in the **same SQL body**:
 
 ```sql
--- which extensions mention a word anywhere in their README
-SELECT e.extension_name, len(array_agg(b.element_order)) AS blocks
-FROM agents.ext_catalog e, unnest(e.github_blocks) AS t(b)
-WHERE contains(lower(b.content), 'parquet')
-GROUP BY ALL ORDER BY blocks DESC;
+COPY (SELECT readme::VARCHAR FROM agents.ext_docs WHERE extension_name = 'read_lines')
+TO 'variable:catalog_readme' (FORMAT variable, LIST none);
+
+SELECT line_number, content
+FROM read_lines('variable:catalog_readme',
+    lines := {start: 207, stop: 214}, "trim" := 'right')
+ORDER BY line_number;
 ```
 
-Verified 2026-09-22: `ext_docs('scalarfs')` returned the page blocks including its function and
-settings tables; the name and function lookups above returned the rows shown.
+`read_lines` parameters: `lines`, `trim`, `before`, `after`, `context`, `ignore_errors`.
+Selections include line numbers/lists, ranges, head/tail, context strings, and structs with
+`start`, `stop`, `line`, `lines`, `before`, `after`, `context`, `inclusive`.
+`trim` accepts `none`, `endings`, `right`, `left`, `both`, or booleans. Quote the named
+`"trim"` parameter because it is SQL syntax. Defaults preserve line endings; trimming affects
+content, not line numbers or byte offsets. `ignore_errors := true` skips unreadable/invalid
+UTF-8 input, so leave it false when fidelity matters. Paths also accept filesystem globs.
+
+ScalarFS provides `to_scalarfs_uri(content)` for inline content, `variable:name` for a stored
+value, `pathvariable:name` for stored paths, and `to_pathmacro_url()` for an approved primitive
+resolver. Variables are connection-local and do not cross MCP requests or self-dispatches.
+Use these helpers rather than temporary files or manual URI/SQL escaping.
+
+## README to DuckBlocks
+
+```sql
+INSTALL markdown FROM community; LOAD markdown;
+
+SELECT e.extension_name, b.*
+FROM agents.ext_docs e
+CROSS JOIN UNNEST(parse_markdown_to_duck_blocks(e.readme)) t(b)
+WHERE e.extension_name = 'read_lines'
+  AND b.element_type = 'table'
+  AND b.content GLOB '*ignore_errors*'
+ORDER BY b.element_order;
+```
+
+This returns the complete parameter table as one block: `content` holds JSON `headers` and
+`rows`; `encoding` is `json`. Filter headings, code, paragraphs, or tables as needed while
+retaining `kind`, `element_type`, `content`, `level`, `encoding`, `attributes`, `element_order`.
+The scalar Markdown parser accepts the README column directly. For actual Markdown paths,
+`read_markdown_blocks` and `read_markdown_sections` provide file/glob readers; consult the
+stored `markdown` README for section modes and parameters. ScalarFS-backed paths did not
+work with those two readers in the current build; the verified scalar parser avoids that
+reader limitation without copying content.
+
+The catalog already stores `github_blocks` as JSON. Inspect those directly with
+`json_each(github_blocks)` when reparsing is unnecessary. Keep the whole `value` to preserve
+block fields. For the **entire saved HTML page**, including content outside the README:
+
+```sql
+INSTALL webbed FROM community; LOAD webbed;
+
+SELECT c.extension_name, b.*
+FROM agents.ext_catalog c
+CROSS JOIN UNNEST(html_to_duck_blocks(c.github_raw->>'body')) t(b)
+WHERE c.extension_name = 'read_lines'
+  AND b.element_type = 'heading'
+ORDER BY b.element_order;
+```
+
+`duck_blocks_to_md(blocks)` renders ordered blocks back to Markdown. Parsing is a derived
+representation: it does not replace the saved raw HTML or the source README.
+
+## Stored layers and refresh
+
+| Object | Contents |
+|---|---|
+| `agents.ext_docs` | View: extension name and README |
+| `agents.ext_catalog` | One row per extension: `community_raw`, `github_raw`, `yaml_raw`, each page's fetch time, `community_links`, `github_blocks`, `readme` |
+| `agents.ext_catalog_list` | Raw community extension list and fetch time |
+| `agents.ext_catalog_dispatch` | Fetch identity, URL, generated SQL, receipt and errors |
+
+`~/duckdb-skills/server/ext_catalog.sql` dispatches individual pages using
+`ext_catalog_fetch.tera`. Startup loads it and cron runs hourly (`0 15 * * * *`); pages
+expire after three days. Fresh rows cause no fetch or persistent data rewrite. Reuse raw
+responses to add parsed columns. Catalog lookup comes first; inspect runtime signatures only
+to resolve a documentation gap or version mismatch, since READMEs may omit details.
+
+Verified on dev on 2026-09-24: glob search, correlated ScalarFS line reads, named line
+selection through a connection variable, the six-parameter Markdown table, saved JSON
+blocks, and full saved HTML to DuckBlocks. No recrawl or duplicate raw table was needed.
