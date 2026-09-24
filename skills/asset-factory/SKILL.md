@@ -86,11 +86,15 @@ Dataswarm in spirit.
 - A per-statement connection loses the table between statements. One connection per bundle.
 - `<TABLE:x>` inside a `$pg$…$pg$` body must be unqualified — a `lake.` prefix leaks into
   Postgres, where no such schema exists.
+- `COPY … PARTITION_BY` creates one directory level, never the lake root, so `run` creates a
+  local lake before shipping.
 
 ## Evidence
 
-`uv run --directory internal/duckdb/warehouse python check.py` — executes the create → mode →
-COPY chain on a local DuckDB and lands `dt=<ds>/part0.parquet`; `upsert` twice after a source
-change replaces the row and adds no duplicate; `insert_or_replace` honours a declared key; the
-`pg_attach` path renders to plain Postgres SQL; `render()` equals what the executor received.
+`uv run --directory lib pytest` — every mode executed twice on a local DuckDB with the result
+rows pinned (replace keeps the latest, insert appends, insert_or_ignore keeps the first value
+for a key, insert_or_replace takes the new one, upsert rewrites its own partition and keeps
+others), pre_sql before and post_sql after the write, the lake landing `dt=<ds>/part0.parquet`
+and reading back, the receipt row, `<TABLE:x>` / `<DATEID>` / `{placeholder}` resolution, the
+`pg_attach` bundle with its DSN redacted, and the real MCP entrypoint over stdio.
 Gates: `ruff`, `ruff format`, strict `mypy`.
