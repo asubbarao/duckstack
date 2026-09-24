@@ -1,15 +1,26 @@
-"""Dataswarm-style asset factories for DuckDB. operators.py builds Steps; ducks.py runs them."""
+"""Dataswarm-style operators for DuckDB. operators.py builds them; ducks.py runs them."""
 
 from duckstack.ducks import Duck, Quack, run
-from duckstack.operators import LOCAL, DuckDBCreateTable, Env, Step, render, resolve
+from duckstack.operators import (
+    LOCAL,
+    DuckDBCreateTable,
+    DuckDBWaitForPartitionsOperator,
+    DuckDBWaitForTableOperator,
+    Env,
+    Operator,
+    render,
+    resolve,
+)
 
 __all__ = [
     "LOCAL",
     "Duck",
     "DuckDBCreateTable",
+    "DuckDBWaitForPartitionsOperator",
+    "DuckDBWaitForTableOperator",
     "Env",
+    "Operator",
     "Quack",
-    "Step",
     "render",
     "resolve",
     "run",

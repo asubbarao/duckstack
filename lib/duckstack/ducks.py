@@ -1,6 +1,6 @@
-"""Where a Step runs. Duck is a local DuckDB and the default; Quack is the same over a quack
+"""Where an operator runs. Duck is a local DuckDB and the default; Quack is the same over a quack
 server. Either takes the whole rendered bundle in one call and returns its last statement's
-rows — the receipt."""
+rows — the receipt. run() walks deps first."""
 
 import os
 import secrets
@@ -8,7 +8,7 @@ from typing import Any
 
 import duckdb
 
-from duckstack.operators import LOCAL, Env, Step, render
+from duckstack.operators import LOCAL, Env, Operator, render
 
 
 class Duck:
@@ -47,12 +47,24 @@ class Quack(Duck):
 
 
 def run(
-    step: Step, ds: str, duck: Duck | None = None, env: Env = LOCAL, log: Any = None
-) -> tuple[str, list[Any]]:
-    """Render and ship a Step for one partition. Returns the bundle beside its receipt."""
-    bundle = render(step, ds, env)
+    op: Operator,
+    ds: str,
+    duck: Duck | None = None,
+    env: Env = LOCAL,
+    log: Any = None,
+    done: set[int] | None = None,
+) -> list[tuple[str, str, list[Any]]]:
+    """Run an operator for one partition on one Duck, its deps first — each operator once, a
+    failing wait stops everything downstream. Returns (name, bundle, receipt) per operator run,
+    in the order they ran."""
+    duck, done = duck or Duck(), set() if done is None else done
+    ran = [r for dep in op.deps for r in run(dep, ds, duck, env, log, done)]
+    if id(op) in done:
+        return ran
+    done.add(id(op))
+    bundle = render(op, ds, env)
     if "://" not in env.lake:  # COPY ... PARTITION_BY creates one level, never the lake root
         os.makedirs(os.path.expanduser(env.lake), exist_ok=True)
     if log:  # before shipping, so a failing bundle is on record — minus the DSN's password
         log(bundle.replace(env.pg_dsn, "<pg_dsn>") if env.pg_dsn else bundle)
-    return bundle, (duck or Duck()).execute(bundle)
+    return [*ran, (op.name, bundle, duck.execute(bundle))]

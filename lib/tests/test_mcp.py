@@ -79,8 +79,8 @@ def test_mcp_tools_over_stdio(tmp_path: Path) -> None:
             }
         )
         result = json.loads(ran["result"]["content"][0]["text"])
-        assert 'INSERT INTO mart."t" BY NAME' in result["bundle"]
-        assert result["receipt"] == [["mart", "t", 1, 3]]
+        assert 'INSERT INTO mart."test_t" BY NAME' in result["bundle"]
+        assert result["receipt"] == [["mart", "test_t", 1, 3]]
         assert [p.name for p in tmp_path.rglob("*.parquet")] == ["part0.parquet"]
     finally:
         p.stdin.close()
