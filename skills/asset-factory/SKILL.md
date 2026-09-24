@@ -62,8 +62,7 @@ would otherwise spell out (`ATTACH IF NOT EXISTS`, `COPY … PARTITION_BY`) is a
 | `create` | the table's name; the operator writes `CREATE TABLE IF NOT EXISTS <TABLE:create> AS … LIMIT 0` |
 | `partition` | `{"ds": "<DATEID>"}` by default; every key is the operator's — a column of that name in `sql` is replaced, never duplicated. `ds` is a string, as in Hive |
 | `namespace` | the DuckDB schema the operator writes and resolves `<TABLE:x>` in (default `stg`) |
-| `mode` | `overwrite` (default: DELETE the partition + `INSERT BY NAME`) · `replace` · `insert` · `insert_or_ignore` · `insert_or_replace` |
-| `key` | columns of a unique index, for the `insert_or_*` modes |
+| `mode` | `overwrite` (default: DELETE the partition + `INSERT BY NAME`) · `replace` · `insert`. No key-based modes: DuckLake has no primary keys or UNIQUE constraints (docs p. 101); its upsert is `MERGE INTO` |
 | `to_lake` | the partition → `<lake>/<create>/ds=<ds>/part0.parquet`, `OVERWRITE_OR_IGNORE`, idempotent |
 | `pg_attach` | Postgres attached `READ_ONLY`; `sql` runs *in* Postgres via `postgres_query`, its `<TABLE:x>` left bare; `DETACH` after |
 | `pre_sql` / `post_sql` | INSTALL/LOAD before, exports after |
@@ -96,15 +95,15 @@ family; S3, GCP, BigQuery transfers to theirs. `pg_attach` sits here until that 
 
 - A query reading an upstream partitioned table brings its `ds`; prepending another fails
   with "Duplicate column name". Partition columns are replaced via `COLUMNS(c -> …)`.
-- `ALTER TABLE … ADD PRIMARY KEY` fails on a rerun; `CREATE UNIQUE INDEX IF NOT EXISTS` is
-  idempotent and satisfies `INSERT OR REPLACE` / `OR IGNORE`.
+- DuckLake supports no indexes, primary keys or UNIQUE constraints (`~/Documents/ducklake-docs.pdf`
+  pp. 48, 57, 101), so there is no `ON CONFLICT` mode. Upserts there are `MERGE INTO`.
 - `COPY … PARTITION_BY` creates one directory level, never the lake root; `run` creates it.
 - `<TABLE:x>` inside a `$pg$…$pg$` body must be bare — Postgres has no `test_` tables.
 
 ## Evidence
 
-`uv run --directory lib pytest` (21 tests, real local DuckDB): overwrite rewrites its own day
-and keeps the others; every other mode twice with rows pinned; partition keys are the
+`uv run --directory lib pytest` (20 tests, real local DuckDB): overwrite rewrites its own day
+and keeps the others; writes are BY NAME; replace and insert pinned; partition keys are the
 operator's and land as hive directories; output is `test_`-prefixed off prod, bare in prod;
 waits fail until the table / day lands, then the downstream runs; `dep_list` runs first and a
 shared dep once; `<LATEST_DS:x>` picks the newest day and refuses an empty table; pre/post

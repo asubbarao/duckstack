@@ -18,7 +18,7 @@ server = MCPServer("duckstack")
 
 
 def _op(args: dict[str, Any]) -> Operator:
-    keys = "sql create namespace partition mode key pg_attach to_lake pre_sql post_sql fmt".split()
+    keys = "sql create namespace partition mode pg_attach to_lake pre_sql post_sql fmt".split()
     return DuckDBOperator(**{k: args[k] for k in keys})
 
 
@@ -28,7 +28,6 @@ def render_step(
     sql: str,
     ds: str,
     namespace: str = "stg",
-    key: str | None = None,
     partition: dict[str, str] | None = None,
     mode: str = "overwrite",
     pg_attach: bool = False,
@@ -43,9 +42,9 @@ def render_step(
     """The exact bundle a run would ship for one partition date — every macro and placeholder
     resolved. sql is written into partition (default {"ds": "<DATEID>"}) of <TABLE:create> in
     namespace; the operator writes the CREATE TABLE. mode is overwrite (INSERT OVERWRITE
-    PARTITION, the default), replace, insert, insert_or_ignore or insert_or_replace (key names
-    the unique columns). sql filters with WHERE ds = '<DATEID>' or '<LATEST_DS:x>' and reads
-    FROM <TABLE:x>. Returns SQL, one statement per line, the last being the receipt."""
+    PARTITION, the default), replace or insert. sql filters with WHERE ds = '<DATEID>' or
+    '<LATEST_DS:x>' and reads FROM <TABLE:x>. Returns SQL, one statement per line, the last
+    being the receipt."""
     bundle = render(_op(locals()), ds, Env(prod=prod, lake=lake, pg_dsn=pg_dsn))
     return bundle.replace(pg_dsn, "<pg_dsn>") if pg_dsn else bundle
 
@@ -56,7 +55,6 @@ def run_step(
     sql: str,
     ds: str,
     namespace: str = "stg",
-    key: str | None = None,
     partition: dict[str, str] | None = None,
     mode: str = "overwrite",
     pg_attach: bool = False,

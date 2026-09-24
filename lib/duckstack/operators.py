@@ -17,14 +17,12 @@ COPY = (
     "COMPRESSION zstd, COMPRESSION_LEVEL 19"
 )
 # overwrite is INSERT OVERWRITE PARTITION: once the table exists, rerunning a partition replaces
-# it and nothing else. The rest are for tables that are not rebuilt by partition. BY NAME
+# it and nothing else. replace and insert are for tables not rebuilt by partition. BY NAME
 # everywhere: positional INSERT rots on the first ADD COLUMN.
 MODES = {
     "overwrite": ["DELETE FROM {ref} WHERE {where}", "INSERT INTO {ref} BY NAME {select}"],
     "replace": ["CREATE OR REPLACE TABLE {ref} AS {select}"],
     "insert": ["INSERT INTO {ref} BY NAME {select}"],
-    "insert_or_ignore": ["INSERT OR IGNORE INTO {ref} BY NAME {select}"],
-    "insert_or_replace": ["INSERT OR REPLACE INTO {ref} BY NAME {select}"],
 }
 
 
@@ -82,7 +80,6 @@ def DuckDBOperator(
     namespace: str = "stg",
     partition: dict[str, str] | None = None,
     mode: str = "overwrite",
-    key: str | None = None,
     pg_attach: bool = False,
     to_lake: bool = False,
     pre_sql: str | None = None,
@@ -93,7 +90,7 @@ def DuckDBOperator(
     named by create — <TABLE:create> in namespace. The operator writes the CREATE TABLE, never
     the author. The partition columns are the operator's, never the sql's — an
     incoming column of the same name is replaced. The table is created from the sql's
-    shape the first time; key adds a unique index for the insert_or_* modes to honour.
+    shape the first time. No keys: DuckLake has none, so no mode depends on one.
 
     pg_attach: the sql is Postgres SQL, run there through postgres_query under an alias it
     never sees, READ_ONLY, detached after; its <TABLE:x> stays bare, since Postgres has no
@@ -112,7 +109,6 @@ def DuckDBOperator(
         *([pre_sql] if pre_sql else []),
         *_in(namespace),
         f"CREATE TABLE IF NOT EXISTS {ref} AS {shaped} LIMIT 0",
-        *([f"CREATE UNIQUE INDEX IF NOT EXISTS {table}_key ON {ref} ({key})"] if key else []),
         *[m.format(ref=ref, select=shaped, where=where) for m in MODES[mode]],
         *(
             [

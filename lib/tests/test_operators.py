@@ -108,32 +108,23 @@ def test_insert_appends_every_run(duck: Duck, env: Env) -> None:
     assert rows(duck, "t_insert") == [(DS, 1, 10), (DS, 1, 10), (DS, 2, 20), (DS, 2, 20)]
 
 
-def test_insert_or_ignore_keeps_the_first_value_for_a_key(duck: Duck, env: Env) -> None:
-    op = DuckDBOperator(sql=ORDERS, create="t_ignore", mode="insert_or_ignore", key="ds, id")
-    run(op, DS, duck, env)
-    duck.execute("UPDATE src.orders SET amt = 99 WHERE id = 2")
-    run(op, DS, duck, env)
-    assert rows(duck, "t_ignore") == [(DS, 1, 10), (DS, 2, 20)]
+def test_writes_by_name_when_the_sql_orders_columns_differently(duck: Duck, env: Env) -> None:
+    run(DuckDBOperator(sql=ORDERS, create="t_named"), "2026-09-21", duck, env)
+    # the table is (ds, id, amt); a positional INSERT would put amt into id
+    run(DuckDBOperator(sql="SELECT amt, id FROM src.orders", create="t_named"), DS, duck, env)
+    assert rows(duck, "t_named") == [
+        ("2026-09-21", 1, 10),
+        ("2026-09-21", 2, 20),
+        (DS, 1, 10),
+        (DS, 2, 20),
+    ]
 
 
-def test_insert_or_replace_takes_the_new_value_for_a_key(duck: Duck, env: Env) -> None:
-    op = DuckDBOperator(sql=ORDERS, create="t_repl", mode="insert_or_replace", key="ds, id")
-    run(op, DS, duck, env)
-    duck.execute("UPDATE src.orders SET amt = 99 WHERE id = 2")
-    # columns in the opposite order to the table: a positional INSERT would swap them
-    swapped = DuckDBOperator(
-        sql="SELECT amt, id FROM src.orders",
-        create="t_repl",
-        mode="insert_or_replace",
-        key="ds, id",
-    )
-    run(swapped, DS, duck, env)
-    assert rows(duck, "t_repl") == [(DS, 1, 10), (DS, 2, 99)]
-
-
-def test_unknown_mode_is_refused() -> None:
-    with pytest.raises(KeyError, match="merge"):
-        DuckDBOperator(sql=ORDERS, create="t_bad", mode="merge")
+def test_modes_that_need_a_key_are_refused() -> None:
+    # DuckLake has no primary keys or UNIQUE constraints, so ON CONFLICT modes cannot exist
+    for mode in ["merge", "insert_or_replace", "insert_or_ignore"]:
+        with pytest.raises(KeyError, match=mode):
+            DuckDBOperator(sql=ORDERS, create="t_bad", mode=mode)
 
 
 def test_pre_sql_runs_before_and_post_sql_after_the_write(duck: Duck, env: Env) -> None:
