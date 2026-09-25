@@ -108,9 +108,22 @@ INSTALL sqlite;   LOAD sqlite;                          -- ATTACH sqlite files (
 -- ---------------------------------------------------------------------------
 -- memory_limit          default 38.3 GiB (80% of RAM); alias max_memory. One tenant of a
 --                       laptop that also runs an IDE and Docker.
-SET GLOBAL memory_limit = '24GiB';
+-- New installs default to the team budget. Personal hosts must explicitly set
+-- DUCKSTACK_PROFILE=personal before adopting this startup file (16/24 GiB).
+-- This caps DuckDB-managed memory, not total process RSS or container memory.
+SET GLOBAL memory_limit = CASE
+  WHEN coalesce(nullif(getenv('DUCKSTACK_PROFILE'), ''), 'team') = 'team'
+   AND coalesce(nullif(getenv('DUCKSTACK_MEMORY_GIB'), ''), '4') IN ('4','6','8')
+    THEN coalesce(nullif(getenv('DUCKSTACK_MEMORY_GIB'), ''), '4') || 'GiB'
+  WHEN getenv('DUCKSTACK_PROFILE') = 'personal'
+   AND coalesce(nullif(getenv('DUCKSTACK_MEMORY_GIB'), ''), '24') IN ('16','24')
+    THEN coalesce(nullif(getenv('DUCKSTACK_MEMORY_GIB'), ''), '24') || 'GiB'
+  ELSE error('Invalid DuckStack profile/memory budget') END;
 -- threads               default 15 (5P+10E); alias worker_threads. Leave cores for the desktop.
-SET GLOBAL threads = 10;
+SET GLOBAL threads = CASE
+  WHEN coalesce(nullif(getenv('DUCKSTACK_PROFILE'), ''), 'team') = 'team' THEN 2
+  WHEN getenv('DUCKSTACK_PROFILE') = 'personal' THEN 10
+  ELSE error('Invalid DuckStack profile') END;
 -- scheduler_process_partial   default false. Fairness between concurrent agents' queries.
 SET GLOBAL scheduler_process_partial = true;
 -- allocator_background_threads default false. Return freed arenas to the OS; a weeks-long
@@ -588,6 +601,14 @@ WHERE (name = 'allow_community_extensions' AND value <> 'true')
 --    Cost: clients cannot SET SESSION over dev.query() either.
 -- ---------------------------------------------------------------------------
 
+
+-- Restore explicitly installed lake tools. Fresh hosts have no programs, so this
+-- is a no-op; no bucket, credentials, or producer identity is inferred here.
+CREATE TABLE IF NOT EXISTS agents.lake_programs (name VARCHAR PRIMARY KEY, sql VARCHAR NOT NULL);
+COPY (SELECT coalesce(string_agg(sql, chr(10) ORDER BY name), 'SELECT true AS lake_not_configured')
+      FROM agents.lake_programs WHERE name IN ('local_tools','shared_tools','publisher_tools'))
+TO 'variable:lake_restore' (FORMAT variable, LIST none);
+FROM quack_query('quack:localhost:9494', getvariable('lake_restore'), token:=getenv('QUACK_TOKEN'));
 
 SET GLOBAL lock_configuration = true;
 

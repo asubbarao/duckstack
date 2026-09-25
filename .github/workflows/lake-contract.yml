@@ -1,0 +1,64 @@
+name: Developer lake contract
+on:
+  pull_request:
+  push:
+    branches: [main, alok/duckstack-core-bootstrap]
+permissions:
+  contents: read
+jobs:
+  resource-profile:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install DuckDB CLI
+        run: brew install duckdb
+      - name: Allowed profiles and memory budgets
+        env:
+          DUCKSTACK_PRODUCER_ID: ci-fixture
+        run: |
+          set -euo pipefail
+          for memory in 4 6 8; do
+            DUCKSTACK_PROFILE=team DUCKSTACK_MEMORY_GIB=$memory duckdb -bail :memory: -f server/resource_profile.sql -f tests/resource_profile.sql
+          done
+          for memory in 16 24; do
+            DUCKSTACK_PROFILE=personal DUCKSTACK_MEMORY_GIB=$memory duckdb -bail :memory: -f server/resource_profile.sql -f tests/resource_profile.sql
+          done
+          DUCKSTACK_PROFILE=team duckdb -bail :memory: -f server/resource_profile.sql -f tests/resource_profile.sql
+          DUCKSTACK_PROFILE=personal duckdb -bail :memory: -f server/resource_profile.sql -f tests/resource_profile.sql
+      - name: Exercise actual startup budget statements
+        env:
+          DUCKSTACK_PRODUCER_ID: ci-fixture
+        run: |
+          set -euo pipefail
+          startup_profile_sql="$(sed -n '/^SET GLOBAL memory_limit = CASE/,/^  ELSE error.*END;/p; /^SET GLOBAL threads = CASE/,/^  ELSE error.*END;/p' server/setup.sql)"
+          test -n "$startup_profile_sql"
+          DUCKSTACK_PROFILE=team duckdb -bail :memory: -c "$startup_profile_sql" -f tests/resource_profile.sql
+          DUCKSTACK_PROFILE=personal duckdb -bail :memory: -c "$startup_profile_sql" -f tests/resource_profile.sql
+          if DUCKSTACK_PROFILE=team DUCKSTACK_MEMORY_GIB=16 duckdb -bail :memory: -c "$startup_profile_sql"; then
+            echo 'FAIL: startup accepted unsafe team budget'; exit 1
+          fi
+      - name: Reject unsafe or unidentified profiles
+        run: |
+          set -euo pipefail
+          if DUCKSTACK_PROFILE=team DUCKSTACK_PRODUCER_ID=ci-fixture DUCKSTACK_MEMORY_GIB=16 duckdb -bail :memory: -f server/resource_profile.sql; then
+            echo 'FAIL: team accepted a personal memory budget'; exit 1
+          fi
+          if DUCKSTACK_PROFILE=unknown DUCKSTACK_PRODUCER_ID=ci-fixture duckdb -bail :memory: -f server/resource_profile.sql; then
+            echo 'FAIL: unknown profile accepted'; exit 1
+          fi
+          if DUCKSTACK_PROFILE=team duckdb -bail :memory: -f server/resource_profile.sql; then
+            echo 'FAIL: missing producer accepted'; exit 1
+          fi
+  infrastructure:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infrastructure/lake
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+      - run: terraform fmt -check
+      - run: terraform init -backend=false -input=false
+      - run: terraform validate

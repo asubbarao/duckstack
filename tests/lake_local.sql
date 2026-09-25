@@ -9,6 +9,11 @@
 -- dev service. It dispatches one literal-URI read per matching outbox row because
 -- read_parquet/read_blob do not accept path columns as table-function arguments.
 
+SELECT CASE WHEN len(list(publication_id))=1 THEN true
+            ELSE error('lake_local acceptance: expected exactly one stable outbox row') END AS fixture_exists
+FROM agents.lake_outbox
+WHERE kind='test_result' AND source_ref='lake_local_acceptance_v1' AND repo_revision='synthetic-v1';
+
 WITH fixture AS (
   SELECT publication_id, local_uri, sha256, byte_size
   FROM agents.lake_outbox
@@ -22,10 +27,10 @@ fixture_gate AS (
 ),
 assertions AS (
   SELECT CASE
-           WHEN publication_ids IS NULL OR len(publication_ids) != 1
+           WHEN len(publication_ids) IS DISTINCT FROM 1
              THEN error('lake_local acceptance: expected exactly one stable outbox row')
-           ELSE publication_ids[1]
-         END AS publication_id
+           ELSE true
+         END AS valid, unnest(publication_ids) AS publication_id
   FROM fixture_gate
 ),
 statements AS (
@@ -60,8 +65,12 @@ fired AS (
          http_post_form('http://localhost:9495/sql', MAP {}, MAP {'sql': statement}) AS response
   FROM statements
 )
-SELECT publication_id, statement, response.status AS executor_status,
-       response.body AS assertion_result
+SELECT publication_id, statement,
+       CASE WHEN response.status::INTEGER=200
+                  AND len(from_json(from_json(response.body, '"VARCHAR"'), '[{"result":"VARCHAR"}]'))=1
+                  AND list_contains(list_transform(from_json(from_json(response.body, '"VARCHAR"'), '[{"result":"VARCHAR"}]'), x -> x.result), 'pass')
+            THEN from_json(response.body, '"VARCHAR"')
+            ELSE error(response::VARCHAR) END AS assertion_result
 FROM fired;
 
 -- Negative checks are MCP calls, not SQL writes. Call lake_record with kind=conversation

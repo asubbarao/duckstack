@@ -94,16 +94,20 @@ PRAGMA mcp_publish_tool('lake_record',
   checked AS (
     SELECT *,
            CASE
-             WHEN producer IS NULL OR len(producer) = 0
+             WHEN nullif(producer, '') IS NULL
                THEN error('lake_record: producer is not configured; set DUCKSTACK_PRODUCER_ID or agents.lake_config')
              WHEN translate(producer, 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-', '') != ''
                THEN error('lake_record: producer may contain only letters, digits, underscore and hyphen')
-             WHEN kind IS NULL OR kind NOT IN (SELECT kind FROM agents.lake_allowed_kinds)
+             WHEN kind IS NULL THEN error('lake_record: kind is required')
+             WHEN kind NOT IN (SELECT kind FROM agents.lake_allowed_kinds)
                THEN error('lake_record: kind is not allowlisted')
-             WHEN source_ref IS NULL OR len(source_ref) = 0
+             WHEN nullif(source_ref, '') IS NULL
                THEN error('lake_record: source_ref is required')
              WHEN payload IS NULL
                THEN error('lake_record: payload is required')
+             WHEN len(producer)>64 THEN error('lake_record: producer exceeds 64 characters')
+             WHEN octet_length(encode(source_ref))>1024 THEN error('lake_record: source_ref exceeds 1 KiB')
+             WHEN octet_length(encode(repo_revision))>256 THEN error('lake_record: repo_revision exceeds 256 bytes')
              WHEN octet_length(encode(payload)) > 4096
                THEN error('lake_record: payload exceeds the 4 KiB MCP transport limit')
              WHEN len(list_filter(
@@ -113,8 +117,8 @@ PRAGMA mcp_publish_tool('lake_record',
                      'password:', 'passwd=', 'secret=', 'secret:', 'token=',
                      'token:', 'api_key=', 'api-key=', 'access_token=',
                      'client_secret=', 'ghp_', 'github_pat_', 'xoxb-', 'xoxp-',
-                     'sk-ant-', 'sk-proj-'],
-                    marker -> position(marker IN lower(payload)) > 0)) > 0
+                     'sk-ant-', 'sk-proj-', '"password"', '"token"', '"secret"', '"api_key"'],
+                    marker -> position(marker IN lower(concat(payload, source_ref, repo_revision))) > 0)) > 0
                THEN error('lake_record: payload resembles a credential; nothing was written')
              ELSE true
            END AS accepted
@@ -144,8 +148,8 @@ PRAGMA mcp_publish_tool('lake_record',
         $q$, replace(i.publication_id, '''', ''''''))
       ELSE
         printf($q$
-          INSERT INTO agents.lake_record_claims (publication_id, claim_token)
-          SELECT '%s', '%s' ON CONFLICT (publication_id) DO NOTHING;
+          INSERT INTO agents.lake_record_claims BY NAME
+          SELECT '%s' AS publication_id, '%s' AS claim_token ON CONFLICT (publication_id) DO NOTHING;
           SELECT CASE WHEN c.claim_token = '%s' THEN 'OWNED' ELSE 'BUSY' END AS claim_state,
                  paths.paths AS found_paths
           FROM agents.lake_record_claims c,
@@ -162,14 +166,14 @@ PRAGMA mcp_publish_tool('lake_record',
     LEFT JOIN agents.lake_outbox existing USING (publication_id)
   ),
   preflight AS (
-    SELECT p.*, http_post_form('http://localhost:9495/sql', MAP {}, MAP {'sql': statement}) AS response
+    SELECT p.*, http_post('http://localhost:9495/sql', MAP {'Content-Type':'application/json'}, json_object('sql', statement)) AS response
     FROM preflight_statements p
   ),
   actions AS (
     SELECT *,
       CASE
         WHEN position('ALREADY_RECORDED' IN response.body) > 0 THEN NULL::VARCHAR
-        WHEN response.status != 200 THEN printf('SELECT error(''lake_record: preflight failed with HTTP %s; no object write attempted'')', response.status::VARCHAR)
+        WHEN response.status::INTEGER != 200 THEN printf('SELECT error(''lake_record: preflight failed with HTTP %s; no object write attempted'')', response.status::VARCHAR)
         WHEN position(local_uri IN response.body) > 0 THEN
           printf($q$
             SELECT CASE WHEN EXISTS (
@@ -249,7 +253,7 @@ PRAGMA mcp_publish_tool('lake_record',
     FROM preflight WHERE position('ALREADY_RECORDED' IN response.body) > 0
     UNION ALL BY NAME
     SELECT response.status AS executor_status, response.body AS receipt_json
-    FROM (SELECT http_post_form('http://localhost:9495/sql', MAP {}, MAP {'sql': write_statement}) AS response
+    FROM (SELECT http_post('http://localhost:9495/sql', MAP {'Content-Type':'application/json'}, json_object('sql', write_statement)) AS response
           FROM actions WHERE write_statement IS NOT NULL) dispatched
   )
   SELECT * FROM finished

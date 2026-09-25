@@ -13,7 +13,7 @@ WITH inspected AS (
          api_host, api_port, console_host, console_port,
          data_source, data_target, image_id
   FROM read_csv($cmd$(docker inspect --format '{{printf "%s\t%s\t%s\t" .Name .Config.Image .State.Status}}{{range index .HostConfig.PortBindings "9000/tcp"}}{{printf "%s\t%s\t" .HostIp .HostPort}}{{else}}{{printf "\t\t"}}{{end}}{{range index .HostConfig.PortBindings "9001/tcp"}}{{printf "%s\t%s\t" .HostIp .HostPort}}{{else}}{{printf "\t\t"}}{{end}}{{$source := ""}}{{$target := ""}}{{range .Mounts}}{{if eq .Destination "/data"}}{{$source = .Source}}{{$target = .Destination}}{{end}}{{end}}{{printf "%s\t%s\t%s" $source $target .Image}}' duckstack-minio 2>/dev/null || podman inspect --format '{{printf "%s\t%s\t%s\t" .Name .Config.Image .State.Status}}{{range index .HostConfig.PortBindings "9000/tcp"}}{{printf "%s\t%s\t" .HostIp .HostPort}}{{else}}{{printf "\t\t"}}{{end}}{{range index .HostConfig.PortBindings "9001/tcp"}}{{printf "%s\t%s\t" .HostIp .HostPort}}{{else}}{{printf "\t\t"}}{{end}}{{$source := ""}}{{$target := ""}}{{range .Mounts}}{{if eq .Destination "/data"}}{{$source = .Source}}{{$target = .Destination}}{{end}}{{end}}{{printf "%s\t%s\t%s" $source $target .Image}}' duckstack-minio 2>/dev/null) |$cmd$,
-    delim := chr(9), header := false,
+    delim := chr(9), quote := '', header := false,
     columns := {
       'container_name':'VARCHAR', 'configured_image':'VARCHAR', 'state':'VARCHAR',
       'api_host':'VARCHAR', 'api_port':'VARCHAR',
@@ -28,12 +28,12 @@ fields AS (
 repo_digests AS (
   SELECT array_agg(repo_digest) FILTER (WHERE repo_digest IS NOT NULL) AS digests
   FROM read_csv($cmd$(docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$(docker inspect --format '{{.Image}}' duckstack-minio 2>/dev/null)" 2>/dev/null || podman image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$(podman inspect --format '{{.Image}}' duckstack-minio 2>/dev/null)" 2>/dev/null) |$cmd$,
-    header := false, columns := {'repo_digest':'VARCHAR'}, ignore_errors := true)
+    header := false, delim := chr(31), quote := '', columns := {'repo_digest':'VARCHAR'}, ignore_errors := false)
 ),
 health AS (
-  SELECT max(response) AS response
-  FROM read_csv('curl --silent --output /dev/null --write-out "%{http_code}" http://127.0.0.1:9100/minio/health/live 2>/dev/null |',
-                header := false, columns := {'response':'VARCHAR'}, ignore_errors := true)
+  SELECT response
+  FROM read_csv('curl --silent --connect-timeout 3 --max-time 5 --output /dev/null --write-out "%{http_code}" http://127.0.0.1:9100/minio/health/live 2>/dev/null |',
+                header := false, delim := chr(31), quote := '', columns := {'response':'VARCHAR'}, ignore_errors := false)
 ),
 checks AS (
   SELECT 'producer_id' AS check_name,
@@ -72,7 +72,7 @@ SELECT * FROM checks;
 
 SELECT * FROM lake_bootstrap_checks ORDER BY check_name;
 
-SELECT CASE WHEN bool_and(passed) FILTER (WHERE required) THEN 'adoption checks passed'
+SELECT CASE WHEN bool_and(coalesce(passed, false)) FILTER (WHERE required) THEN 'adoption checks passed'
             ELSE error('MinIO adoption failed; inspect lake_bootstrap_checks and resolve manually without replacing existing state')
        END AS result
 FROM lake_bootstrap_checks;
