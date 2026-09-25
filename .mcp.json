@@ -3,18 +3,40 @@
     "fledgling": {
       "type": "stdio",
       "command": "fledgling-mcp",
-      "args": ["serve", "--profile", "analyst", "--transport", "stdio", "--root", "."],
+      "args": [
+        "serve",
+        "--profile",
+        "analyst",
+        "--transport",
+        "stdio",
+        "--root",
+        "."
+      ],
       "env": {}
     },
     "squackit": {
       "type": "stdio",
       "command": "squackit",
-      "args": ["mcp", "serve"],
+      "args": [
+        "mcp",
+        "serve"
+      ],
       "env": {}
     },
     "dev": {
       "type": "http",
       "url": "http://localhost:9496/mcp"
+    },
+    "duckstack": {
+      "type": "stdio",
+      "command": "uv",
+      "args": [
+        "run",
+        "--directory",
+        "${CLAUDE_PLUGIN_ROOT}/lib",
+        "duckstack-mcp"
+      ],
+      "env": {}
     }
   }
 }
