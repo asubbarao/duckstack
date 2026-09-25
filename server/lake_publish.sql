@@ -2,13 +2,15 @@
 -- conditional creates, followed by byte-for-byte readback. No overwrite/delete.
 ALTER TABLE agents.lake_outbox ADD COLUMN IF NOT EXISTS publish_lease UUID;
 ALTER TABLE agents.lake_outbox ADD COLUMN IF NOT EXISTS publish_started_at TIMESTAMPTZ;
+ALTER TABLE agents.lake_outbox ADD COLUMN IF NOT EXISTS share_requested BOOLEAN DEFAULT false;
+UPDATE agents.lake_outbox SET share_requested=false WHERE share_requested IS NULL;
 -- Connectivity is checked before claiming outbox rows. An expired AWS login or
 -- unavailable S3 must not consume the five bounded publication attempts.
 -- With an empty queue the command is local `printf idle`, so no AWS work runs.
 LOAD scalarfs;
 COPY (
   WITH work AS (
-    SELECT coalesce(bool_or(status IN ('pending','failed','publishing') AND attempts < 5), false) AS has_work
+    SELECT coalesce(bool_or(share_requested AND status IN ('pending','failed','publishing') AND attempts < 5), false) AS has_work
     FROM agents.lake_outbox
   )
   SELECT CASE WHEN has_work THEN
@@ -23,6 +25,7 @@ FROM read_csv(getvariable('lake_publish_probe_command'),
 CREATE TEMP TABLE lake_publish_batch AS
 SELECT * EXCLUDE(publish_lease, publish_started_at), uuid() AS publish_lease, now() AS publish_started_at FROM agents.lake_outbox
 WHERE EXISTS (SELECT 1 FROM lake_publish_connectivity WHERE ready)
+  AND share_requested
   AND CASE WHEN status IN ('pending','failed') THEN true
            WHEN status='publishing' AND publish_started_at IS NULL THEN true
            WHEN status='publishing' THEN publish_started_at < now() - INTERVAL '30 minutes'

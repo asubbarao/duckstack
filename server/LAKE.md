@@ -4,6 +4,9 @@ This is a developer collaboration layer, not a staging/production clone.
 Agents explicitly record small, approved evidence locally; a copier publishes
 immutable Parquet objects and checksum manifests to shared S3. Full conversations
 and automatic raw-query/log export are not enabled.
+Larger local-only log tables may be written as unique Parquet files under
+`s3://duckstack-local/private/`; that prefix is outside the publisher outbox.
+Only a selected, sanitized `lake_record` finding can be marked for sharing.
 
 ## Current scope
 
@@ -100,10 +103,12 @@ policy explicitly accounts for imported files.
    MinIO. Payloads are at most 4 KiB; source references 1 KiB; revisions 256 bytes.
    The stable ID includes producer, kind, source, revision and payload. The PK
    claim prevents concurrent duplicate writes. Interrupted claims fail closed;
-   an existing object is reconciled without copying it again.
+   an existing object is reconciled without copying it again. New records are
+   local-only (`share_requested=false`) until `lake_request_share` marks an exact
+   publication ID eligible for the publisher.
 2. `lake_status` shows local pending/published/conflict/failed states and receipts.
    `lake_search(q)` searches local payloads only.
-3. `lake_publish` handles at most ten eligible records. Data and manifest writes
+3. `lake_publish` handles at most ten share-requested records. Data and manifest writes
    are conditional creates; byte comparison and both S3 version IDs precede a
    successful receipt. Five attempts maximum; conflicts do not retry. Active
    leases are not reclaimed for 30 minutes, so a slow upload is not immediately stolen.

@@ -58,6 +58,9 @@ jobs:
       - name: Local MinIO installer SQL contract
         run: |
           duckdb -bail :memory: -f tests/lake_minio_install_contract.sql
+      - name: Local versus shared publication contract
+        run: |
+          duckdb -bail :memory: -f tests/lake_share_contract.sql
   infrastructure:
     runs-on: ubuntu-latest
     defaults:

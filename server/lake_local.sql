@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS agents.lake_outbox (
   sha256 VARCHAR NOT NULL,
   byte_size UBIGINT NOT NULL,
   status VARCHAR NOT NULL DEFAULT 'pending',
+  share_requested BOOLEAN NOT NULL DEFAULT false,
   attempts INTEGER NOT NULL DEFAULT 0,
   receipt JSON,
   last_error VARCHAR,
@@ -52,6 +53,8 @@ CREATE TABLE IF NOT EXISTS agents.lake_outbox (
   catalog_error VARCHAR
 );
 ALTER TABLE agents.lake_outbox ADD COLUMN IF NOT EXISTS catalog_status VARCHAR;
+ALTER TABLE agents.lake_outbox ADD COLUMN IF NOT EXISTS share_requested BOOLEAN DEFAULT false;
+UPDATE agents.lake_outbox SET share_requested=false WHERE share_requested IS NULL;
 ALTER TABLE agents.lake_outbox ADD COLUMN IF NOT EXISTS catalog_attempts INTEGER;
 ALTER TABLE agents.lake_outbox ADD COLUMN IF NOT EXISTS catalog_lease UUID;
 ALTER TABLE agents.lake_outbox ADD COLUMN IF NOT EXISTS catalog_started_at TIMESTAMPTZ;
@@ -276,11 +279,20 @@ PRAGMA mcp_publish_tool('lake_record',
 
 PRAGMA mcp_publish_tool('lake_status',
   'List the latest 100 local outbox records with S3 publication and shared DuckLake catalog states, receipts, attempts, and errors.',
-  'SELECT publication_id, producer, kind, source_ref, repo_revision, created_at, local_uri, remote_uri, sha256, byte_size, status, attempts, receipt, last_error, catalog_status, catalog_attempts, catalog_receipt, catalog_error FROM agents.lake_outbox ORDER BY created_at DESC LIMIT 100',
+  'SELECT publication_id, producer, kind, source_ref, repo_revision, created_at, local_uri, remote_uri, sha256, byte_size, status, share_requested, attempts, receipt, last_error, catalog_status, catalog_attempts, catalog_receipt, catalog_error FROM agents.lake_outbox ORDER BY created_at DESC LIMIT 100',
   '{}', '[]', 'markdown');
 
+PRAGMA mcp_publish_tool('lake_request_share',
+  'Mark one exact local publication id eligible for the S3 publisher. This makes no cloud call. An empty result means the id is missing or not in a pending/failed state.',
+  $$UPDATE agents.lake_outbox
+    SET share_requested=true
+    WHERE publication_id=$publication_id::VARCHAR AND status IN ('pending','failed')
+    RETURNING publication_id, producer, kind, source_ref, status, share_requested$$,
+  '{"publication_id":{"type":"string","description":"Exact 64-character publication id returned by lake_record."}}',
+  '["publication_id"]', 'markdown');
+
 PRAGMA mcp_publish_tool('lake_search',
-  'Search explicitly published evidence text in local MinIO. Searches at most the 100 newest local records; shared S3 search is a separate tool. Each result carries its local source URI and the inner read receipt or error.',
+  'Search locally recorded evidence text in MinIO, including records not approved for S3. Searches at most the 100 newest local records; shared S3 search is separate. Each result carries its local source URI and read receipt or error.',
   $$
   WITH bounded AS (
     SELECT publication_id, status, local_uri AS source_uri
