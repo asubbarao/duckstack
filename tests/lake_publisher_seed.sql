@@ -16,7 +16,9 @@ COPY (SELECT 'publisher-contract-' || uuid()::VARCHAR)
 TO 'variable:lake_fixture_id' (FORMAT variable, LIST none);
 COPY (SELECT 's3://duckstack-local/shared/' || getvariable('lake_fixture_id') || '.parquet')
 TO 'variable:lake_fixture_uri' (FORMAT variable, LIST none);
-COPY (SELECT getvariable('lake_fixture_id') AS publication_id, 'synthetic-publisher-proof' AS payload_text, 42 AS answer)
+-- 101 rows also exercise the bounded shared preview after publication.
+COPY (SELECT getvariable('lake_fixture_id') AS publication_id, 'synthetic-publisher-proof' AS payload_text, 42 AS answer, row_id
+      FROM range(101) t(row_id))
 TO (getvariable('lake_fixture_uri')) (FORMAT parquet);
 INSERT INTO agents.lake_outbox BY NAME
 SELECT getvariable('lake_fixture_id') AS publication_id, 'alok' AS producer,

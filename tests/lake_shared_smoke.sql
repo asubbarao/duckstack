@@ -4,7 +4,9 @@ COPY (SELECT 'shared-smoke-' || uuid()::VARCHAR)
 TO 'variable:lake_fixture_id' (FORMAT variable, LIST none);
 COPY (SELECT 's3://inframe-duckstack-785081088852/raw/alok/' || getvariable('lake_fixture_id') || '.parquet')
 TO 'variable:lake_fixture_uri' (FORMAT variable, LIST none);
-COPY (SELECT getvariable('lake_fixture_id') AS publication_id, 'synthetic-shared-read' AS event, 42 AS answer)
+-- 101 rows exercise the shared preview's explicit truncation flag.
+COPY (SELECT getvariable('lake_fixture_id') AS publication_id, 'synthetic-shared-read' AS event, 42 AS answer, row_id
+      FROM range(101) t(row_id))
 TO (getvariable('lake_fixture_uri')) (FORMAT parquet);
 COPY (
   SELECT getvariable('lake_fixture_id') AS publication_id, 'alok' AS producer,

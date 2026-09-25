@@ -1,9 +1,14 @@
 -- One bounded batch. The outbox survives process restarts; all remote writes are
 -- conditional creates, followed by byte-for-byte readback. No overwrite/delete.
 ALTER TABLE agents.lake_outbox ADD COLUMN IF NOT EXISTS publish_lease UUID;
+ALTER TABLE agents.lake_outbox ADD COLUMN IF NOT EXISTS publish_started_at TIMESTAMPTZ;
 CREATE TEMP TABLE lake_publish_batch AS
-SELECT * EXCLUDE(publish_lease), uuid() AS publish_lease FROM agents.lake_outbox
-WHERE status IN ('pending', 'failed', 'publishing') AND attempts < 5
+SELECT * EXCLUDE(publish_lease, publish_started_at), uuid() AS publish_lease, now() AS publish_started_at FROM agents.lake_outbox
+WHERE CASE WHEN status IN ('pending','failed') THEN true
+           WHEN status='publishing' AND publish_started_at IS NULL THEN true
+           WHEN status='publishing' THEN publish_started_at < now() - INTERVAL '30 minutes'
+           ELSE false END
+  AND attempts < 5
   AND length(producer) BETWEEN 1 AND 64
   AND translate(producer, 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-', '') = ''
   AND length(publication_id) BETWEEN 1 AND 128
@@ -14,7 +19,8 @@ WHERE status IN ('pending', 'failed', 'publishing') AND attempts < 5
   AND remote_uri = printf('s3://inframe-duckstack-785081088852/raw/%s/%s.parquet', producer, publication_id)
 ORDER BY created_at, publication_id LIMIT 10;
 
-UPDATE agents.lake_outbox o SET status = 'publishing', attempts = o.attempts + 1, publish_lease=b.publish_lease
+UPDATE agents.lake_outbox o SET status = 'publishing', attempts = o.attempts + 1,
+ publish_lease=b.publish_lease, publish_started_at=b.publish_started_at
 FROM lake_publish_batch b WHERE o.publication_id = b.publication_id
   AND o.status=b.status AND o.attempts=b.attempts;
 

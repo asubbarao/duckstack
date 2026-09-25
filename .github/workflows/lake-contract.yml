@@ -2,7 +2,7 @@ name: Developer lake contract
 on:
   pull_request:
   push:
-    branches: [main, alok/duckstack-core-bootstrap]
+    branches: [main]
 permissions:
   contents: read
 jobs:
