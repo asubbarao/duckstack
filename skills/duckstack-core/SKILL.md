@@ -32,12 +32,21 @@ reachable. Never expose or select from secrets as a capability check.
 | document_local | pdf | deterministic text, tables, forms, geometry and OCR |
 | row_dispatch | scalarfs, http_client | per-row work with raw receipts |
 | rendered_artifacts | tera, quickjs | SQL-owned reports and previews |
+| local_object_storage | httpfs | loopback MinIO raw/Parquet ingress, independently useful offline |
 
 `lab` capabilities are useful only on the machine that advertises them. Promote one only by
 adding it to this manifest, publishing an MCP primitive, and proving a representative smoke
 test. A team member should never need to clone another developer's setup to run a core task.
 
-## 3. Shared S3 and DuckLake
+## 3. Local MinIO, shared S3, and DuckLake
+
+Each developer's MinIO is the local ingress for logs, raw captures, and Parquet. It is
+loopback-only and independent of staging and production. Use `/duckstack:local-minio` to
+prove a local DuckDB write and read-back before treating it as available.
+
+The promotion path is deliberately one-way: local MinIO object + provenance manifest →
+idempotent copier → named S3 prefix → shared DuckLake tables. MinIO is not a replica of
+staging, and a local MinIO catalog is not the team catalog.
 
 `shared_object_storage` and `shared_ducklake` are deliberately separate from core. They need:
 
@@ -48,7 +57,7 @@ test. A team member should never need to clone another developer's setup to run 
 
 Use append-only, provenance-bearing rows for shared work: source identity, content hash,
 producer, run id, timestamp, generated SQL, receipt, and error. A local run must remain useful
-when shared storage is unavailable; publishing is a final idempotent stage, not an implicit
+when shared storage is unavailable; promotion is a final idempotent stage, not an implicit
 dependency.
 
 Do not use an application production, staging, demo, or Terraform-state bucket/catalog as the

@@ -502,6 +502,7 @@ WITH declared AS (
   UNION ALL SELECT 'row_dispatch', 'core', 'http_client', 'Scalar HTTP receipts for self-dispatch.'
   UNION ALL SELECT 'rendered_artifacts', 'core', 'tera', 'SQL-owned rendering.'
   UNION ALL SELECT 'rendered_artifacts', 'core', 'quickjs', 'In-query transforms and chart rendering.'
+  UNION ALL SELECT 'local_object_storage', 'core', 'httpfs', 'Loopback MinIO reads and Parquet/raw writes through the S3 API.'
   UNION ALL SELECT 'shared_object_storage', 'shared', 'httpfs', 'Scoped S3 reads and Parquet writes.'
   UNION ALL SELECT 'shared_object_storage', 'shared', 'aws', 'AWS profile, SSO and role credential chains.'
   UNION ALL SELECT 'shared_ducklake', 'shared', 'ducklake', 'Shared snapshot catalog over object storage.'
