@@ -49,6 +49,12 @@ jobs:
           if DUCKSTACK_PROFILE=team duckdb -bail :memory: -f server/resource_profile.sql; then
             echo 'FAIL: missing producer accepted'; exit 1
           fi
+      - name: DuckLake file registration and retry gate
+        run: duckdb -bail :memory: -f tests/lake_catalog_local.sql
+      - name: DuckLake catalog response contract
+        run: duckdb -bail :memory: -f tests/lake_catalog_response_parsing.sql
+      - name: Local MinIO installer SQL contract
+        run: duckdb -bail :memory: -f tests/lake_minio_install_contract.sql
   infrastructure:
     runs-on: ubuntu-latest
     defaults:

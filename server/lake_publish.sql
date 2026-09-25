@@ -2,9 +2,28 @@
 -- conditional creates, followed by byte-for-byte readback. No overwrite/delete.
 ALTER TABLE agents.lake_outbox ADD COLUMN IF NOT EXISTS publish_lease UUID;
 ALTER TABLE agents.lake_outbox ADD COLUMN IF NOT EXISTS publish_started_at TIMESTAMPTZ;
+-- Connectivity is checked before claiming outbox rows. An expired AWS login or
+-- unavailable S3 must not consume the five bounded publication attempts.
+-- With an empty queue the command is local `printf idle`, so no AWS work runs.
+LOAD scalarfs;
+COPY (
+  WITH work AS (
+    SELECT coalesce(bool_or(status IN ('pending','failed','publishing') AND attempts < 5), false) AS has_work
+    FROM agents.lake_outbox
+  )
+  SELECT CASE WHEN has_work THEN
+    $cmd$((/opt/homebrew/bin/aws s3api head-bucket --bucket inframe-duckstack-785081088852 --region us-west-2 --cli-connect-timeout 3 --cli-read-timeout 5 > /dev/null 2>&1 && printf ready) || printf waiting) |$cmd$
+    ELSE 'printf idle |' END AS command
+  FROM work
+) TO 'variable:lake_publish_probe_command' (FORMAT variable, LIST none);
+CREATE TEMP TABLE lake_publish_connectivity AS
+SELECT status = 'ready' AS ready
+FROM read_csv(getvariable('lake_publish_probe_command'),
+  header := false, delim := chr(31), quote := '', columns := {'status':'VARCHAR'});
 CREATE TEMP TABLE lake_publish_batch AS
 SELECT * EXCLUDE(publish_lease, publish_started_at), uuid() AS publish_lease, now() AS publish_started_at FROM agents.lake_outbox
-WHERE CASE WHEN status IN ('pending','failed') THEN true
+WHERE EXISTS (SELECT 1 FROM lake_publish_connectivity WHERE ready)
+  AND CASE WHEN status IN ('pending','failed') THEN true
            WHEN status='publishing' AND publish_started_at IS NULL THEN true
            WHEN status='publishing' THEN publish_started_at < now() - INTERVAL '30 minutes'
            ELSE false END
@@ -90,6 +109,8 @@ FROM lake_publish_dispatch d CROSS JOIN UNNEST(
 UPDATE agents.lake_outbox o
 SET status = CASE WHEN r.receipt.outcome = 'published' THEN 'published'
                   WHEN r.receipt.outcome = 'conflict' THEN 'conflict' ELSE 'failed' END,
+    attempts = CASE WHEN r.receipt.reason IN ('source_read_failed','remote_probe_failed','remote_read_failed')
+                    THEN o.attempts - 1 ELSE o.attempts END,
     receipt = json_object('result', r.receipt, 'raw_response', r.raw_response),
     last_error = CASE WHEN r.receipt.outcome = 'published' THEN NULL ELSE r.receipt.reason END
 FROM lake_publish_receipts r

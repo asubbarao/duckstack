@@ -43,8 +43,21 @@ CREATE TABLE IF NOT EXISTS agents.lake_outbox (
   status VARCHAR NOT NULL DEFAULT 'pending',
   attempts INTEGER NOT NULL DEFAULT 0,
   receipt JSON,
-  last_error VARCHAR
+  last_error VARCHAR,
+  catalog_status VARCHAR,
+  catalog_attempts INTEGER NOT NULL DEFAULT 0,
+  catalog_lease UUID,
+  catalog_started_at TIMESTAMPTZ,
+  catalog_receipt JSON,
+  catalog_error VARCHAR
 );
+ALTER TABLE agents.lake_outbox ADD COLUMN IF NOT EXISTS catalog_status VARCHAR;
+ALTER TABLE agents.lake_outbox ADD COLUMN IF NOT EXISTS catalog_attempts INTEGER;
+ALTER TABLE agents.lake_outbox ADD COLUMN IF NOT EXISTS catalog_lease UUID;
+ALTER TABLE agents.lake_outbox ADD COLUMN IF NOT EXISTS catalog_started_at TIMESTAMPTZ;
+ALTER TABLE agents.lake_outbox ADD COLUMN IF NOT EXISTS catalog_receipt JSON;
+ALTER TABLE agents.lake_outbox ADD COLUMN IF NOT EXISTS catalog_error VARCHAR;
+UPDATE agents.lake_outbox SET catalog_attempts=0 WHERE catalog_attempts IS NULL;
 
 -- A primary-key claim serializes identical submissions. Claims stay durable after
 -- interruption so a retry must reconcile an existing object, never blindly rewrite it.
@@ -262,8 +275,8 @@ PRAGMA mcp_publish_tool('lake_record',
   '["kind","source_ref","repo_revision","payload"]', 'markdown');
 
 PRAGMA mcp_publish_tool('lake_status',
-  'List the latest 100 local outbox records, including publication state, local and remote URIs, actual Parquet-object SHA256 and byte size, attempts, publisher receipt and last error.',
-  'SELECT publication_id, producer, kind, source_ref, repo_revision, created_at, local_uri, remote_uri, sha256, byte_size, status, attempts, receipt, last_error FROM agents.lake_outbox ORDER BY created_at DESC LIMIT 100',
+  'List the latest 100 local outbox records with S3 publication and shared DuckLake catalog states, receipts, attempts, and errors.',
+  'SELECT publication_id, producer, kind, source_ref, repo_revision, created_at, local_uri, remote_uri, sha256, byte_size, status, attempts, receipt, last_error, catalog_status, catalog_attempts, catalog_receipt, catalog_error FROM agents.lake_outbox ORDER BY created_at DESC LIMIT 100',
   '{}', '[]', 'markdown');
 
 PRAGMA mcp_publish_tool('lake_search',

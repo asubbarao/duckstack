@@ -50,6 +50,20 @@ resource "aws_s3_bucket_policy" "lake" {
   policy = file("${path.module}/../../server/lake_s3_policy.json")
 }
 
+# The shared catalog has its own PostgreSQL database and login on the staging
+# RDS instance. Only secret metadata is tracked here; its generated password is
+# held by Secrets Manager and never written into Terraform state or Git.
+resource "aws_secretsmanager_secret" "catalog_login" {
+  name                    = "inframe/shared-dev/ducklake-catalog"
+  description             = "Dedicated developer DuckLake PostgreSQL login"
+  recovery_window_in_days = 30
+  tags = {
+    system      = "duckstack"
+    purpose     = "developer-ducklake-catalog"
+    environment = "shared-dev"
+  }
+}
+
 import {
   to = aws_s3_bucket.lake
   id = "inframe-duckstack-785081088852"
@@ -71,4 +85,10 @@ import {
   id = "inframe-duckstack-785081088852"
 }
 
+import {
+  to = aws_secretsmanager_secret.catalog_login
+  id = "arn:aws:secretsmanager:us-west-2:785081088852:secret:inframe/shared-dev/ducklake-catalog-Vmo7lM"
+}
+
 output "bucket" { value = aws_s3_bucket.lake.id }
+output "catalog_login_secret_arn" { value = aws_secretsmanager_secret.catalog_login.arn }

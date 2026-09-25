@@ -47,8 +47,13 @@ LOAD quack; LOAD scalarfs;
 COPY (
  SELECT string_agg(printf('INSERT INTO agents.lake_programs BY NAME SELECT ''%s'' AS name, ''%s'' AS sql ON CONFLICT(name) DO UPDATE SET sql=excluded.sql;',
    CASE WHEN ends_with(filename,'lake_local.sql') THEN 'local_tools'
-        WHEN ends_with(filename,'lake_shared.sql') THEN 'shared_tools' ELSE 'publisher_tools' END,
+        WHEN ends_with(filename,'lake_shared.sql') THEN 'shared_tools'
+        WHEN ends_with(filename,'lake_catalog_register.sql') THEN 'catalog_register'
+        WHEN ends_with(filename,'lake_catalog_credentials.sql') THEN 'catalog_credentials'
+        ELSE 'publisher_tools' END,
    replace(content,chr(39),chr(39)||chr(39))), chr(10))
- FROM read_text(['server/lake_local.sql','server/lake_shared.sql','server/lake_tools.sql'])
+ FROM read_text(['server/lake_local.sql','server/lake_shared.sql',
+                 'server/lake_catalog_register.sql',
+                 'server/lake_catalog_credentials.sql','server/lake_tools.sql'])
 ) TO 'variable:lake_bank' (FORMAT variable, LIST none);
 FROM quack_query('quack:localhost:9494', getvariable('lake_bank'), token:=getenv('QUACK_TOKEN'));
