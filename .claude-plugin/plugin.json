@@ -1,7 +1,7 @@
 {
   "name": "duckstack",
-  "description": "Personal fork of the DuckDB skills (quack/duckstack-targeted): read any data file, read and write PDFs, attach and query DuckDB databases, search DuckDB/DuckLake docs, search past session logs, and install/update DuckDB extensions.",
-  "version": "0.2.4-inframe.24",
+  "description": "Local-first DuckDB developer stack: a team-safe MCP core plus opt-in personal-lab and shared-storage capabilities for files, PDFs, repositories, CI logs, DuckLake, and extension discovery.",
+  "version": "0.2.4-inframe.25",
   "author": {
     "name": "Alok Subbarao",
     "url": "https://github.com/asubbarao"

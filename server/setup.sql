@@ -486,6 +486,38 @@ PRAGMA mcp_publish_tool('ext_docs',
     UNION ALL BY NAME SELECT 'github' AS source, block.* FROM agents.ext_catalog, UNNEST(github_blocks) AS blocks(block) WHERE extension_name = $extension
     ORDER BY source, element_order$$,
   '{"extension":{"type":"string"}}', '["extension"]', 'markdown');
+-- The team contract is deliberately smaller than this machine's experimental extension set.
+-- An agent discovers what this host can do through this view before choosing a capability.
+CREATE OR REPLACE VIEW agents.capability_manifest AS
+WITH declared AS (
+  SELECT 'local_mcp' AS capability, 'core' AS maturity, 'quack' AS extension_name,
+         'Local Quack server and one selected execution door.' AS purpose
+  UNION ALL SELECT 'local_mcp', 'core', 'quackapi', 'HTTP /sql and self-dispatch executor.'
+  UNION ALL SELECT 'local_mcp', 'core', 'duckdb_mcp', 'Published local MCP tools.'
+  UNION ALL SELECT 'source_evidence', 'core', 'duck_tails', 'Repositories as tracked revisioned files.'
+  UNION ALL SELECT 'source_evidence', 'core', 'duck_hunt', 'CI and build logs as rows.'
+  UNION ALL SELECT 'source_evidence', 'core', 'agent_data', 'Local agent transcript readers.'
+  UNION ALL SELECT 'document_local', 'core', 'pdf', 'Deterministic PDF text, layout, tables and OCR.'
+  UNION ALL SELECT 'row_dispatch', 'core', 'scalarfs', 'Values and paths as SQL-backed files.'
+  UNION ALL SELECT 'row_dispatch', 'core', 'http_client', 'Scalar HTTP receipts for self-dispatch.'
+  UNION ALL SELECT 'rendered_artifacts', 'core', 'tera', 'SQL-owned rendering.'
+  UNION ALL SELECT 'rendered_artifacts', 'core', 'quickjs', 'In-query transforms and chart rendering.'
+  UNION ALL SELECT 'shared_object_storage', 'shared', 'httpfs', 'Scoped S3 reads and Parquet writes.'
+  UNION ALL SELECT 'shared_object_storage', 'shared', 'aws', 'AWS profile, SSO and role credential chains.'
+  UNION ALL SELECT 'shared_ducklake', 'shared', 'ducklake', 'Shared snapshot catalog over object storage.'
+  UNION ALL SELECT 'shared_ducklake', 'shared', 'postgres', 'Transactional multi-writer DuckLake catalog.'
+)
+SELECT declared.capability, declared.maturity, declared.extension_name, declared.purpose,
+       extensions.installed IS TRUE AS installed,
+       extensions.loaded IS TRUE AS loaded,
+       extensions.extension_version,
+       extensions.installed_from
+FROM declared
+LEFT JOIN duckdb_extensions() AS extensions USING (extension_name);
+PRAGMA mcp_publish_tool('capabilities',
+  'Show the DuckStack core and shared capability contract with the actual local extension state. It does not expose credentials or infer access to shared storage.',
+  'SELECT capability, maturity, extension_name, purpose, installed, loaded, extension_version, installed_from FROM agents.capability_manifest ORDER BY maturity, capability, extension_name',
+  '{}', '[]', 'markdown');
 -- Git, CI logs and rendering as tools, so no agent needs a local client for them.
 PRAGMA mcp_publish_tool('git_tree',
   'Files of a local git repository at a ref (duck_tails). repo is an absolute path to a checkout or bare clone; ref is HEAD, a branch, a tag or a sha.',
