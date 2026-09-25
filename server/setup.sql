@@ -108,9 +108,22 @@ INSTALL sqlite;   LOAD sqlite;                          -- ATTACH sqlite files (
 -- ---------------------------------------------------------------------------
 -- memory_limit          default 38.3 GiB (80% of RAM); alias max_memory. One tenant of a
 --                       laptop that also runs an IDE and Docker.
-SET GLOBAL memory_limit = '24GiB';
+-- New installs default to the team budget. Personal hosts must explicitly set
+-- DUCKSTACK_PROFILE=personal before adopting this startup file (16/24 GiB).
+-- This caps DuckDB-managed memory, not total process RSS or container memory.
+SET GLOBAL memory_limit = CASE
+  WHEN coalesce(nullif(getenv('DUCKSTACK_PROFILE'), ''), 'team') = 'team'
+   AND coalesce(nullif(getenv('DUCKSTACK_MEMORY_GIB'), ''), '4') IN ('4','6','8')
+    THEN coalesce(nullif(getenv('DUCKSTACK_MEMORY_GIB'), ''), '4') || 'GiB'
+  WHEN getenv('DUCKSTACK_PROFILE') = 'personal'
+   AND coalesce(nullif(getenv('DUCKSTACK_MEMORY_GIB'), ''), '24') IN ('16','24')
+    THEN coalesce(nullif(getenv('DUCKSTACK_MEMORY_GIB'), ''), '24') || 'GiB'
+  ELSE error('Invalid DuckStack profile/memory budget') END;
 -- threads               default 15 (5P+10E); alias worker_threads. Leave cores for the desktop.
-SET GLOBAL threads = 10;
+SET GLOBAL threads = CASE
+  WHEN coalesce(nullif(getenv('DUCKSTACK_PROFILE'), ''), 'team') = 'team' THEN 2
+  WHEN getenv('DUCKSTACK_PROFILE') = 'personal' THEN 10
+  ELSE error('Invalid DuckStack profile') END;
 -- scheduler_process_partial   default false. Fairness between concurrent agents' queries.
 SET GLOBAL scheduler_process_partial = true;
 -- allocator_background_threads default false. Return freed arenas to the OS; a weeks-long
@@ -486,6 +499,39 @@ PRAGMA mcp_publish_tool('ext_docs',
     UNION ALL BY NAME SELECT 'github' AS source, block.* FROM agents.ext_catalog, UNNEST(github_blocks) AS blocks(block) WHERE extension_name = $extension
     ORDER BY source, element_order$$,
   '{"extension":{"type":"string"}}', '["extension"]', 'markdown');
+-- The team contract is deliberately smaller than this machine's experimental extension set.
+-- An agent discovers what this host can do through this view before choosing a capability.
+CREATE OR REPLACE VIEW agents.capability_manifest AS
+WITH declared AS (
+  SELECT 'local_mcp' AS capability, 'core' AS maturity, 'quack' AS extension_name,
+         'Local Quack server and one selected execution door.' AS purpose
+  UNION ALL SELECT 'local_mcp', 'core', 'quackapi', 'HTTP /sql and self-dispatch executor.'
+  UNION ALL SELECT 'local_mcp', 'core', 'duckdb_mcp', 'Published local MCP tools.'
+  UNION ALL SELECT 'source_evidence', 'core', 'duck_tails', 'Repositories as tracked revisioned files.'
+  UNION ALL SELECT 'source_evidence', 'core', 'duck_hunt', 'CI and build logs as rows.'
+  UNION ALL SELECT 'source_evidence', 'core', 'agent_data', 'Local agent transcript readers.'
+  UNION ALL SELECT 'document_local', 'core', 'pdf', 'Deterministic PDF text, layout, tables and OCR.'
+  UNION ALL SELECT 'row_dispatch', 'core', 'scalarfs', 'Values and paths as SQL-backed files.'
+  UNION ALL SELECT 'row_dispatch', 'core', 'http_client', 'Scalar HTTP receipts for self-dispatch.'
+  UNION ALL SELECT 'rendered_artifacts', 'core', 'tera', 'SQL-owned rendering.'
+  UNION ALL SELECT 'rendered_artifacts', 'core', 'quickjs', 'In-query transforms and chart rendering.'
+  UNION ALL SELECT 'local_object_storage', 'core', 'httpfs', 'Loopback MinIO reads and Parquet/raw writes through the S3 API.'
+  UNION ALL SELECT 'shared_object_storage', 'shared', 'httpfs', 'Scoped S3 reads and Parquet writes.'
+  UNION ALL SELECT 'shared_object_storage', 'shared', 'aws', 'AWS profile, SSO and role credential chains.'
+  UNION ALL SELECT 'shared_ducklake', 'shared', 'ducklake', 'Shared snapshot catalog over object storage.'
+  UNION ALL SELECT 'shared_ducklake', 'shared', 'postgres', 'Transactional multi-writer DuckLake catalog.'
+)
+SELECT declared.capability, declared.maturity, declared.extension_name, declared.purpose,
+       extensions.installed IS TRUE AS installed,
+       extensions.loaded IS TRUE AS loaded,
+       extensions.extension_version,
+       extensions.installed_from
+FROM declared
+LEFT JOIN duckdb_extensions() AS extensions USING (extension_name);
+PRAGMA mcp_publish_tool('capabilities',
+  'Show the DuckStack core and shared capability contract with the actual local extension state. It does not expose credentials or infer access to shared storage.',
+  'SELECT capability, maturity, extension_name, purpose, installed, loaded, extension_version, installed_from FROM agents.capability_manifest ORDER BY maturity, capability, extension_name',
+  '{}', '[]', 'markdown');
 -- Git, CI logs and rendering as tools, so no agent needs a local client for them.
 PRAGMA mcp_publish_tool('git_tree',
   'Files of a local git repository at a ref (duck_tails). repo is an absolute path to a checkout or bare clone; ref is HEAD, a branch, a tag or a sha.',
@@ -555,6 +601,14 @@ WHERE (name = 'allow_community_extensions' AND value <> 'true')
 --    Cost: clients cannot SET SESSION over dev.query() either.
 -- ---------------------------------------------------------------------------
 
+
+-- Restore explicitly installed lake tools. Fresh hosts have no programs, so this
+-- is a no-op; no bucket, credentials, or producer identity is inferred here.
+CREATE TABLE IF NOT EXISTS agents.lake_programs (name VARCHAR PRIMARY KEY, sql VARCHAR NOT NULL);
+COPY (SELECT coalesce(string_agg(sql, chr(10) ORDER BY name), 'SELECT true AS lake_not_configured')
+      FROM agents.lake_programs WHERE name IN ('local_tools','shared_tools','publisher_tools'))
+TO 'variable:lake_restore' (FORMAT variable, LIST none);
+FROM quack_query('quack:localhost:9494', getvariable('lake_restore'), token:=getenv('QUACK_TOKEN'));
 
 SET GLOBAL lock_configuration = true;
 
