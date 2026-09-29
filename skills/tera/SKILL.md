@@ -112,13 +112,13 @@ self-dispatches it to `/sql`, and compares the bodies after `::HTML`.
   the loops render one `-H` per header and one `--data-urlencode` per param (`--get`). No HTTP status from curl.
 - `fetch_http_client.tera`: `http_get(url, MAP {…headers}, MAP {…params})`; the loops render the two MAP literals.
   Its arguments are positional, not `:=`. The JSON receipt is cast to `STRUCT(status, reason, body)`, not extracted.
-- `fetch_crawler.tera`: `crawl_url` over a one-row relation, params looped into the query string. **Blocked on
-  this build:** in the correlated lateral form every `:=` binds as positional and no overload matches (422). The
-  uncorrelated form binds but repeats the page row until the LIMIT; `LIMIT 100000` of a 274 KB page took the
-  request down; after that it returned zero rows for any URL for several calls, across a restart, then one row
-  again minutes later. Not dependable, and the crawl skill bans the uncorrelated form anyway.
-- Measured: shellfs and http_client bodies are identical (274,457 chars, same md5, title `duckpgq – DuckDB
-  Community Extensions`, 31 links). The crawler row stays in the result with its 422 receipt in `error`.
+- `fetch_crawler.tera`: raw `crawl('<url>', …13 named…, max_results := 1)`, params looped into the query string.
+  The rendered url is a literal, so the single-URL overload binds; the self-dispatch is what applies it per row.
+  It replaces `crawl_url`, which cannot be used: in a lateral the `:=` names are dropped and no overload matches
+  (422), and without options it returns zero rows. `max_results := 1` bounds it, so no `LIMIT` is needed.
+- Measured 2026-09-29: shellfs and http_client bodies are identical (274,457 chars, same md5, title `duckpgq –
+  DuckDB Community Extensions`, 31 links). The crawler row is a 200 with the same title and 31 links but 274,096
+  chars and a different md5: `html.document` is the crawler's normalised copy of the page, 361 chars shorter.
 - Keep a failed dispatch as a row: `CASE WHEN receipt.status = 200 THEN from_json(body, …) ELSE [{… 'error':
   receipt.body}] END` before `unnest`, or the failing method silently disappears.
 - `html_extract_text` takes XPath: `'//title'`, not `'title'` (that returned `[]`).

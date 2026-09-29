@@ -1,7 +1,8 @@
 -- fetch_three_ways.sql: one page, one context, three templates (fetch_crawler / fetch_shellfs / fetch_http_client.tera).
 -- The context is data: scalars are flags and := parameters, lists are loops. Each template renders one statement;
 -- /sql runs it (self-dispatch); the receipts are compared after ::HTML. Run it on the dev server.
--- A failed dispatch stays a row: its receipt body lands in `error` (the crawler row is a 422 on this build).
+-- A failed dispatch stays a row: its receipt body lands in `error`. The crawler template renders a literal-url crawl().
+-- Verified 2026-09-29: three 200 rows, same title and 31 links; crawler body 274,096 chars, curl/http_client 274,457.
 --
 -- tera_render(template VARCHAR [, context JSON]) -> VARCHAR   (autoescapes: ' becomes &#x27;)          tera
 -- html_unescape(VARCHAR) -> VARCHAR; html_extract_text(HTML, selector); html_extract_links(HTML)       webbed
