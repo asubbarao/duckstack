@@ -1,4 +1,4 @@
-{# Trusted shell grammar only. SQL prepares stages = [{command, args, flags=[{name,value}]}]. #}
+{# Limited trusted grammar: each stage emits command, then args, then flags. Position-sensitive CLIs need a specific template. No pipefail. #}
 {%- macro render_stage(stage) -%}
 {{ stage.command }}{% for arg in stage.args %} {{ arg }}{% endfor %}{% for flag in stage.flags %} {{ flag.name }}{% if flag.value != "" %} {{ flag.value }}{% endif %}{% endfor %}
 {%- endmacro render_stage -%}

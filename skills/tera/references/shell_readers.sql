@@ -3,6 +3,9 @@
 -- Every args/flags/parameters value is a trusted authored fragment, not an escaping API.
 -- Do not retry with a different reader: a command may have performed a write before parsing failed.
 -- A streaming LIMIT can close the pipe early; it is a preview, not proof that side effects completed.
+-- These are parser smoke cases. For one short fixed call, use the reader directly rather than Tera.
+-- Shell stages acquire/convert what SQL cannot; transform the returned rows in later SQL CTEs.
+-- Plain ShellFS pipelines report the last stage's status. Use an explicit Bash pipefail runner when needed.
 
 -- Installed DuckDB 1.5.5 signatures, 2026-09-29:
 -- Refresh these lists on the selected service with:
@@ -61,10 +64,7 @@ WITH calls AS (
   UNION ALL
   SELECT 'lines', json_object(
     'reader', {'name': 'read_lines', 'parameters': [{'name': '"trim"', 'value': 'true'}]},
-    'stages', [
-      {'command': 'printf', 'args': [$a$'alpha\nbeta\n'$a$], 'flags': []},
-      {'command': 'sed', 'args': [], 'flags': [{'name': '-n', 'value': $a$'1,2p'$a$}]}
-    ],
+    'stages', [{'command': 'printf', 'args': [$a$'alpha\nbeta\n'$a$], 'flags': []}],
     'sql_tag', 'lines_pipe', 'row_limit', 100)
 ), rendered AS (
   SELECT label, tera_render(

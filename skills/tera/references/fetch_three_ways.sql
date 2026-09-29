@@ -4,20 +4,22 @@
 -- A failed dispatch stays a row: its receipt body lands in `error`. The crawler template renders a literal-url crawl().
 -- Verified 2026-09-29: three 200 rows, same title and 31 links; crawler body 274,096 chars, curl/http_client 274,457.
 --
--- tera_render(template VARCHAR [, context JSON]) -> VARCHAR   (autoescapes: ' becomes &#x27;)          tera
--- html_unescape(VARCHAR) -> VARCHAR; html_extract_text(HTML, selector); html_extract_links(HTML)       webbed
+-- tera_render(name, context, autoescape := false, template_path := glob) -> VARCHAR                    tera
+-- html_extract_text(HTML, selector); html_extract_links(HTML)                                          webbed
 -- http_post(url VARCHAR, headers MAP, body JSON [, params MAP]) -> JSON {status, reason, body}          http_client
--- read_text(glob) -> filename, content, size, last_modified
-WITH templates AS (
-    SELECT parse_filename(filename) AS template, content,
+WITH calls AS (
+    SELECT unnest(['fetch_crawler.tera', 'fetch_http_client.tera', 'fetch_shellfs.tera']) AS template,
         json_object('url', 'https://duckdb.org/community_extensions/extensions/duckpgq', 'user_agent', 'duckstack-tera/1.0',
             'timeout', 20, 'max_bytes', 5000000,
             'headers', [{'name': 'Accept', 'value': 'text/html'}, {'name': 'Accept-Language', 'value': 'en'}],
             'params', [{'name': 'ref', 'value': 'duckstack'}, {'name': 'via', 'value': 'tera'}]) AS ctx
-    FROM read_text('/Users/aloksubbarao/duckdb-skills/skills/tera/references/fetch_*.tera')
 ),
 rendered AS (
-    SELECT template, ctx, html_unescape(tera_render(content, ctx)) AS statement FROM templates
+    SELECT template, ctx, tera_render(
+        template, ctx, autoescape := false,
+        template_path := '/Users/aloksubbarao/duckdb-skills/skills/tera/references/*.tera'
+    ) AS statement
+    FROM calls
 ),
 fired AS (
     SELECT *, http_post('http://127.0.0.1:9495/sql', MAP {'Content-Type': 'application/json'},

@@ -11,8 +11,12 @@ Use the selected DuckDB MCP. `render(template, ctx)` takes a template file path
 and a JSON-object string. SQL can call the same native `tera_render` function.
 
 Templates own repeated syntax, not business logic. SQL selects, filters, joins
-and prepares the context. Prefer a plain `ls -la|` or scalar HTTP call when that
-is clearer. Self-dispatch does not require Tera, a macro, or a dedicated tool.
+and prepares the context. Call `read_csv`, `read_json`, or another reader directly
+when the command and reader options are short and fixed. Use a stored Tera template
+when repeated calls vary optional or repeated command flags, reader parameters, or
+surrounding syntax. Shell stages provide external capabilities; filter, normalize,
+replace and extract from returned rows in subsequent SQL CTEs. Self-dispatch does
+not require Tera, a macro, or a dedicated tool.
 
 ## Native calls
 
@@ -52,7 +56,8 @@ Reusable examples live in `~/duckdb-dataswarm/duckdb/templates/`:
 
 For ShellFS readers, use the two nested templates in `references/`:
 
-- `bash_pipeline.tera` renders `stages = [{command, args, flags}]`, preserving stage and flag order.
+- `bash_pipeline.tera` renders `stages = [{command, args, flags}]`. Within each stage it emits
+  the command, all args, then all flags; use a command-specific template when token position matters.
 - `shell_reader.tera` includes that pipeline directly in a ShellFS path, then renders
   `reader = {name, parameters}` as `read_x($pipe$...|$pipe$, name := value, ...)`.
 - `shell_readers.sql` is the runnable JSON/CSV/lines example and the current `read_csv`/`read_json`
@@ -66,8 +71,9 @@ the `encodings` extension expands CSV's `encoding :=` support, while ICU handles
 time zones rather than arbitrary byte decoding.
 
 Use a distinct dollar-quote delimiter absent from the supplied script. Reach for
-an interpreter/heredoc template only when the program needs Bash-specific state;
-ordinary pipelines execute directly through ShellFS and are easier to inspect.
+an interpreter/heredoc template when the program needs Bash-specific state or when
+every pipeline stage must succeed under `set -o pipefail`; ordinary ShellFS pipelines
+report the last command's status and can hide an upstream failure.
 The MCP shell tool generates UUID-based delimiters. Templates and executable scripts
 are trusted code, not an injection boundary.
 For external values, use real parameter binding or native encoding appropriate
@@ -88,41 +94,35 @@ Keep the context as data (`json_object`, structs, lists); do not hand-escape JSO
 No new SQL or Tera macros. Include small named templates when actual repetition
 justifies them. Do not add Bash loops to replace relational SQL.
 
-## Nested templates: a runner and a loop (shellfs self-dispatch, verified 2026-09-28)
+## Stored templates for varying calls
 
-A shellfs call has three parts: the reader around it (`read_csv('… |', …)`), the command with its own flags,
-and the reader's `:=` options. A tera `macro` is the runner for one command; a `for` loop calls it once per row,
-each with its own flags and options; the rendered statement is self-dispatched to `/sql`.
+A template earns the indirection when it is saved once and reused. Typical cases are authenticated
+`gh` or `podman` acquisition with repeated flags, an external exporter with per-row account/date/field
+flags plus varying CSV options, or a converter/decrypter that emits JSON or CSV DuckDB can stream.
+Use semantic, command-specific context fields when that is clearer than a generic CLI grammar.
+
+Load the stored name through `template_path`; do not read the template as text or HTML-unescape it:
 
 ```sql
--- tera_render(template VARCHAR [, context JSON]) -> VARCHAR   (autoescapes: ' becomes &#x27;)
--- html_unescape(VARCHAR) -> VARCHAR                          (webbed; undoes it — never replace() entities by hand)
--- http_post(url VARCHAR, headers MAP, body JSON [, params MAP]) -> JSON {status, reason, body}
--- The template is a file, references/shellfs_runner.tera (a `run` macro + a `for` loop); SQL reads and renders it.
-WITH commands AS (
-    SELECT 'ls' AS cmd, '-1 /Users/aloksubbarao/duckdb-skills/server' AS flags, 'header := false, delim := ' || chr(39) || '|' || chr(39) || ', names := [' || chr(39) || 'line' || chr(39) || ']' AS opts
-    UNION ALL SELECT 'uname', '-a', 'header := false, delim := ' || chr(39) || '|' || chr(39) || ', names := [' || chr(39) || 'line' || chr(39) || ']'
-), program AS (
-    SELECT html_unescape(tera_render(t.content, json_object('commands', array_agg({'cmd': cmd, 'flags': flags, 'opts': opts})))) AS statement
-    FROM commands, read_text('/Users/aloksubbarao/duckdb-skills/skills/tera/references/shellfs_runner.tera') t GROUP BY t.content
-)
-SELECT statement, http_post('http://127.0.0.1:9495/sql', MAP {'Content-Type': 'application/json'}, json_object('sql', statement)) ->> '$.body' AS rows
-FROM program
+SELECT tera_render(
+  'shell_reader.tera',
+  context,
+  autoescape := false,
+  template_path := '/Users/aloksubbarao/duckdb-skills/skills/tera/references/*.tera'
+) AS statement
+FROM calls;
 ```
 
-- Encoding is a function, never a hand fix: `html_unescape` / `html_escape` (webbed), `url_encode` / `url_decode`
-  (core), `base64_*`. The template sits in `$t$…$t$` so its single quotes need no doubling; `:=` values are
-  built with `||` and `chr(39)` in the rows.
-- Pass `read_csv`'s `delim` explicitly: `uname -a` contains `:`, the sniffer split on it and produced a `column1`.
-- Same shape for osascript (Chrome bridge / conduit: one runner per window or tab, looped), curl, gh: the runner
-  is the command's grammar, the rows are the calls.
+`references/shell_readers.sql` shows complete contexts and visible generated statements. Preserve those
+statements and their dispatch receipts. A successful last pipeline stage is not proof that earlier stages
+succeeded; select an explicit Bash `pipefail` runner when that distinction matters.
 
 ## Loops and flags: one page fetched three ways (verified 2026-09-29)
 
 One context drives three templates. Scalars (`url`, `user_agent`, `timeout`, `max_bytes`) become shell flags
 in one and `:=` parameters or MAP entries in the others; lists (`headers`, `params` as `[{name, value}]`) are
-`{% for %}` loops. `references/fetch_three_ways.sql` renders each `fetch_*.tera`, `html_unescape`s it,
-self-dispatches it to `/sql`, and compares the bodies after `::HTML`.
+`{% for %}` loops. `references/fetch_three_ways.sql` renders each stored `fetch_*.tera` name with
+`autoescape := false`, self-dispatches it to `/sql`, and compares the bodies after `::HTML`.
 
 - `fetch_shellfs.tera`: `read_text($cmd$curl -sS --fail --max-time {{ timeout }} --max-filesize {{ max_bytes }} … |$cmd$)`;
   the loops render one `-H` per header and one `--data-urlencode` per param (`--get`). No HTTP status from curl.
