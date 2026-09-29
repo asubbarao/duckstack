@@ -2,8 +2,8 @@
 name: duck
 description: >
   The DuckDB execution boundary and SQL process rules for this machine — read before any
-  DuckDB work. One persistent dev DuckDB is held locked by a quack server; every agent is a
-  client of the selected MCP or QuackAPI; :memory: with quack_query is a fallback transport.
+  DuckDB work. Dev and agent-owned DuckDBs are disposable runtimes rebuilt from SQL; every caller
+  uses an explicitly selected MCP, QuackAPI or Quack endpoint.
   Use whenever a task touches DuckDB, the duckstack, quack, the dev MCP,
   crawler/webbed, Chrome-as-relations, or when an agent is about to write SQL for this user.
   Every other duckdb-skills skill assumes this one.
@@ -11,10 +11,10 @@ argument-hint: "[topic: boundary | client | rules | repos | facts]"
 allowed-tools: mcp__dev__query_with_limit, mcp__dev__query_no_limit, mcp__dev__self_dispatch, mcp__dev__dispatch_sql, mcp__dev__dispatch_sequence, mcp__dev__hostfs_ls, mcp__dev__read_lines
 ---
 
-You are working on a machine whose data substrate is the **duckstack**: one persistent DuckDB
-per machine, always on, always locked, reached only through the network. The stock
-duckdb-skills model ("open `file.duckdb`, keep a session file, `INSTALL` what you need") is
-wrong here. This skill is the record label the other skills ship under.
+The **duckstack** is source-defined, not file-defined. Dev is the convenient shared default; an
+agent may also own a fresh `:memory:` instance. In either case, callers use an explicitly selected
+network door. SQL definitions and skills are authoritative; database files and WALs are rebuildable
+outputs, not irreplaceable state.
 
 ## 1. The stack
 
@@ -32,7 +32,9 @@ standalone/client examples below. No new macro without explicit approval.
 | `quack:localhost:9497` + OTLP `:4318` | telemetry DuckDB | `~/.duck/telemetry/` | observability |
 
 `~/.duck/dev.duckdb` is held open by `com.inframe.quack` (launchd `KeepAlive`); `~/.duck/setup.sql`
-is THE server, identical on every machine (a symlink to the copy in git, `~/duckdb-skills/server/setup.sql`).
+is the dev definition (a symlink to the copy in git, `~/duckdb-skills/server/setup.sql`). A watcher
+restarts it when server SQL changes. In-flight queries may die; agents announce the restart and retry
+only reads or writes proven not to have happened.
 DuckDB **1.5.5** osx_arm64. Server extensions: `~/.duck/extensions`; local CLI: `~/.duckdb/extensions`.
 
 ## 2. The boundary (hard rules)
@@ -47,9 +49,10 @@ Give subagents this endpoint. Missing tool exposure is not service failure.
    *explicitly selected* `quack:localhost:<port>`, call an explicitly selected localhost
    service, or use the `dev` MCP when `dev` is the target. Never assume there is only one
    Quack; never silently substitute one localhost service for another.
-3. **Persistent state lives on the server.** Tables, views, secrets, crawl state, cron — on
-   dev. **There is no client-side session to restore: no `state.sql`, no `.read`, no `-init`.**
-   Anything an agent would "remember" between calls is a table on dev.
+3. **Definitions live in source.** Required schemas, views, macros, tools and schedules belong in
+   replayable SQL. Runtime tables may live on the selected service, but deleting dev plus its WAL
+   must not erase the system definition. Agent-owned instances use `own_server.sql`; durable evidence
+   publication is a separate stage.
 4. **`~/.duckdbrc` is the resource floor** (4 threads, 4 GiB, temp dir, per-process
    QueryLog/Metrics/HTTP capture). `-c`, `-f` and `-cmd` keep it; `-init` *replaces* it
    (verified: 15 threads / 38 GiB, no telemetry). Never `-init`.

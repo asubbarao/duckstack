@@ -17,9 +17,9 @@ PRAGMA mcp_publish_tool('query_with_limit',
   FROM classified
 ), sent AS (
   SELECT request_id, submitted_sql, executed_sql, default_limit_applied,
-    http_post('http://127.0.0.1:9495/sql', MAP{'Content-Type':'application/json'},
+    http_post(endpoint.address || '/sql', MAP{'Content-Type':'application/json'},
       json_object('sql', printf('/* request_id=%s */%s%s', request_id, chr(10), executed_sql))) AS response
-  FROM prepared
+  FROM prepared JOIN meta.runtime_endpoints endpoint ON endpoint.service = 'quackapi'
 )
 SELECT *, response.status AS status, response.reason AS reason, response.body AS body FROM sent$forward$,
   '{"sql":{"type":"string","description":"Complete SQL program; final SELECT defaults to LIMIT 20 unless explicitly limited"}}',
@@ -30,9 +30,9 @@ PRAGMA mcp_publish_tool('query_no_limit',
   SELECT $sql AS submitted_sql, uuid()::VARCHAR AS request_id
 ), sent AS (
   SELECT request_id, submitted_sql, submitted_sql AS executed_sql, false AS default_limit_applied,
-    http_post('http://127.0.0.1:9495/sql', MAP{'Content-Type':'application/json'},
-      json_object('sql', printf('/* request_id=%s */%s%s', request_id, chr(10), submitted_sql))) AS response
-  FROM submitted
+    http_post(endpoint.address || '/sql', MAP{'Content-Type':'application/json'},
+      json_object('sql', printf('/* request_id=%s no_limit=true */%s%s', request_id, chr(10), submitted_sql))) AS response
+  FROM submitted JOIN meta.runtime_endpoints endpoint ON endpoint.service = 'quackapi'
 )
 SELECT *, response.status AS status, response.reason AS reason, response.body AS body FROM sent$forward$,
   '{"sql":{"type":"string","description":"Complete SQL program, sent as written with no LIMIT added"}}',
@@ -45,8 +45,8 @@ PRAGMA mcp_publish_tool('self_dispatch',
   $dispatch$WITH statements AS (FROM query($rows_sql)),
 posted AS (
   SELECT array_agg({source: statements, response:
-    http_post('http://127.0.0.1:9495/sql', MAP{'Content-Type':'application/json'}, json_object('sql', statement))}) AS receipts
-  FROM statements
+    http_post(endpoint.address || '/sql', MAP{'Content-Type':'application/json'}, json_object('sql', statement))}) AS receipts
+  FROM statements JOIN meta.runtime_endpoints endpoint ON endpoint.service = 'quackapi'
 )
 SELECT receipt.source AS source, receipt.source.statement AS statement,
        receipt.response.status AS status, receipt.response.body AS body,
@@ -58,6 +58,17 @@ PRAGMA mcp_publish_tool('ext_docs',
   'Read the complete captured GitHub README for an extension, without page navigation.',
   'SELECT extension_name, readme FROM agents.ext_docs WHERE extension_name = $extension',
   '{"extension":{"type":"string"}}', '["extension"]', 'markdown');
+PRAGMA mcp_publish_tool('runtime',
+  'Identify the disposable DuckDB instance behind this MCP and its selected endpoints. Use this before assuming a port or diagnosing a restart; the database and WAL are rebuildable outputs of setup.sql.',
+  $runtime$SELECT 'instance' AS kind, instance_id AS name,
+    json_object('started_at', started_at, 'wrapper_pid', wrapper_pid, 'engine_version', engine_version,
+                'native_log_path', native_log_path) AS detail
+  FROM meta.current_server
+  UNION ALL
+  SELECT 'endpoint', service, json_object('address', address, 'recorded_at', recorded_at)
+  FROM meta.runtime_endpoints
+  ORDER BY kind, name$runtime$,
+  '{}', '[]', 'json');
 -- A web page as text blocks (http_client fetches, webbed parses), so no agent reads raw HTML into its context:
 -- the shellfs docs page is 134,408 raw characters and 3,692 characters of blocks.
 INSTALL http_client FROM community; LOAD http_client; INSTALL webbed FROM community; LOAD webbed;
@@ -107,29 +118,30 @@ PRAGMA mcp_publish_tool('shellfs',
  FROM source
 )
 SELECT json_object('request_id',request_id,'response',
- http_post('http://127.0.0.1:9495/sql',MAP{'Content-Type':'application/json'},
- json_object('sql',printf('/* request_id=%s */%s%s',request_id,chr(10),q)))) AS receipt FROM rendered$shellfs$,
+ http_post(endpoint.address || '/sql',MAP{'Content-Type':'application/json'},
+ json_object('sql',printf('/* request_id=%s */%s%s',request_id,chr(10),q)))) AS receipt
+ FROM rendered JOIN meta.runtime_endpoints endpoint ON endpoint.service = 'quackapi'$shellfs$,
  '{"command":{"type":"string","description":"Bash program; executed on the selected server, not the client"}}',
  '["command"]','text');
 -- dataswarm:begin
 -- Source: duckdb/macros/self_dispatch.sql
 LOAD http_client; LOAD quackapi;
 CREATE SCHEMA IF NOT EXISTS agents;
-CREATE OR REPLACE MACRO agents.dispatch_sql(statements, endpoint := 'http://127.0.0.1:9495/sql') AS TABLE
+CREATE OR REPLACE MACRO agents.dispatch_sql(statements, endpoint := NULL) AS TABLE
 WITH statement_rows AS (
   SELECT unnest(statements) AS statement, generate_subscripts(statements, 1) AS position
 ), posted AS (
   SELECT array_agg({position: position, statement: statement, response:
-    http_post_form(endpoint, MAP{}, MAP{'sql': statement})}
+    http_post_form(coalesce(endpoint, runtime.address || '/sql'), MAP{}, MAP{'sql': statement})}
     ORDER BY position) AS receipts
-  FROM statement_rows
+  FROM statement_rows JOIN meta.runtime_endpoints runtime ON runtime.service = 'quackapi'
 )
 SELECT receipt.position, receipt.statement, receipt.response.status AS status,
        json_extract_string(receipt.response.body, '$') AS body
 FROM posted CROSS JOIN UNNEST(receipts) AS dispatched(receipt)
 ORDER BY receipt.position;
 
-CREATE OR REPLACE MACRO agents.dispatch_sequence(statements, endpoint := 'http://127.0.0.1:9495/sql') AS TABLE
+CREATE OR REPLACE MACRO agents.dispatch_sequence(statements, endpoint := NULL) AS TABLE
 FROM agents.dispatch_sql([array_to_string(statements, E'\n;\n')], endpoint := endpoint);
 
 -- Source: duckdb/macros/hostfs.sql
@@ -179,4 +191,3 @@ PRAGMA mcp_publish_tool('read_lines',
 
 PRAGMA mcp_server_start('http', 'localhost', getvariable('mcp_port'),
   '{"builtin_tools": false, "background": true, "default_result_format": "markdown"}');
-

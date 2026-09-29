@@ -53,10 +53,12 @@ CALL quack_identify(name := 'dev', hostname := 'localhost', region := 'local', p
 CREATE OR REPLACE TABLE _quack_serve AS SELECT now() AS started_at, listen_uri, listen_url FROM quack_serve(getvariable('quack_uri'), token := getenv('QUACK_TOKEN'));
 .read /Users/aloksubbarao/duckdb-skills/server/quackapi.sql
 .read /Users/aloksubbarao/duckdb-skills/server/telemetry.sql
-.read /Users/aloksubbarao/duckdb-skills/server/duckdb_mcp.sql
 CREATE OR REPLACE TABLE _listeners AS SELECT now() AS at, 'quack' AS service, listen_uri AS address FROM quack_server_list()
     UNION ALL SELECT now(), 'quackapi', listen_url FROM quackapi_servers()
     UNION ALL SELECT now(), 'mcp', 'http://localhost:' || getvariable('mcp_port') || '/mcp';
+INSERT OR REPLACE INTO meta.runtime_endpoints (service, address, recorded_at)
+SELECT service, address, "at" FROM _listeners;
+.read /Users/aloksubbarao/duckdb-skills/server/duckdb_mcp.sql
 CALL enable_logging(['QueryLog', 'HTTP', 'Quack', 'Metrics'], storage := 'file', storage_path := getvariable('log_path'), storage_buffer_size := 0);
 
 .read /Users/aloksubbarao/duckdb-skills/server/observability.sql

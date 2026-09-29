@@ -1,9 +1,8 @@
 ---
 name: agent-door
 description: >
-  How any agent reaches the dev DuckDB — the one always-on database on this machine. Three doors, one
-  database, no attach: the `dev` MCP (`query`, `sql` tools), POST localhost:9495/sql, or quack_query
-  from your own `:memory:` DuckDB. Also the task tools: git_tree and git_read (a repo through
+  How an agent reaches the selected disposable DuckDB: the default dev MCP, its explicit HTTP or
+  Quack door, or an agent-owned in-memory instance. Also the task tools: git_tree and git_read (a repo through
   duck_tails), ci_hunt (an Actions log zip through duck_hunt), render (a tera template to a file),
   ext_docs, and the agent-stream tools. Use before the first statement that touches dev, when a tool or port
   in your notes no longer answers, or when an agent without MCP needs to run SQL on dev.
@@ -33,10 +32,13 @@ without a receipt-row cap. Keep batches bounded and inspect inner errors.
 Use `dispatch_sequence` for dependent statements in one ordered body.
 No new server, endpoint-discovery join, local engine or new macro is needed.
 
-There is one database: `~/.duck/dev.duckdb`, held open by launchd (`com.inframe.quack`,
-`~/.duck/setup.sql`, a symlink to `~/duckdb-skills/server/setup.sql` — every tool below is a
-`PRAGMA mcp_publish_tool` in its included `server/duckdb_mcp.sql`). Nobody opens the file. Nobody ATTACHes it. Every door below runs your SQL
-inside that one process.
+Dev is the default selected instance, not an institution. Its behavior comes from
+`~/duckdb-skills/server/setup.sql` plus included SQL files; `~/.duck/dev.duckdb` and its WAL are
+rebuildable outputs. Edit the source definition when behavior is missing, let the watcher restart
+dev, and tell concurrent agents that their requests died. Do not preserve hand-created state.
+Nobody opens or ATTACHes the live dev file. For isolated work, use
+`skills/query-duckdb/own_server.sql`: it starts an agent-owned `:memory:` DuckDB with its own
+Quack, QuackAPI and MCP endpoints.
 
 | door | how | what it runs |
 |---|---|---|
@@ -54,14 +56,16 @@ inside that one process.
 
 Use the configured dev MCP first. If its tools are unavailable in the harness, POST
 SQL to http://localhost:9495/sql, or use quack_query against quack:localhost:9494.
-These reach the same selected dev database. Do not start a replacement server.
-Give subagents this endpoint. Use readers, HostFS and ShellFS through the service.
+These reach the same selected dev database. Give subagents the selected endpoint explicitly.
+Use readers, HostFS and ShellFS through that service. Starting an agent-owned server is supported
+when isolation is useful; never silently substitute it for dev when the task selected dev.
 
 ## The MCP is dev
 
 duckdb_mcp runs inside dev on 9496. query/sql and self_dispatch send JSON to
-QuackAPI on 9495, whose /sql route executes through Quack on 9494. Agents supply
-SQL, not connection plumbing. Inspect setup.sql before claiming restrictions.
+the QuackAPI endpoint recorded by this instance, whose /sql route executes through its Quack
+listener. Agents supply SQL, not connection plumbing. The `runtime` tool identifies the current
+instance and endpoints; use it after a restart instead of relying on stale port assumptions.
 
 ## `/sql` is quackapi inside dev
 
@@ -101,6 +105,7 @@ see the ScalarFS skill. A local export does not change the running server.
 - Project scalars directly; do not cross join singleton settings CTEs. CROSS JOIN
   UNNEST(arr) is allowed; other expansion needs a relational purpose.
 
-Verified 2026-09-26: HTTP MCP query returned current_database() = 'dev'. For missing
+Verified 2026-09-29: dev rebuilt from setup.sql and reported a fresh instance identity and selected
+endpoints. For missing
 task tools, inspect mcp_publish_tool definitions in ~/duckdb-skills/server/duckdb_mcp.sql.
 Check transport status and actual SQL results; never replay an uncertain write.
