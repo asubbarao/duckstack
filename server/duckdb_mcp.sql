@@ -1,7 +1,7 @@
 -- Agent entry points; execution stays on the selected QuackAPI/Quack server.
 INSTALL duckdb_mcp FROM community; LOAD duckdb_mcp;
-PRAGMA mcp_publish_tool('query',
-  'Primary agent execution through the selected QuackAPI/Quack server: complete SQL, DDL/DML, native readers, ShellFS and HTTP. Final SELECT defaults to 20 result rows unless it has an explicit outer LIMIT; writes are not limited. Returns request ID, submitted/executed SQL, applied-limit flag and full HTTP receipt with server/database errors. Never replay uncertain writes.',
+PRAGMA mcp_publish_tool('query_with_limit',
+  'The default way to run SQL on the dev DuckDB (complete SQL, DDL/DML, native readers, ShellFS, HTTP). The final SELECT is capped at 20 rows unless it has its own outer LIMIT, so exploration never floods context: start at LIMIT 2-3, widen once the query is right. default_limit_applied in the receipt says whether the cap was added. Writes are not limited. Returns request ID, submitted and executed SQL, and the full HTTP receipt with errors. Never replay an uncertain write.',
   $forward$WITH submitted AS (
   SELECT $sql AS submitted_sql, uuid()::VARCHAR AS request_id
 ), parsed AS (
@@ -24,29 +24,18 @@ PRAGMA mcp_publish_tool('query',
 SELECT *, response.status AS status, response.reason AS reason, response.body AS body FROM sent$forward$,
   '{"sql":{"type":"string","description":"Complete SQL program; final SELECT defaults to LIMIT 20 unless explicitly limited"}}',
   '["sql"]', 'json');
-PRAGMA mcp_publish_tool('sql',
-  'Primary agent execution through the selected QuackAPI/Quack server: complete SQL, DDL/DML, native readers, ShellFS and HTTP. Final SELECT defaults to 20 result rows unless it has an explicit outer LIMIT; writes are not limited. Returns request ID, submitted/executed SQL, applied-limit flag and full HTTP receipt with server/database errors. Never replay uncertain writes.',
+PRAGMA mcp_publish_tool('query_no_limit',
+  'Runs SQL on the dev DuckDB exactly as written, with no row cap added. Do not use this to explore: a wide SELECT here can return tens of thousands of rows into context. Use it only when you already know the result is small (you ran it through query_with_limit first) or for writes and programs whose output you need whole. Returns request ID, the SQL and the full HTTP receipt with errors. Never replay an uncertain write.',
   $forward$WITH submitted AS (
   SELECT $sql AS submitted_sql, uuid()::VARCHAR AS request_id
-), parsed AS (
-  SELECT *, try(parse_statements(submitted_sql)) AS statements FROM submitted
-), classified AS (
-  SELECT *, statements[-1] AS final_sql, json_serialize_sql(final_sql) AS ast FROM parsed
-), prepared AS (
-  SELECT *, coalesce(ast->>'error' = 'false'
-    AND len(list_filter(json_extract(ast, '$.statements[0].node.modifiers[*].limit'), x -> x <> 'null'::JSON)) = 0, false) AS default_limit_applied,
-    CASE WHEN default_limit_applied
-      THEN array_to_string(list_concat(statements[:-2], [printf('SELECT * FROM (%s) AS agent_result LIMIT 20', final_sql)]), ';' || chr(10))
-      ELSE submitted_sql END AS executed_sql
-  FROM classified
 ), sent AS (
-  SELECT request_id, submitted_sql, executed_sql, default_limit_applied,
+  SELECT request_id, submitted_sql, submitted_sql AS executed_sql, false AS default_limit_applied,
     http_post('http://127.0.0.1:9495/sql', MAP{'Content-Type':'application/json'},
-      json_object('sql', printf('/* request_id=%s */%s%s', request_id, chr(10), executed_sql))) AS response
-  FROM prepared
+      json_object('sql', printf('/* request_id=%s */%s%s', request_id, chr(10), submitted_sql))) AS response
+  FROM submitted
 )
 SELECT *, response.status AS status, response.reason AS reason, response.body AS body FROM sent$forward$,
-  '{"sql":{"type":"string","description":"Complete SQL program; final SELECT defaults to LIMIT 20 unless explicitly limited"}}',
+  '{"sql":{"type":"string","description":"Complete SQL program, sent as written with no LIMIT added"}}',
   '["sql"]', 'json');
 -- Search and drill-down share the SQL used by the five-minute stream refresh.
 .read /Users/aloksubbarao/duckdb-skills/server/agent_base.sql
