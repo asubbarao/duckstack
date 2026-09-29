@@ -1,7 +1,8 @@
 {#- One page through the crawler extension. Context: url, user_agent, timeout, params = [{name, value}].
     Parameters: the context becomes crawl's := options. Loop: params render the query string.
-    crawl(url, ...) is the single-URL overload; the rendered url is a literal, so it binds. crawl_url is not used:
-    in a lateral its := names are dropped and no overload matches (422). max_results := 1 bounds the fetch to one row.
+    crawl(url, ...) is the single-URL overload; the rendered url is a literal, so it binds. crawl_url is also allowed
+    when its url is rendered as a literal and self-dispatched; a binding complaint means that step was skipped.
+    This template chooses crawl for its richer receipt. max_results := 1 bounds the fetch to one row.
     crawl takes no headers. The html struct's document is the body. Render, html_unescape, self-dispatch. -#}
 SELECT 'crawler' AS method, status, html.document AS body, error
 FROM crawl('{{ url }}{% for p in params %}{% if loop.first %}?{% else %}&{% endif %}{{ p.name }}={{ p.value }}{% endfor %}',

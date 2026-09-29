@@ -114,8 +114,9 @@ self-dispatches it to `/sql`, and compares the bodies after `::HTML`.
   Its arguments are positional, not `:=`. The JSON receipt is cast to `STRUCT(status, reason, body)`, not extracted.
 - `fetch_crawler.tera`: raw `crawl('<url>', …13 named…, max_results := 1)`, params looped into the query string.
   The rendered url is a literal, so the single-URL overload binds; the self-dispatch is what applies it per row.
-  It replaces `crawl_url`, which cannot be used: in a lateral the `:=` names are dropped and no overload matches
-  (422), and without options it returns zero rows. `max_results := 1` bounds it, so no `LIMIT` is needed.
+  `crawl_url` is also allowed when Tera renders the URL as a literal and the statement is self-dispatched. Never
+  pass the source column directly; a binding complaint means the dispatch step was skipped. This template prefers
+  `crawl()` for its richer receipt, and `max_results := 1` bounds it without an outer `LIMIT`.
 - Measured 2026-09-29: shellfs and http_client bodies are identical (274,457 chars, same md5, title `duckpgq –
   DuckDB Community Extensions`, 31 links). The crawler row is a 200 with the same title and 31 links but 274,096
   chars and a different md5: `html.document` is the crawler's normalised copy of the page, 361 chars shorter.

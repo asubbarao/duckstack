@@ -50,14 +50,40 @@ Call position chooses the overload: `SELECT parse_tables(sql)` returns a list-va
 `FROM parse_tables('<literal>')` returns one row per reference. The same distinction applies to
 `parse_functions`, `parse_statements`, and `parse_where`.
 
+## Generated SQL — validate before dispatch or execution
+
+Use this as a general gate for Tera output, generated migration candidates, or
+SQL extracted from an HTML code block. Keep the generated string beside the
+parser facts. `is_parsable` is cheap and scalar, so it works directly over a
+relation of generated programs:
+
+```sql
+WITH generated AS (
+    SELECT 'crawler-page-reader' AS program_name, generated_sql
+    FROM rendered_templates
+)
+SELECT
+    program_name,
+    is_parsable(generated_sql) AS parsable,
+    num_statements(generated_sql) AS statement_count,
+    parse_function_names(generated_sql) AS function_names,
+    left(generated_sql, 100) AS preview
+FROM generated;
+```
+
+Only execute or self-dispatch a program after the parser gate is true and its
+statement/function facts match intent. This checks grammar; it does not prove
+extension loading, object existence, permissions, or runtime success.
+
 ## Worked example — validate, then inspect
 
 All three statements below were run through `quack_query`.
 
 ```sql
-WITH code_blocks(label, sql) AS (VALUES
-  ('valid',   'SELECT upper(u.name) FROM users u JOIN teams t ON u.team_id = t.id'),
-  ('invalid', 'SELECT FROM')
+WITH code_blocks AS (
+    SELECT 'valid' AS label, 'SELECT upper(u.name) FROM users u JOIN teams t ON u.team_id = t.id' AS sql
+    UNION ALL
+    SELECT 'invalid', 'SELECT FROM'
 )
 -- is_parsable(col0 VARCHAR): no optional parameters or defaults.
 SELECT label, is_parsable(sql) AS valid
@@ -118,4 +144,3 @@ The starting claims are correct: `is_parsable(text)` distinguishes the two SQL b
   functions exist. It is a parser gate, not an execution guarantee.
 - Parse the text inside a fenced code block, not the backticks and language tag. Preserve the
   original block beside the parsed result as evidence.
-

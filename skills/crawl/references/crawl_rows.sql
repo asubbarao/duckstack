@@ -1,19 +1,20 @@
 -- crawl_rows.sql: one page per row, fetched by raw crawl() self-dispatched with literal arguments.
 -- Run it on dev (mcp__dev__query_with_limit, or POST 127.0.0.1:9495/sql). Verified 2026-09-29, crawler 7725ede, DuckDB 1.5.5.
 --
--- Why not crawl_url: in `rel CROSS JOIN LATERAL crawl_url(rel.url, cache := false)` the binder drops the := names and
--- matches crawl_url(VARCHAR, BOOLEAN) positionally -> 422 "No function matches". Without options it binds and returns
--- zero rows. crawl() has a single-URL overload, crawl(url VARCHAR, ...13 named...), but a table function binds its
--- arguments at parse time, so a url held in a column is refused. The statement is therefore built per row with the url
--- as a literal and posted to the selected endpoint; each receipt carries its own seed, so failures stay rows.
+-- crawl_url is allowed, but not with the source column passed directly: a binder complaint means the per-row
+-- self-dispatch step was skipped. This example chooses crawl() for its richer receipt. Either function must be rendered
+-- with the URL as a literal and posted to the selected endpoint; each receipt carries its own seed, so failures stay rows.
 --
 -- crawl(url|urls, cache := true, cache_ttl := 24 /*h*/, timeout := 30 /*s*/, delay := 1000 /*ms*/, workers := 4,
 --       batch_size := 10, respect_robots := true, follow := '', max_depth := 1, state_table := '',
 --       user_agent := crawler_user_agent, max_results := -1, extract := [])
 --   -> url, status, content_type, html STRUCT(document, js, opengraph, schema, readability), error, extract,
 --      response_time_ms, depth
--- max_results := 1 bounds a seed to one row; the crawl_url repeat-until-LIMIT failure cannot happen here.
+-- max_results := 1 bounds a crawl() seed to one row. A crawl_url variant also gets an outer LIMIT <= 10 while testing.
 -- Seeds only: follow := '' and max_depth := 1. Widen only after looking at the landed rows.
+INSTALL http_client FROM community;
+LOAD http_client;
+
 WITH seeds AS (
     -- the parameter row: endpoint, bounds and user agent ride beside each url (no VALUES, no singleton cross join)
     SELECT url, 'http://127.0.0.1:9495/sql' AS endpoint, 30 AS timeout_s, 0 AS delay_ms, 1 AS workers,

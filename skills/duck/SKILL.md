@@ -65,9 +65,10 @@ Give subagents this endpoint. Missing tool exposure is not service failure.
 7. **The token is an environment variable on the shell line, never a literal in SQL, never in
    a file, never printed.** `QUACK_TOKEN="$(cat ~/.duck/token)" duckdb :memory: …` and
    `getenv('QUACK_TOKEN')` in the statement.
-8. **Lateral functions are correlated or they do not run.** `crawl_url`, `read_lines_lateral`
-   only as `FROM rel CROSS JOIN LATERAL f(rel.col)`. The incident behind this rule was an
-   uncorrelated lateral run locally.
+8. **Column-bound table functions self-dispatch.** For each URL row, render a literal
+   `crawl(...)` or `crawl_url(...)` statement and post it to the selected service. A binding
+   complaint means this step was skipped. `read_lines_lateral` remains an explicit supported
+   correlation: `FROM rel CROSS JOIN LATERAL read_lines_lateral(rel.col)`.
 9. **Do not claim a timeout exists because a config reports one.** duckdb_mcp a6b8648 shows
    `request_timeout_seconds 30` in `mcp_server_config()` and enforces nothing; the launchd
    process ceilings are the boundary.
@@ -209,9 +210,9 @@ Verbatim source: `~/.duck/catalog/2026-09-15.md`. Breaking one is a procedural f
   `record_element := 'tr'` silently ignores `attr_mode`/`attr_prefix`; `htmlpath(…'@href[*]')`
   returns NULL; `jq()` is first-match only.
 - `crawl()`/`crawl_url()`/`quack_query()` are table functions: arguments bind
-  literals, `getenv`, `getvariable` or pure concatenation — never a column. The correlated form
-  is `CROSS JOIN LATERAL crawl_url(rel.url, …)`; a previous stage's list rides in via
-  `SET VARIABLE urls = (SELECT list(url) FROM …)`.
+  literals, `getenv`, `getvariable` or pure concatenation — never a column. Apply either crawl
+  function per URL row by rendering a literal statement and self-dispatching it. Treat a binder
+  complaint as a missing dispatch stage, not an extension limitation.
 - `enable_logging(..., storage_path := '…csv')` writes ONE denormalized file; `QueryLog` is a
   start record, not a completion record.
 - `COPY … PARTITION_BY` writes one file per partition (`FILENAME_PATTERN 'part'` → `part0.parquet`)

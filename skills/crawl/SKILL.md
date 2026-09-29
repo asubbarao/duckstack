@@ -5,7 +5,7 @@ description: >
   the logged-in Chrome (duckdb-chrome-bridge) for SPAs and authenticated pages. Use when the
   user says crawl, scrape, fetch these URLs, hit these links, get the page, read the docs at,
   or gives URLs to read. States every crawl() parameter, lands the raw response first, parses
-  by the capability ladder — never regex, never crawl_url, never an error page as
+  by the capability ladder — never regex, never a column-bound crawl_url, never an error page as
   a seed, never chrome_open to read.
 argument-hint: "<url> [url ...] [--name raw_table] [--shape map|rounds|walk|crossjoin|staged] [--chrome]"
 allowed-tools: Bash
@@ -90,7 +90,7 @@ link-following, depth, cache and result limit did not happen.
 | function | parameters | note |
 |---|---|---|
 | `crawl(url VARCHAR, …same 13…)` | single-URL overload of `crawl`; the literal url is what a self-dispatched per-row statement renders |
-| `crawl_url(url, extract := [], cache_ttl, max_results, cache, timeout, user_agent)` | **do not use.** Verified 2026-09-29: `rel CROSS JOIN LATERAL crawl_url(rel.url, cache := false)` is a 422 (`No function matches … crawl_url(VARCHAR, BOOLEAN, …)`: the lateral binder drops the `:=` names); `crawl_url(rel.url)` with no options returns zero rows |
+| `crawl_url(url, extract := [], cache_ttl, max_results, cache, timeout, user_agent)` | allowed with a literal URL, including a literal rendered per row and self-dispatched. Never pass `rel.url` directly: the lateral binder drops `:=` names. A binding complaint means self-dispatch was skipped, not that `crawl_url` is unusable. Bound the dispatched SELECT to at most 10 rows while testing. |
 | `crawl_stream(urls, user_agent, crawl_delay, timeout, respect_robots_txt)` | streaming variant |
 | `sitemap(url, filter, timeout, user_agent, discover, max_depth, recursive)` | XML sitemap → rows; often an empty `<urlset/>` — check |
 | `read_html(...)` | registered by **both** crawler and webbed, resolves by arity: named parameters only |
@@ -107,6 +107,19 @@ Keep each fetch path as a relation. Do not return a page body to the agent: insp
 and `left(body, 50)` while retaining the full value inside DuckDB for webbed. `html_extract_links`
 is a **scalar** returning a list of `STRUCT(text, href, title, line_number)`; expand it once with
 `CROSS JOIN UNNEST(... ) AS links(link)` and use `link.href` / `link.text`.
+
+Choose the transport by the job, then normalize to `{source, url, status, document HTML, error}`:
+
+| Need | Transport | Returned structure and gotcha |
+|---|---|---|
+| one known ordinary page | `http_client` | `http_get` returns a response struct with status/body/headers. In this build body is a JSON string; use `json_extract_string(response.body, '$')::HTML`. |
+| crawling, link rounds, robots/depth/cache controls | `crawler` | `crawl` returns one row per page with URL, status, an HTML struct, error, timing, and depth. State every bound. |
+| exact CLI request, proxy/TLS/cookie flags | ShellFS `curl` | the reader returns the stdout schema you declare. Base64 can keep arbitrary HTML in one VARCHAR, but status/headers/errors must be emitted separately. |
+
+No transport intrinsically saves agent tokens. Raw documents remain inside DuckDB; the final
+projection controls context size by returning only lengths, short previews, bounded link/block
+rows, status, and error. When the URL is a column, any chosen table-function transport is rendered
+with literal arguments and self-dispatched per row.
 
 ```sql
 WITH raw AS (
@@ -298,10 +311,16 @@ SELECT now() AS fetched_at, * FROM crawl(getvariable('urls'), ... all 13 ..., st
 $$);
 ```
 
-`crawl_url` is out entirely: uncorrelated with a literal url it repeats the page row until the
-`LIMIT` (a `LIMIT 100000` took a dev request down) and correlated it 422s. `crawl()` with
-`max_results := 1` per seed cannot repeat. A 404 is a row with `status = 404` and `error` NULL,
-so gate downstream on `status = 200 AND error IS NULL`.
+`crawl_url` is allowed here only after the URL column has been rendered as a literal inside the
+self-dispatched statement. Direct correlation is not the composition mechanism; a binder error
+means the agent did not self-dispatch. Prefer `crawl()` with `max_results := 1` when its richer
+receipt is useful. When choosing `crawl_url`, retain the generated SQL and receipt and use an
+outer `LIMIT <= 10` while testing. A 404 is a row with `status = 404` and `error` NULL, so gate
+downstream on `status = 200 AND error IS NULL`.
+
+Measured 2026-09-29: a self-dispatched literal `crawl_url(...) LIMIT 1` bound successfully and
+returned dispatch status 200 with `[]` for the DuckPGQ page. That is a valid empty result to
+diagnose separately; it is not a binder failure and not a reason to skip self-dispatch.
 
 ## `--chrome` — the page needs the user's session or a rendered DOM
 
