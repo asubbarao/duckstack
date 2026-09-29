@@ -116,3 +116,19 @@ EXPORT DATABASE 's3://<bucket>/<prefix>' (FORMAT parquet);                    --
 - The first `podman run` pulls the image and can outlast an MCP request; the container is still created. Read the
   state back (`podman ps -a`) before running it again.
 - From the dev quack's ShellFS, `docker compose` cannot find podman's socket; call `podman` directly.
+
+### Any destination: `COPY … TO '| command'` (shellfs write pipe), verified 2026-09-28
+
+shellfs makes a leading `|` a write pipe, so `COPY` streams its output into any shell command: an upload,
+`scp`, `ssh host 'cat > file'`, `gzip`, `aws`. No bucket secret, no temp file.
+
+```sql
+INSTALL shellfs FROM community; LOAD shellfs;
+COPY (FROM runs) TO '| aws --endpoint-url http://localhost:9100 s3 cp - s3://duckstack/ci/runs.parquet' (FORMAT parquet);
+```
+
+- Verified: 1,000 rows piped to RustFS through `aws s3 cp -` read back as 1,000 rows with the same sum.
+- `curl -T -` to S3 fails with 411 MissingContentLength: stdin has no length, and S3 PUT requires one.
+  `aws s3 cp -` streams a multipart upload and needs none; that is the command to pipe into.
+- `EXPORT DATABASE` writes several files, so it cannot target one pipe; use it with the httpfs secret above,
+  and the pipe for a single `COPY`.
