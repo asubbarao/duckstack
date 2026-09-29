@@ -318,9 +318,13 @@ receipt is useful. When choosing `crawl_url`, retain the generated SQL and recei
 outer `LIMIT <= 10` while testing. A 404 is a row with `status = 404` and `error` NULL, so gate
 downstream on `status = 200 AND error IS NULL`.
 
-Measured 2026-09-29: a self-dispatched literal `crawl_url(...) LIMIT 1` bound successfully and
-returned dispatch status 200 with `[]` for the DuckPGQ page. That is a valid empty result to
-diagnose separately; it is not a binder failure and not a reason to skip self-dispatch.
+Measured 2026-09-29 on the DuckPGQ page, five statements self-dispatched to dev `/sql` and logged
+as `crawl-fix` rows (the statement is the stored and the executed text; the receipt is the result):
+`crawl('<url>', …13 named…)` 200, one row; `crawl_url('<url>', "extract" := []::VARCHAR[], cache_ttl := 24,
+max_results := 1, cache := false, timeout := 30, user_agent := '…') LIMIT 5` 200, exactly one row (it did not
+repeat); `crawl_url('<url>')` with no options `[]`, zero rows; the same two written as
+`rel CROSS JOIN LATERAL crawl_url(rel.url, …)` a 422 receipt with options and `[]` without. The empty
+result is the no-options form, not a binder failure; pass `max_results := 1` and the options.
 
 ## `--chrome` — the page needs the user's session or a rendered DOM
 
