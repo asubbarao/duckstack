@@ -33,6 +33,14 @@ post AS (
 
 Chain it as often as needed: stage N+1 is written FROM stage N, so the data dependency is the order.
 
+## Every form, side by side
+
+`references/selfdispatch.sql` runs the same per-row `ls` six ways and returns every receipt: naked JSON POST to
+`/sql` (the default), the `MAP` form post, a tera template file (`references/ls.tera`), printf (shown, not
+preferred), `quack_query` to a quack server (point the URI at another agent's port), and the `httpserver`
+extension (GET with `query` and `default_format`). Verified 2026-09-28: 6 forms × 2 rows, all 200, identical
+listings. `/sql` returns the first statement that produces rows, so setup/teardown in a body are CTAS, not SELECT.
+
 ## Worked example: crawl a tree, pruning before descending
 
 `references/declarative_ls.sql` is the whole thing, verified 2026-09-28 on `~/duckdb-skills`

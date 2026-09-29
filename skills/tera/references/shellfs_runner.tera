@@ -1,0 +1,4 @@
+{#- One shellfs read per command: the reader, the command with its own flags, and the reader's := options.
+    Context: commands = [{cmd, flags, opts}]. Render, then html_unescape, then self-dispatch the result. -#}
+{% macro run(cmd, flags, opts) %}SELECT '{{ cmd }}' AS cmd, * FROM read_csv('{{ cmd }} {{ flags }} |', {{ opts }}){% endmacro run %}
+{%- for c in commands %}{{ self::run(cmd=c.cmd, flags=c.flags, opts=c.opts) }}{% if not loop.last %} UNION ALL BY NAME {% endif %}{% endfor %} LIMIT 100000

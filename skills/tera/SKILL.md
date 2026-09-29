@@ -82,13 +82,13 @@ each with its own flags and options; the rendered statement is self-dispatched t
 -- tera_render(template VARCHAR [, context JSON]) -> VARCHAR   (autoescapes: ' becomes &#x27;)
 -- html_unescape(VARCHAR) -> VARCHAR                          (webbed; undoes it — never replace() entities by hand)
 -- http_post(url VARCHAR, headers MAP, body JSON [, params MAP]) -> JSON {status, reason, body}
+-- The template is a file, references/shellfs_runner.tera (a `run` macro + a `for` loop); SQL reads and renders it.
 WITH commands AS (
     SELECT 'ls' AS cmd, '-1 /Users/aloksubbarao/duckdb-skills/server' AS flags, 'header := false, delim := ' || chr(39) || '|' || chr(39) || ', names := [' || chr(39) || 'line' || chr(39) || ']' AS opts
-    UNION ALL SELECT 'date', '-u', 'header := false, delim := ' || chr(39) || '|' || chr(39) || ', names := [' || chr(39) || 'line' || chr(39) || ']'
+    UNION ALL SELECT 'uname', '-a', 'header := false, delim := ' || chr(39) || '|' || chr(39) || ', names := [' || chr(39) || 'line' || chr(39) || ']'
 ), program AS (
-    SELECT html_unescape(tera_render($t${% macro run(cmd, flags, opts) %}SELECT '{{ cmd }}' AS cmd, * FROM read_csv('{{ cmd }} {{ flags }} |', {{ opts }}){% endmacro run %}{% for c in commands %}{{ self::run(cmd=c.cmd, flags=c.flags, opts=c.opts) }}{% if not loop.last %} UNION ALL BY NAME {% endif %}{% endfor %} LIMIT 100000$t$,
-        json_object('commands', array_agg({'cmd': cmd, 'flags': flags, 'opts': opts})))) AS statement
-    FROM commands
+    SELECT html_unescape(tera_render(t.content, json_object('commands', array_agg({'cmd': cmd, 'flags': flags, 'opts': opts})))) AS statement
+    FROM commands, read_text('/Users/aloksubbarao/duckdb-skills/skills/tera/references/shellfs_runner.tera') t GROUP BY t.content
 )
 SELECT statement, http_post('http://127.0.0.1:9495/sql', MAP {'Content-Type': 'application/json'}, json_object('sql', statement)) ->> '$.body' AS rows
 FROM program
