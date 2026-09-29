@@ -92,3 +92,27 @@ If the user asks an analytical question (e.g., "how many rows match X"), write a
 - **Access denied / 403** → suggest the user check credentials: `aws configure`, environment variables, or provide explicit key/secret
 - **Bucket not found / 404** → check the URL and region
 - **Timeout on large listing** → suggest narrowing the glob pattern or adding a prefix
+
+## Local S3 (MinIO / RustFS) — writing to it, verified 2026-09-28
+
+A whole in-memory database goes to local S3 in a handful of statements; there is no copier to build.
+Worked example: `platform/tools/duckstack/ci/export.sql` in inframe (runs after `.read ci.sql`).
+
+```sql
+INSTALL httpfs; LOAD httpfs;
+CREATE OR REPLACE SECRET local_s3 (TYPE s3, KEY_ID 'minioadmin', SECRET 'minioadmin', URL_STYLE 'path', USE_SSL false,
+    ENDPOINT coalesce(nullif(getenv('S3_ENDPOINT'), ''), 'localhost:9000'));   -- getenv works inside CREATE SECRET
+FROM read_text('curl -s -o /dev/null -w "%{http_code}" -X PUT --aws-sigv4 "aws:amz:us-east-1:s3" --user minioadmin:minioadmin http://localhost:9000/<bucket> |');
+EXPORT DATABASE 's3://<bucket>/<prefix>' (FORMAT parquet);                    -- IMPORT DATABASE restores it
+```
+
+- httpfs cannot create a bucket; S3's own `PUT /<bucket>` does, signed by curl's `--aws-sigv4` through shellfs.
+  200 = created, 409 = already there; both are fine.
+- `EXPORT DATABASE` to `s3://` writes one Parquet file per table plus `schema.sql` and `load.sql`.
+- MinIO's images no longer pull (docker.io 404, quay.io 401). RustFS (`docker.io/rustfs/rustfs`) is the drop-in:
+  `podman run -d --name duckstack-s3 --user 0 -p 9100:9000 -e RUSTFS_ACCESS_KEY=minioadmin -e RUSTFS_SECRET_KEY=minioadmin -v duckstack-s3:/data docker.io/rustfs/rustfs:latest /data`.
+  Without `--user 0` and a named volume it dies with "Permission denied (os error 13)" on `/data`.
+  A bare 403 from `http://localhost:9100/` means it is up and wants credentials.
+- The first `podman run` pulls the image and can outlast an MCP request; the container is still created. Read the
+  state back (`podman ps -a`) before running it again.
+- From the dev quack's ShellFS, `docker compose` cannot find podman's socket; call `podman` directly.
