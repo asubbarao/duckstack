@@ -79,22 +79,24 @@ and the reader's `:=` options. A tera `macro` is the runner for one command; a `
 each with its own flags and options; the rendered statement is self-dispatched to `/sql`.
 
 ```sql
--- tera_render(template VARCHAR [, context JSON], autoescape := BOOLEAN) -> VARCHAR
+-- tera_render(template VARCHAR [, context JSON]) -> VARCHAR   (autoescapes: ' becomes &#x27;)
+-- html_unescape(VARCHAR) -> VARCHAR                          (webbed; undoes it — never replace() entities by hand)
 -- http_post(url VARCHAR, headers MAP, body JSON [, params MAP]) -> JSON {status, reason, body}
 WITH commands AS (
-    SELECT 'ls' AS cmd, '-1 /Users/aloksubbarao/duckdb-skills/server' AS flags, 'header := false, names := [' || chr(39) || 'line' || chr(39) || ']' AS opts
-    UNION ALL SELECT 'date', '-u', 'header := false, names := [' || chr(39) || 'line' || chr(39) || ']'
+    SELECT 'ls' AS cmd, '-1 /Users/aloksubbarao/duckdb-skills/server' AS flags, 'header := false, delim := ' || chr(39) || '|' || chr(39) || ', names := [' || chr(39) || 'line' || chr(39) || ']' AS opts
+    UNION ALL SELECT 'date', '-u', 'header := false, delim := ' || chr(39) || '|' || chr(39) || ', names := [' || chr(39) || 'line' || chr(39) || ']'
 ), program AS (
-    SELECT tera_render($t${% macro run(cmd, flags, opts) %}SELECT '{{ cmd }}' AS cmd, * FROM read_csv('{{ cmd }} {{ flags }} |', {{ opts }}){% endmacro run %}{% for c in commands %}{{ self::run(cmd=c.cmd, flags=c.flags, opts=c.opts) }}{% if not loop.last %} UNION ALL BY NAME {% endif %}{% endfor %} LIMIT 100000$t$,
-        json_object('commands', array_agg({'cmd': cmd, 'flags': flags, 'opts': opts})), autoescape := false) AS statement
+    SELECT html_unescape(tera_render($t${% macro run(cmd, flags, opts) %}SELECT '{{ cmd }}' AS cmd, * FROM read_csv('{{ cmd }} {{ flags }} |', {{ opts }}){% endmacro run %}{% for c in commands %}{{ self::run(cmd=c.cmd, flags=c.flags, opts=c.opts) }}{% if not loop.last %} UNION ALL BY NAME {% endif %}{% endfor %} LIMIT 100000$t$,
+        json_object('commands', array_agg({'cmd': cmd, 'flags': flags, 'opts': opts})))) AS statement
     FROM commands
 )
 SELECT statement, http_post('http://127.0.0.1:9495/sql', MAP {'Content-Type': 'application/json'}, json_object('sql', statement)) ->> '$.body' AS rows
 FROM program
 ```
 
-- `autoescape := false` or the quotes come back as `&#x27;`. The template sits in `$t$…$t$` so its single quotes
-  need no doubling; `:=` values are built with `||` and `chr(39)` in the rows, never escaped.
+- Encoding is a function, never a hand fix: `html_unescape` / `html_escape` (webbed), `url_encode` / `url_decode`
+  (core), `base64_*`. The template sits in `$t$…$t$` so its single quotes need no doubling; `:=` values are
+  built with `||` and `chr(39)` in the rows.
 - Pass `read_csv`'s `delim` explicitly: `uname -a` contains `:`, the sniffer split on it and produced a `column1`.
 - Same shape for osascript (Chrome bridge / conduit: one runner per window or tab, looped), curl, gh: the runner
   is the command's grammar, the rows are the calls.
