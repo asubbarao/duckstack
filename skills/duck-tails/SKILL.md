@@ -214,10 +214,25 @@ only legal way to fan out; verified reading all 19 `.md` files of this fork in o
 ```sql
 LOAD duck_tails;
 SELECT len(array_agg(DISTINCT r.file_path)) AS n_files, len(array_agg(r.text)) AS n_texts
-FROM (SELECT file_path FROM git_tree('.', 'HEAD') WHERE file_ext = '.md' AND kind = 'file') t,
-     git_read_each(t.file_path) r;
+FROM (SELECT git_uri FROM git_tree('.', 'HEAD') WHERE file_ext = '.md' AND kind = 'file') t,
+     git_read_each(t.git_uri) r;
 -- 19 | 19
 ```
+
+Any repo, from anywhere (verified 2026-09-28 on the bare clone of `closure`): pass `git_uri`, filter in
+the WHERE before the join, and read a big file a slice at a time by splitting it into lines:
+
+```sql
+SELECT t.file_path, u.n, u.line
+FROM git_tree('/Users/aloksubbarao/reviews/closure.git', 'HEAD') t, git_read_each(t.git_uri) r,
+     unnest(string_split(r.text, chr(10))) WITH ORDINALITY AS u(line, n)
+WHERE t.file_path IN ('server/routes.sql', 'server/views.sql') AND starts_with(upper(trim(u.line)), 'CREATE')
+LIMIT 100;
+```
+
+One file across history: `git_read_each(git_uri(repo, 'README.md', l.commit_hash))` over `git_log(repo)`
+(docs: duck-tails.readthedocs.io/en/latest/guide/lateral-joins/). Never `find`/`ls` a repo, and never
+self-dispatch per-file `read_text` — the `_each` twin is the lateral.
 
 `git_read_each`, `git_tree_each`, `git_log_each`, `git_blame_each`, `git_status_each`,
 `git_branches_each`, `git_tags_each`, `git_parents_each`, `git_diff_tree_each`.
