@@ -1,72 +1,63 @@
 ---
 name: self-dispatch
-description: Execute row-generated SQL through the selected DuckDB MCP. Use for per-row SQL, file, ShellFS or HTTP work and literal-argument or unsupported lateral table-function errors.
-argument-hint: "[source SELECT with a statement column]"
-allowed-tools: mcp__dev__self_dispatch, mcp__dev__dispatch_sql, mcp__dev__dispatch_sequence, mcp__dev__query_with_limit, mcp__dev__query_no_limit
+description: Run SQL that writes SQL and executes it on the same dev DuckDB — per-row table functions (ls, read_csv, read_lines on a path column), crawls, fan-outs, ordered DDL. Use whenever a table function refuses a column argument, when work repeats per row, or when a stage depends on the rows of the one before.
+allowed-tools: mcp__dev__query_with_limit, mcp__dev__query_no_limit, mcp__dev__dispatch_sql, mcp__dev__self_dispatch, mcp__dev__dispatch_sequence
 ---
 
 # Self-dispatch
 
-Use the selected DuckDB MCP as the primary workspace. Agents submit SQL; the
-tool handles routing to the existing service. No new server, local engine,
-endpoint discovery, or new macro is needed.
+A table function such as `ls(path)` or `read_csv(path)` takes a literal, not a column. Self-dispatch
+gets around it without a loop, a script or a second server: one CTE writes the statement for each
+row as text and posts it to this same server's `/sql` route; the next CTE unnests the receipts back
+into rows. The database writes the statement it cannot bind, then runs it.
 
-- `query(sql)` / `sql(sql)`: ordinary SQL, native readers and ShellFS host commands.
-- `self_dispatch(rows_sql)`: a SELECT producing `statement` and optional source keys.
-  Only returned rows execute. Zero rows means zero calls.
-- `dispatch_sql(statements)`: an existing list of independent SQL statements.
-- `dispatch_sequence(statements)`: dependent statements in one ordered body.
-  No implicit transaction or retry; inspect state after failure.
-
-## Missing work is a WHERE
-
-Pass this SELECT to `self_dispatch(rows_sql)`:
+## The molecule: two CTEs
 
 ```sql
-SELECT $$SELECT cron('CHECKPOINT;', '30 * * * * *')$$ AS statement
-WHERE NOT EXISTS (
-  FROM cron_jobs()
-  WHERE query = 'CHECKPOINT;' AND schedule = '30 * * * * *'
-);
+-- http_post(url VARCHAR, headers MAP(VARCHAR, VARCHAR), body JSON [, params MAP]) -> JSON {status, reason, body}
+post AS (
+    SELECT array_agg(http_post(
+        'http://127.0.0.1:9495/sql',
+        MAP {'Content-Type': 'application/json'},
+        json_object('sql', printf($$SELECT path FROM ls('%s') LIMIT 100000$$, path))
+    )) AS receipts
+    FROM previous
+    WHERE <the rows worth dispatching>
+), result AS (
+    SELECT receipt ->> '$.status' AS status, entry.*
+    FROM post
+    CROSS JOIN UNNEST(receipts) AS r(receipt)
+    CROSS JOIN UNNEST(from_json(receipt ->> '$.body', '[{"path":"VARCHAR"}]')) AS e(entry)
+)
 ```
 
-The statement stays text until the missing-row test passes. The installed
-`cron()` incorrectly reports no side effects: a direct constant call can run
-during planning even when its WHERE returns no rows. This dispatch form was
-tested with a missing job and a repeat call: one registration, then no call.
-It is not an atomic uniqueness guarantee for simultaneous callers.
+Chain it as often as needed: stage N+1 is written FROM stage N, so the data dependency is the order.
 
-## A shortcut is not the mechanism
+## Worked example: crawl a tree, pruning before descending
 
-The operation is ordinary SQL posting a generated statement back to the selected
-service. If a tool, template, route alias or macro fails, inspect its error and
-use the plain scalar POST form below on the same service. Do not infer that
-self-dispatch is unavailable, create a new server, or retry an uncertain write.
-Tera is optional; use it only for actual repeated syntax. No new macros.
+`references/declarative_ls.sql` is the whole thing, verified 2026-09-28 on `~/duckdb-skills`
+(10 → 64 → 48 paths over three waves, every receipt 200, nothing read under `.git`):
 
-Working alternatives are in `~/duckdb-dataswarm/duckdb/examples/selfdispatch.sql`:
-JSON POST, form POST, curl, ShellFS curl, HTTP MCP, zero-row gating, and optional
-Tera/AppleScript rendering. The `/q` route sketch is explicitly not installed.
+1. `wave1`: `ls(root)` with `is_dir(path)`, `file_name(path)` beside it.
+2. `post2`: one `ls('<folder>')` statement per folder that survives
+   `NOT starts_with(name, '.') AND name NOT IN ('node_modules', '__pycache__', 'venv')`.
+3. `wave2`: the receipts unnested. Repeat 2–3 for each further level.
 
-## Raw receipts
+The filter sits **before** the dispatch, so a pruned folder is never listed. Filtering the output of
+`lsr(root)` is the opposite: it walks all of `.venv` first. The server can run the file itself:
+`SELECT http_post(…, json_object('sql', 'SELECT … FROM (' || content || ') …')) FROM read_text('<file>')`.
 
-`self_dispatch` returns `source`, `statement`, `status`, `body`, and the full
-`response`. It retains all input columns under source and does not cap receipt
-rows. Keep raw responses before deriving typed rows. Inspect failures too;
-HTTP success alone does not prove the intended data or effects.
+## Traps (measured)
 
-Use bounded batches: large response arrays can exhaust memory. The primary
-query/sql and self_dispatch tools use JSON requests (20 KB SQL verified), not
-the form path that rejected roughly 8 KB. The installed MCP JSON formatter
-encodes cells as strings. QuackAPI ed4552b preserves DuckDB errors in the HTTP
-body; keep both status/reason and that body. Never replay an uncertain write.
+- `/sql` caps an unlimited SELECT at **20 rows**, silently. Every dispatched SELECT gets its own
+  outer `LIMIT`, or returns `array_agg` of its rows as one value.
+- The receipt body is a JSON array inside a string: `from_json(receipt ->> '$.body', '[{…}]')`.
+- A failed statement is a receipt with a non-200 status and the error in its body; keep it as a row.
+- Large bodies: don't `array_agg` tens of MB of receipts; post one row each instead.
+- Dependent DDL (create → alter → insert) goes in one ordered body (`dispatch_sequence`), not as
+  parallel rows, which can run out of order.
+- A path containing `'` breaks the `printf` quoting; double it with `replace(path, chr(39), chr(39) || chr(39))`.
 
-For results consumed by subsequent SQL stages, use the plain-SQL molecule in
-`~/duckdb-dataswarm/skills/self-dispatch/SKILL.md`: source rows → statements →
-scalar POSTs to the explicitly selected service → array → CROSS JOIN UNNEST.
-Keep source keys, statements and raw receipts. Ordinality is metadata, not
-execution ordering. Use one ordered body or actual dependencies for ordering.
-
-Canonical implementation: `~/duckdb-dataswarm/duckdb/mcp/self_dispatch.sql`.
-Dev startup registration: `~/duckdb-skills/server/setup.sql`.
-Historical standalone examples in `references/` are not the dev execution path.
+Never: `SET VARIABLE` as orchestration, `WITH RECURSIVE`, `AS MATERIALIZED`, `LEFT JOIN LATERAL
+UNNEST`, a second server, or a shell loop around DuckDB. If dev itself misbehaves, restart it
+(the `light-switch` skill) rather than working around it.
