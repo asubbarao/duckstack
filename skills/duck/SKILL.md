@@ -3,12 +3,12 @@ name: duck
 description: >
   The DuckDB execution boundary and SQL process rules for this machine — read before any
   DuckDB work. One persistent dev DuckDB is held locked by a quack server; every agent is a
-  stateless `:memory:` client that LOADs quack and talks to it — one statement, or one `.sql`
-  artifact. Use whenever a task touches DuckDB, the duckstack, quack, the dev MCP,
+  client of the selected MCP or QuackAPI; :memory: with quack_query is a fallback transport.
+  Use whenever a task touches DuckDB, the duckstack, quack, the dev MCP,
   crawler/webbed, Chrome-as-relations, or when an agent is about to write SQL for this user.
   Every other duckdb-skills skill assumes this one.
 argument-hint: "[topic: boundary | client | rules | repos | facts]"
-allowed-tools: Bash
+allowed-tools: mcp__dev__query_with_limit, mcp__dev__query_no_limit, mcp__dev__self_dispatch, mcp__dev__dispatch_sql, mcp__dev__dispatch_sequence, mcp__dev__hostfs_ls, mcp__dev__read_lines
 ---
 
 You are working on a machine whose data substrate is the **duckstack**: one persistent DuckDB
@@ -17,6 +17,12 @@ duckdb-skills model ("open `file.duckdb`, keep a session file, `INSTALL` what yo
 wrong here. This skill is the record label the other skills ship under.
 
 ## 1. The stack
+
+The selected MCP is the primary agent workspace. Submit ordinary SQL, native
+readers and ShellFS through query/sql. Submit a SELECT producing `statement`
+to self_dispatch for row-driven work; the tool handles routing and returns
+raw receipts. Start with the MCP forms in agent-door, not the historical
+standalone/client examples below. No new macro without explicit approval.
 
 | Door | What | Token | Who |
 |---|---|---|---|
@@ -31,6 +37,10 @@ DuckDB **1.5.5** osx_arm64. Server extensions: `~/.duck/extensions`; local CLI: 
 
 ## 2. The boundary (hard rules)
 
+Use the selected MCP query/sql tools first, including readers and ShellFS host work.
+If unavailable in the harness, use the same service's QuackAPI or quack_query.
+Give subagents this endpoint. Missing tool exposure is not service failure.
+
 1. **Nobody opens the file.** `~/.duck/dev.duckdb` is locked; even `-readonly` is refused.
    A lock error means the caller is wrong. Go through `quack_query` instead.
 2. **A `duckdb :memory:` is a stateless client.** It may `LOAD quack` and talk to an
@@ -43,10 +53,10 @@ DuckDB **1.5.5** osx_arm64. Server extensions: `~/.duck/extensions`; local CLI: 
 4. **`~/.duckdbrc` is the resource floor** (4 threads, 4 GiB, temp dir, per-process
    QueryLog/Metrics/HTTP capture). `-c`, `-f` and `-cmd` keep it; `-init` *replaces* it
    (verified: 15 threads / 38 GiB, no telemetry). Never `-init`.
-5. **No `SET`, `INSTALL`, `LOAD` against dev** — `lock_configuration = true` is the last
-   statement of `setup.sql` ("the configuration has been locked"); `autoinstall_known_extensions
-   = false`. Endpoints, regions, URL styles are **secrets**, never settings. Anything a server
-   needs goes in `setup.sql`, nowhere else.
+5. **Install and load needed community extensions on the selected service.** Inspect
+   actual errors rather than assuming configuration locking prohibits all extension work.
+   Send LOAD separately before batches using extension PRAGMAs or parser syntax.
+   Persist required startup loads in setup.sql when maintaining the service.
 6. **Spell URIs `quack:host:port`.** That is the repo standard and what every secret `SCOPE`
    is written against (a literal prefix match). Verified 2026-09-17 on quack c154811: the
    `quack://host:port` spelling *also* works for `quack_query`, so the inframe CONTEXT.md line
@@ -151,6 +161,10 @@ not a re-paste). Neither side pastes SQL at the other through chat.
 
 ## 5. SQL process rules (procedures, not style)
 
+Project scalars directly: SELECT 'widget' AS term, * FROM items. Do not cross join
+singleton settings CTEs, including JOIN ON true or comma joins. CROSS JOIN UNNEST(arr)
+is allowed; other expansion needs a relational purpose.
+
 Verbatim source: `~/.duck/catalog/2026-09-15.md`. Breaking one is a procedural failure.
 
 - **No extraction until you are an expert in the data.** No `html_extract_*` on raw strings,
@@ -176,7 +190,7 @@ Verbatim source: `~/.duck/catalog/2026-09-15.md`. Breaking one is a procedural f
   `SELECT *` is a tabular grid of X; upstream CTE columns stay even if unprojected.
 - **One layer (one column, even) at a time. Never one-shot.** Iterate on a plain query; a view
   only once it is right. CTEs, not subqueries inside table-function arguments.
-- **Start at `LIMIT 1` / `WHERE name IN (…)` and widen.** Lazy, incremental, 3–5 at a time;
+- **Start with a bounded slice / `WHERE name IN (…)` and widen.** Incremental, 3–5 at a time;
   `cron()` hydrates the rest.
 - **No macros yet** — until the shape of the data is "just known". Conduit's six are the
   ceiling, and each is a wire mechanic or a gate.

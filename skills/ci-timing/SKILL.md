@@ -12,7 +12,7 @@ description: >
   CI finding, or any timing evidence a teammate may see. Never use local logs. Worked examples:
   ~/inframe/internal/ci/duckdb/ (review.sql, slow.sql) and the INF-1390 shard brief (§5).
 argument-hint: "<owner/repo> [workflow] [question]"
-allowed-tools: Bash, mcp__dev__ci_hunt, mcp__dev__query
+allowed-tools: Bash, mcp__dev__ci_hunt, mcp__dev__query_with_limit
 ---
 
 Read `/duckstack:duck` first; its process rules apply. This skill is the GitHub half of a CI/CD

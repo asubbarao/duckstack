@@ -82,6 +82,16 @@ Dated one-liners. Add to this list; don't rewrite it.
   `duck_hunt_match_command_patterns` errors because RE2 does not support lookaheads.
 - 2026-09-23: duck_tails. A relative `git://path@ref` resolves only when the working directory is
   the repo root. From a subfolder it returns 0 rows with no error, so use `git:///<abs repo root>/path@ref`.
+- 2026-09-26: speed. The `regexp:` reader over a glob is single-threaded at ~2 MB/s (45 s for 80 MB of
+  logs). Keep only the lines with the view's own literal marker through `read_lines` (0.2 s), then
+  `LATERAL parse_duck_hunt_log(text, 'regexp:…')` on those. Same rows, 0.19 s. The marker must be
+  narrow: `'error'` matched 714k of 926k lines, `': error'` about 100.
+- 2026-09-26: coverage. `gh run list --user <login>` drops re-runs and runs another account
+  triggered; quackapi PR #25's failing attempt 3 was missing. List own repos unfiltered.
+- 2026-09-26: GitHub answers HTTP 410 (a ~150-byte JSON body) for a job log it has expired. On
+  upstream repos this hit logs about 3 months old. Treat a sub-1 KB log file as expired, not parsed.
+- 2026-09-26: sqllogictest prints "FAILED: explicitly with message: 0". The `0` is the runner's
+  `FAIL_LINE` marker; the reason is a separate stderr block ("1. test/sql/x.test:72 / Wrong result…").
 - 2026-09-23: `status_badge(status)` and `status_badge(errors, warnings[, running])` return `[FAIL]`,
   `[WARN]`, `[ OK ]`, `[ .. ]` or `[ ?? ]`. Useful as a page's status column.
 

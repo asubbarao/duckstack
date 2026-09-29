@@ -103,3 +103,63 @@ CREATE OR REPLACE VIEW recurring_diagnostics AS
 SELECT rule, file, array_agg(DISTINCT job_id) AS job_ids, len(job_ids) AS n_jobs,
        array_agg(line ORDER BY job_id) AS lines, bool_or(is_error) AS ever_error
 FROM biome_diagnostics GROUP BY rule, file HAVING len(array_agg(DISTINCT job_id)) > 1 ORDER BY n_jobs DESC, rule;
+
+-- DuckDB extension CI (extension-ci-tools). These read only the lines carrying their own literal marker
+-- (read_lines, ~0.2 s over 80 MB), then parse that text with parse_duck_hunt_log: the regexp: reader over
+-- whole logs took ~45 s per view on the same 81 logs. Same rows either way (65 test failures, 53 make errors).
+
+-- sqllogictest_failures — which .test file and line failed? "test/sql/x.test:47: FAILED:" (Linux/macOS)
+-- or "test/sql/x.test(47): FAILED:" (Windows). The reason prints on stderr as a separate block; see
+-- sqllogictest_failure_kinds. A runner FAIL_LINE message of "0" is a marker, not the error.
+-- verified 2026-09-26 on 81 DuckDB-extension job logs (duckdb-pdf, quackapi, community-extensions): 65 rows, 25 jobs.
+CREATE OR REPLACE VIEW sqllogictest_failures AS
+WITH marked AS (
+  SELECT file_path, string_agg(content, chr(10) ORDER BY line_number) AS text
+  FROM read_lines('raw/joblog-*.txt') WHERE contains(content, ': FAILED:') GROUP BY file_path)
+SELECT string_split(parse_filename(m.file_path, true), '-')[2]::BIGINT AS job_id, e.ref_file AS test_file, e.ref_line AS test_line
+FROM marked m, LATERAL parse_duck_hunt_log(m.text, 'regexp:\S+Z (?P<file>test/\S+?\.test)[:(](?P<line>\d+)\)?: FAILED:') e
+WHERE e.ref_file <> '';
+
+-- sqllogictest_failure_kinds — why did it fail? "Wrong result in query! (test/sql/x.test:82)!",
+-- "Query failed, but error message did not match …", "Query unexpectedly succeeded!".
+-- verified 2026-09-26: 65 rows; pdf_redact.test:82 "Wrong result in query!".
+CREATE OR REPLACE VIEW sqllogictest_failure_kinds AS
+WITH marked AS (
+  SELECT file_path, string_agg(content, chr(10) ORDER BY line_number) AS text
+  FROM read_lines('raw/joblog-*.txt') WHERE contains(content, ' (test/') GROUP BY file_path)
+SELECT string_split(parse_filename(m.file_path, true), '-')[2]::BIGINT AS job_id, e.message AS kind, e.ref_file AS test_file, e.ref_line AS test_line
+FROM marked m, LATERAL parse_duck_hunt_log(m.text, 'regexp:\S+Z (?:##\[error\])?(?P<message>[A-Z][^(]*?) \((?P<file>test/\S+?\.test):(?P<line>\d+)\)') e
+WHERE e.ref_file <> '';
+
+-- make_errors — which make target failed, with what exit code? 134 SIGABRT (a crash at exit), 127 command
+-- not found (the test binary never ran), 101 cargo, 1 a test or compile failure.
+-- verified 2026-09-26: 53 rows over 51 jobs; parser_tools Windows "test_release_internal] Error 127".
+CREATE OR REPLACE VIEW make_errors AS
+WITH marked AS (
+  SELECT file_path, string_agg(content, chr(10) ORDER BY line_number) AS text
+  FROM read_lines('raw/joblog-*.txt') WHERE contains(content, '] Error ') GROUP BY file_path)
+SELECT string_split(parse_filename(m.file_path, true), '-')[2]::BIGINT AS job_id, e.ref_file AS make_target, e.message AS exit_code
+FROM marked m, LATERAL parse_duck_hunt_log(m.text, 'regexp:\S+Z make(?:\[\d+\])?: \*\*\* \[(?P<file>[^\]]+)\] Error (?P<message>\d+)') e
+WHERE e.ref_file <> '';
+
+-- compile_errors — gcc/clang "f:12:3: error: …", MSVC "f(12): error C2653: …", collect2/ld. The marker is
+-- ': error' — a bare 'error' matches 714k of 926k lines (compiler flags) and brings back the 45 s parse.
+-- verified 2026-09-26: poppler headers "‘std::span’ has not been declared" (C++17 build, C++20 header), MSVC fmt 'stdext'.
+CREATE OR REPLACE VIEW compile_errors AS
+WITH marked AS (
+  SELECT file_path, string_agg(content, chr(10) ORDER BY line_number) AS text
+  FROM read_lines('raw/joblog-*.txt') WHERE contains(content, ': error') GROUP BY file_path)
+SELECT string_split(parse_filename(m.file_path, true), '-')[2]::BIGINT AS job_id, e.ref_file AS src_file, e.message
+FROM marked m, LATERAL parse_duck_hunt_log(m.text,
+  'regexp:\S+Z (?:##\[error\])?\s*(?P<file>[^\s:(]+)(?:[:(]\d+)*\)?:\s*(?P<message>(?:fatal )?error(?: C\d+| LNK\d+)?: .*)') e
+WHERE e.ref_file <> '';
+
+-- format_diffs — which files did DuckDB's format.py --check reject? CI pins clang-format 11.0.1 and black 24.10.0.
+-- verified 2026-09-26: 20 of the readable failed jobs were only this (duckdb-pdf, quackapi, duckdb-quack).
+CREATE OR REPLACE VIEW format_diffs AS
+WITH marked AS (
+  SELECT file_path, string_agg(content, chr(10) ORDER BY line_number) AS text
+  FROM read_lines('raw/joblog-*.txt') WHERE contains(content, 'Found differences in file') GROUP BY file_path)
+SELECT string_split(parse_filename(m.file_path, true), '-')[2]::BIGINT AS job_id, e.ref_file AS src_file
+FROM marked m, LATERAL parse_duck_hunt_log(m.text, 'regexp:\S+Z Found differences in file (?P<file>\S+)') e
+WHERE e.ref_file <> '';

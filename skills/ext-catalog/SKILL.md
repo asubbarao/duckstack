@@ -5,7 +5,7 @@ description: >
   ScalarFS, or parse Markdown/HTML into DuckBlocks. Discover extension functions and all
   documented parameters before inspecting runtime signatures. Raw responses stay available.
 argument-hint: "[extension name | glob | function or parameter]"
-allowed-tools: mcp__dev__ext_docs, mcp__dev__query
+allowed-tools: mcp__dev__ext_docs, mcp__dev__query_with_limit
 ---
 
 # Extension catalog
@@ -107,16 +107,14 @@ stored `markdown` README for section modes and parameters. ScalarFS-backed paths
 work with those two readers in the current build; the verified scalar parser avoids that
 reader limitation without copying content.
 
-The catalog already stores `github_blocks` as JSON. Inspect those directly with
-`json_each(github_blocks)` when reparsing is unnecessary. Keep the whole `value` to preserve
-block fields. For the **entire saved HTML page**, including content outside the README:
+For the **entire saved HTML page**, including content outside the README:
 
 ```sql
 INSTALL webbed FROM community; LOAD webbed;
 
 SELECT c.extension_name, b.*
 FROM agents.ext_catalog c
-CROSS JOIN UNNEST(html_to_duck_blocks(c.github_raw->>'body')) t(b)
+CROSS JOIN UNNEST(html_to_duck_blocks(parse_html(c.github->>'body'))) t(b)
 WHERE c.extension_name = 'read_lines'
   AND b.element_type = 'heading'
 ORDER BY b.element_order;
@@ -129,14 +127,14 @@ representation: it does not replace the saved raw HTML or the source README.
 
 | Object | Contents |
 |---|---|
-| `agents.ext_docs` | View: extension name and README |
-| `agents.ext_catalog` | One row per extension: `community_raw`, `github_raw`, `yaml_raw`, each page's fetch time, `community_links`, `github_blocks`, `readme` |
-| `agents.ext_catalog_list` | Raw community extension list and fetch time |
-| `agents.ext_catalog_dispatch` | Fetch identity, URL, generated SQL, receipt and errors |
+| `agents.ext_page` | Table, one row per fetched url: `url`, `fetched_at`, `response` (http_get JSON: status, headers, body) |
+| `agents.ext_url` | View: `extension_name`, `kind` (community, github, yaml), `url`, read off the list page |
+| `agents.ext_catalog` | View: PIVOT of `ext_page`, one row per extension with a `community`, `github` and `yaml` response |
+| `agents.ext_docs` | View: extension name and README (the GitHub `<article>` parsed by webbed) |
+| `agents.ext_stale` | View: urls missing or older than three days |
 
-`~/duckdb-skills/server/ext_catalog.sql` dispatches individual pages using
-`ext_catalog_fetch.tera`. Startup loads it and cron runs hourly (`0 15 * * * *`); pages
-expire after three days. Fresh rows cause no fetch or persistent data rewrite. Reuse raw
+`~/duckdb-skills/server/ext_catalog.sql` fetches every url in `ext_stale` into `ext_page`. Startup loads it and cron runs hourly (`0 15 * * * *`); pages
+expire after three days. With nothing stale a run fetches and writes nothing. Reuse raw
 responses to add parsed columns. Catalog lookup comes first; inspect runtime signatures only
 to resolve a documentation gap or version mismatch, since READMEs may omit details.
 

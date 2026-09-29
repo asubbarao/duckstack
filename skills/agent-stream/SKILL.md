@@ -1,74 +1,58 @@
 ---
 name: agent-stream
-description: >
-  Search and read every agent conversation on this machine — Claude Code, Claude Desktop, Codex —
-  as one table on dev, refreshed every 5 minutes. Use when asked to find a past conversation
-  ("the codex chat about X", "what did I say about Y"), to read what the user typed recently, to
-  continue earlier work, or to check what an agent actually ran. MCP tools: stream_search,
-  stream_session, user_messages. Never grep transcript files or read ~/.claude by hand.
-argument-hint: "[search words | session_id | hours]"
-allowed-tools: Bash, mcp__dev__stream_search, mcp__dev__stream_session, mcp__dev__user_messages, mcp__dev__query, mcp__dev__sql
+description: Find recent or relevant agent conversations, then drill into complete messages and tool activity.
 ---
 
-# agent-stream
+# Agent stream
 
-Every transcript on this machine is read by `agent_data`'s `read_conversations()` into one table
-on dev, `agent.stream`, and indexed for BM25 in ordinary tables (`agent.bm25_*`). A dev cron re-derives it every 5 minutes from the
-JSONL files (`~/.duck/agent_stream/agent_stream.sql`), so it is never more than 5 minutes behind.
+`agent.conversations` is the complete `read_conversations()` base view on dev. It
+includes raw events, metadata, identities, usage, tools, and diagnostics. Select
+only the columns needed for a query; NULL means the source or reader has no value.
+`agent.stream` is the five-minute normalized table with `user`, `agent`,
+`tool_call`, `tool_result`, `system`, and `other` rows. Full text stays there.
 
-## The three calls (the `dev` MCP)
+For a quick catch-up, use `agent.stream_conversation`: one row per system/session,
+all active days, last timestamp, and ten recent user/agent messages in time order.
+The preview trims each message to 150 characters; the IDs locate full text.
 
-| tool | argument | gives |
-|---|---|---|
-| `stream_search` | `q` — search words or a question | one row per matching session (BM25 + vector, fused), with its best messages |
-| `stream_session` | `session_id` | that conversation hour by hour, in order |
-| `user_messages` | `hours` | what the user typed in the last N hours, per session per hour |
+```sql
+SELECT system, session_id, project_path, days, last_ts, message_count, preview
+FROM agent.stream_conversation
+WHERE last_ts >= current_timestamp - INTERVAL '12 hours'
+ORDER BY last_ts DESC
+LIMIT 10;
+```
 
-Find, then read: `stream_search` → take the `session_id` → `stream_session`. Two calls, not a
-hunt through files.
+Use the `stream_recent` MCP tool with `hours: 12` for this preview. Search with
+the `stream_search` tool or the saved `agent_stream_search.sql`.
+BM25 covers non-NULL message content, including tool calls and outputs. Search
+returns compact user/agent previews; inspect a selected session through the
+base or normalized table:
 
-## The table, for anything the tools do not cover (the `query` / `sql` tools)
+```sql
+SELECT ts, message_role, message_content, uuid, id, turn_id
+FROM agent.stream
+WHERE session_id = 'YOUR_SESSION_ID' AND message_role IN ('user', 'agent')
+ORDER BY ts, id;
 
-`agent.stream` — one row per thing said or done:
+SELECT ts, message_role, tool_data, message_content, status, id
+FROM agent.stream
+WHERE session_id = 'YOUR_SESSION_ID' AND message_role IN ('tool_call', 'tool_result')
+ORDER BY ts, id;
+```
 
-| column | what |
-|---|---|
-| `message_role` | `user` (a person typed it), `agent` (a model wrote it, reasoning included), `tool_call` (a call and what came back) |
-| `message_content` | the text; a tool call is its name and arguments |
-| `shape` | NULL, or which part of a >9,999-char message is kept (`head`, `tail`, `both_ends`, `whole`) — the full text is in `agent.records` |
-| `system`, `session_id`, `ts`, `day`, `hour`, `line_number`, `is_agent`, `slug`, `cwd`, `git_branch`, `model` | where and when |
+Use `stream_tools` with `session_id` and `hours` for a shorter tool drill-down.
+It groups by hour, tool name, and command program, reports calls and matched
+outputs, and retains output-only rows with a NULL tool name. Failure counts
+use explicit status only; a completed transport does not prove the command
+succeeded. Query `agent.stream` for complete arguments and outputs.
 
-Harness text written into the user channel — task notifications, interruptions, command
-wrappers, AGENTS.md, environment context — is already excluded, so `message_role = 'user'` is
-what a person typed.
-
-Also on dev: `agent.stream_hour` (a session's messages per hour, in order), `agent.sessions`
-(one row per session), `agent.records` (every raw row the reader emits, nothing dropped),
-`agent.plans`.
-
-BM25 directly:
-
-The query `stream_search` runs is `~/.duck/agent_stream/agent_stream_search.sql`: the search words
-are tokenized exactly as the messages were (fts's own `stem()` and stopwords), then BM25 in the fts
-extension's form (k1 = 1.2, b = 0.75) scores each message over `agent.bm25_posting` /
-`agent.bm25_length`, and a session ranks by its best message (MaxP). The same text is embedded in
-dev (`embed()`) and each session ranked by its nearest message vector (`agent.stream_vec`); the two
-rankings are fused by reciprocal rank (k = 60). On 224 known-answer probes (MRR title / whole-chat /
-moment): fused 0.607 / 0.462 / 0.317, BM25 alone 0.51 / 0.466 / 0.302, vector alone 0.599 / 0.395 /
-0.319, the old hour search 0.416 / 0.385 / 0.272. Copy it and change the one literal in its `asked` CTE to run it by hand.
-
-## Never build an FTS index on dev
-
-BM25 here is ordinary tables — `agent.bm25_posting` (term, tf per message) and `agent.bm25_length` —
-kept by the 5-minute cron with inserts and deletes. Do not run `PRAGMA create_fts_index` or
-`drop_fts_index` against dev: an index drop left in the write-ahead log does not replay on DuckDB
-1.5.5, and dev then fails to start (2026-09-22). Search with `stream_search` or the tables.
-
-## Without the MCP
-
-Same SQL, `curl -s -X POST localhost:9495/sql --data-urlencode sql@query.sql` (see
-`/duckstack:agent-door`).
-
-Verified 2026-09-22: a word typed at 15:11 had no postings, then 4 after the 15:15 run, and
-`stream_search` found it after a dev restart; every message in agent.stream has a length row and
-its term counts sum to it; `user_messages` and `stream_session` return rows.
+`agent.stream_day` is another grain, but includes all roles in its samples.
+The complete base view is installed by `server/agent_base.sql`; the five-minute
+job runs `server/agent_stream_incremental.sql` through
+`server/agent_stream_schedule.sql`. It rereads eight hours at the worker,
+replaces the recent seven-hour overlap, and keeps older stream history. A newly
+arriving record with an older timestamp needs a wider reconciliation.
+`agent.reader_build` identifies
+the current temporary reader artifact. The main signed DuckDB owns the stream,
+BM25 tables, and vectors.

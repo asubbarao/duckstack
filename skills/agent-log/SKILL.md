@@ -8,7 +8,7 @@ description: >
   lost turn. `FILENAME_PATTERN '{uuid}'` makes n writers into one directory safe with no lock.
   Works the same for SQL, Python, .bat or any other language.
 argument-hint: "<agent-name> [sql | code] [dir]"
-allowed-tools: Bash, mcp__dev__sql
+allowed-tools: Bash, mcp__dev__query_no_limit
 ---
 
 # agent-log
