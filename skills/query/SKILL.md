@@ -36,6 +36,11 @@ create another service or silently switch endpoints. Pass the endpoint to subage
 
 ## Explore and compose
 
+- Issue live SELECTs first and iterate on useful result sets. A saved SQL file is
+  an outcome of exploration, not a prerequisite. Reuse the source CTE, vary later
+  CTEs, and use outer LIMIT 4 or LIMIT 7 while shaping columns. Save the verified,
+  reusable program after it proves useful. Read-only exploration is cheap to
+  reconstruct; uncertain writes still require receipt/state inspection before retry.
 - SQL is the interactive workspace, not only a saved artifact format. ShellFS and
   self-dispatch make it an orchestrator for other runtimes. Generated Python inside
   SQL or separate files can be useful; choose from task needs and measured behavior.

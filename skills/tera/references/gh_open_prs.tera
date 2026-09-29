@@ -1,0 +1,9 @@
+{# Trusted accounts and authored flag/SQL-option fragments. SQL limits the combined result. #}
+{% for account in accounts %}{% if not loop.first %}UNION ALL{% endif %}
+SELECT '{{ account }}' AS account, *
+FROM read_json(
+  $cmd$gh search prs --author {{ account }}{% for flag in flags %} {{ flag.name }} {{ flag.value }}{% endfor %}|$cmd${% for option in options %}, {{ option.name }} := {{ option.value }}{% endfor %}
+)
+{% endfor %}
+ORDER BY updatedAt DESC
+LIMIT {{ preview_limit }};

@@ -96,6 +96,12 @@ justifies them. Do not add Bash loops to replace relational SQL.
 
 ## Stored templates for varying calls
 
+Explore with live SELECTs before saving a template or SQL program. `references/gh_open_prs.sql`
+and `gh_open_prs.tera` were saved after verifying flags, reader options, all search fields,
+and combined recency ordering for two accounts. They demonstrate reuse of flags/options;
+for two fixed calls, direct reader SQL is shorter. The CLI acquisition cap and SQL display
+limit serve different purposes and cannot substitute for one another.
+
 A template earns the indirection when it is saved once and reused. Typical cases are authenticated
 `gh` or `podman` acquisition with repeated flags, an external exporter with per-row account/date/field
 flags plus varying CSV options, or a converter/decrypter that emits JSON or CSV DuckDB can stream.
