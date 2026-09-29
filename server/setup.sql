@@ -21,7 +21,7 @@ INSTALL quickjs FROM community; LOAD quickjs; INSTALL miniplot FROM community; L
 INSTALL minijinja FROM community; LOAD minijinja; INSTALL gh FROM community; LOAD gh;
 INSTALL hostfs FROM community; LOAD hostfs; INSTALL pdf FROM community; LOAD pdf;
 INSTALL parser_tools FROM community; LOAD parser_tools; INSTALL yaml FROM community; LOAD yaml;
-INSTALL sitting_duck FROM community; LOAD sitting_duck; INSTALL curl_httpfs FROM community; LOAD curl_httpfs;
+INSTALL jsonata FROM community; LOAD jsonata; INSTALL sitting_duck FROM community; LOAD sitting_duck; INSTALL curl_httpfs FROM community; LOAD curl_httpfs;
 .read /Users/aloksubbarao/duckdb-skills/server/live.sql
 
 -- A laptop tenant: leave memory and cores for the desktop; bounded temp; UTC; patient HTTP; fewer checkpoint pauses.
