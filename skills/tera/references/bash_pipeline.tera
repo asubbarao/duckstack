@@ -1,0 +1,5 @@
+{# Trusted shell grammar only. SQL prepares stages = [{command, args, flags=[{name,value}]}]. #}
+{%- macro render_stage(stage) -%}
+{{ stage.command }}{% for arg in stage.args %} {{ arg }}{% endfor %}{% for flag in stage.flags %} {{ flag.name }}{% if flag.value != "" %} {{ flag.value }}{% endif %}{% endfor %}
+{%- endmacro render_stage -%}
+{%- for stage in stages %}{{ self::render_stage(stage=stage) }}{% if not loop.last %} | {% endif %}{% endfor -%}

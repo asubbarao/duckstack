@@ -50,10 +50,26 @@ Reusable examples live in `~/duckdb-dataswarm/duckdb/templates/`:
 - `reader.tera`: include that command inside a native reader's dollar-quoted pipe.
 - `lines.tera`: repeat supplied lines; ordinary string aggregation is often enough.
 
-Use distinct dollar-quote and heredoc delimiters absent from the supplied script.
-The MCP shell tool generates UUID-based delimiters. A quoted heredoc prevents
-the outer shell from expanding the script; the chosen interpreter still executes
-it. Templates and executable scripts are trusted code, not an injection boundary.
+For ShellFS readers, use the two nested templates in `references/`:
+
+- `bash_pipeline.tera` renders `stages = [{command, args, flags}]`, preserving stage and flag order.
+- `shell_reader.tera` includes that pipeline directly in a ShellFS path, then renders
+  `reader = {name, parameters}` as `read_x($pipe$...|$pipe$, name := value, ...)`.
+- `shell_readers.sql` is the runnable JSON/CSV/lines example and the current `read_csv`/`read_json`
+  parameter and encoding reference. Read it before adding reader-specific flags.
+
+SQL chooses the stages, reader and parameters; the templates contain no business rules. Use
+`read_json` and `read_csv` directly: both already auto-detect. Prefer them for structured stdout.
+Use `read_lines` when line and byte offsets are the structure. `read_text` reads whole objects in a
+batch and is not a streaming fallback. Use `read_blob` to preserve bytes after text decoding fails;
+the `encodings` extension expands CSV's `encoding :=` support, while ICU handles collations and
+time zones rather than arbitrary byte decoding.
+
+Use a distinct dollar-quote delimiter absent from the supplied script. Reach for
+an interpreter/heredoc template only when the program needs Bash-specific state;
+ordinary pipelines execute directly through ShellFS and are easier to inspect.
+The MCP shell tool generates UUID-based delimiters. Templates and executable scripts
+are trusted code, not an injection boundary.
 For external values, use real parameter binding or native encoding appropriate
 to the target language. HTML escaping is neither SQL nor shell quoting.
 
