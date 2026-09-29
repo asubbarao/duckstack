@@ -72,6 +72,33 @@ Keep the context as data (`json_object`, structs, lists); do not hand-escape JSO
 No new SQL or Tera macros. Include small named templates when actual repetition
 justifies them. Do not add Bash loops to replace relational SQL.
 
+## Nested templates: a runner and a loop (shellfs self-dispatch, verified 2026-09-28)
+
+A shellfs call has three parts: the reader around it (`read_csv('… |', …)`), the command with its own flags,
+and the reader's `:=` options. A tera `macro` is the runner for one command; a `for` loop calls it once per row,
+each with its own flags and options; the rendered statement is self-dispatched to `/sql`.
+
+```sql
+-- tera_render(template VARCHAR [, context JSON], autoescape := BOOLEAN) -> VARCHAR
+-- http_post(url VARCHAR, headers MAP, body JSON [, params MAP]) -> JSON {status, reason, body}
+WITH commands AS (
+    SELECT 'ls' AS cmd, '-1 /Users/aloksubbarao/duckdb-skills/server' AS flags, 'header := false, names := [' || chr(39) || 'line' || chr(39) || ']' AS opts
+    UNION ALL SELECT 'date', '-u', 'header := false, names := [' || chr(39) || 'line' || chr(39) || ']'
+), program AS (
+    SELECT tera_render($t${% macro run(cmd, flags, opts) %}SELECT '{{ cmd }}' AS cmd, * FROM read_csv('{{ cmd }} {{ flags }} |', {{ opts }}){% endmacro run %}{% for c in commands %}{{ self::run(cmd=c.cmd, flags=c.flags, opts=c.opts) }}{% if not loop.last %} UNION ALL BY NAME {% endif %}{% endfor %} LIMIT 100000$t$,
+        json_object('commands', array_agg({'cmd': cmd, 'flags': flags, 'opts': opts})), autoescape := false) AS statement
+    FROM commands
+)
+SELECT statement, http_post('http://127.0.0.1:9495/sql', MAP {'Content-Type': 'application/json'}, json_object('sql', statement)) ->> '$.body' AS rows
+FROM program
+```
+
+- `autoescape := false` or the quotes come back as `&#x27;`. The template sits in `$t$…$t$` so its single quotes
+  need no doubling; `:=` values are built with `||` and `chr(39)` in the rows, never escaped.
+- Pass `read_csv`'s `delim` explicitly: `uname -a` contains `:`, the sniffer split on it and produced a `column1`.
+- Same shape for osascript (Chrome bridge / conduit: one runner per window or tab, looped), curl, gh: the runner
+  is the command's grammar, the rows are the calls.
+
 ## Measured limits and diagnostics
 
 - `date` and `urlencode` filters are absent in this build (retested 2026-09-28).
