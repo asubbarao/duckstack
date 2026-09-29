@@ -1,0 +1,9 @@
+{#- One page through http_client. Context: url, user_agent, headers = [{name, value}], params = [{name, value}].
+    Loops: headers and params render the two MAP literals (http_get's arguments are positional, not :=).
+    User-Agent joins the headers map. The JSON receipt is cast to a STRUCT, not extracted. -#}
+SELECT 'http_client' AS method, g.r.status, g.r.body, NULL AS error
+FROM (SELECT http_get('{{ url }}',
+    MAP {'User-Agent': '{{ user_agent }}'{% for h in headers %}, '{{ h.name }}': '{{ h.value }}'{% endfor %}},
+    MAP { {%- for p in params %}'{{ p.name }}': '{{ p.value }}'{% if not loop.last %}, {% endif %}{% endfor -%} }
+)::STRUCT(status INTEGER, reason VARCHAR, body VARCHAR) AS r) g
+LIMIT 100000

@@ -1,0 +1,12 @@
+{#- One page through the crawler extension. Context: url, user_agent, timeout, params = [{name, value}].
+    Parameters: the context becomes crawl_url's := options. Loop: params render the query string.
+    crawl_url runs only correlated (the crawl skill's rule): the rendered URL is a one-row relation it laterals over.
+    Blocked on this build (2026-09-29): in the lateral form the binder takes every := as positional and no overload
+    matches, so this renders and dispatches but returns 422; the driver keeps that receipt as the crawler row.
+    Uncorrelated it binds, but repeats the page row until the LIMIT (100000 x 274 KB took the request down).
+    crawl_url takes no headers. The html struct's document is the body. Render, html_unescape, self-dispatch. -#}
+SELECT 'crawler' AS method, c.status, c.html.document AS body, c.error
+FROM (SELECT '{{ url }}{% for p in params %}{% if loop.first %}?{% else %}&{% endif %}{{ p.name }}={{ p.value }}{% endfor %}' AS url) l
+CROSS JOIN LATERAL crawl_url(l.url, "extract" := []::VARCHAR[], user_agent := '{{ user_agent }}', timeout := {{ timeout }},
+    cache := false, cache_ttl := 24, max_results := 1) AS c
+LIMIT 100000

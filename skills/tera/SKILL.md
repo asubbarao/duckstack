@@ -101,6 +101,28 @@ FROM program
 - Same shape for osascript (Chrome bridge / conduit: one runner per window or tab, looped), curl, gh: the runner
   is the command's grammar, the rows are the calls.
 
+## Loops and flags: one page fetched three ways (verified 2026-09-29)
+
+One context drives three templates. Scalars (`url`, `user_agent`, `timeout`, `max_bytes`) become shell flags
+in one and `:=` parameters or MAP entries in the others; lists (`headers`, `params` as `[{name, value}]`) are
+`{% for %}` loops. `references/fetch_three_ways.sql` renders each `fetch_*.tera`, `html_unescape`s it,
+self-dispatches it to `/sql`, and compares the bodies after `::HTML`.
+
+- `fetch_shellfs.tera`: `read_text($cmd$curl -sS --fail --max-time {{ timeout }} --max-filesize {{ max_bytes }} … |$cmd$)`;
+  the loops render one `-H` per header and one `--data-urlencode` per param (`--get`). No HTTP status from curl.
+- `fetch_http_client.tera`: `http_get(url, MAP {…headers}, MAP {…params})`; the loops render the two MAP literals.
+  Its arguments are positional, not `:=`. The JSON receipt is cast to `STRUCT(status, reason, body)`, not extracted.
+- `fetch_crawler.tera`: `crawl_url` over a one-row relation, params looped into the query string. **Blocked on
+  this build:** in the correlated lateral form every `:=` binds as positional and no overload matches (422). The
+  uncorrelated form binds but repeats the page row until the LIMIT; `LIMIT 100000` of a 274 KB page took the
+  request down; after that it returned zero rows for any URL for several calls, across a restart, then one row
+  again minutes later. Not dependable, and the crawl skill bans the uncorrelated form anyway.
+- Measured: shellfs and http_client bodies are identical (274,457 chars, same md5, title `duckpgq – DuckDB
+  Community Extensions`, 31 links). The crawler row stays in the result with its 422 receipt in `error`.
+- Keep a failed dispatch as a row: `CASE WHEN receipt.status = 200 THEN from_json(body, …) ELSE [{… 'error':
+  receipt.body}] END` before `unnest`, or the failing method silently disappears.
+- `html_extract_text` takes XPath: `'//title'`, not `'title'` (that returned `[]`).
+
 ## Measured limits and diagnostics
 
 - `date` and `urlencode` filters are absent in this build (retested 2026-09-28).
