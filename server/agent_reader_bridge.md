@@ -1,7 +1,7 @@
 # Temporary repaired reader
 
 `com.inframe.agent-reader` runs one unsigned DuckDB in memory on authenticated
-`quack:127.0.0.1:19494`. It loads the single artifact built in `.agent_data_repair`;
+`quack:127.0.0.1:19494`. It loads the versioned artifact named in `agent_reader.sql`;
 no unsigned extension is installed into the community extension directory.
 `server/agent_reader.sql` is its complete SQL setup.
 

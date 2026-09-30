@@ -5,6 +5,33 @@ description: Find recent or relevant agent conversations, then drill into comple
 
 # Agent stream
 
+## Subagent relationship evidence
+
+Use the raw `agent.conversations` reader union when inspecting relationships,
+not `agent.stream`. Check the loaded reader version: on 2026-09-30 the main
+process's `ca2c0b8` classified native Codex children as `is_agent = false`, while
+the existing repaired reader's `333812b` correctly exposed `parent_session_id`,
+`agent_path`, and `thread_source = 'subagent'` for the same live files.
+
+`is_agent` is provider-specific classification, not a universal parent link.
+Native Codex child metadata records the parent thread; a separately launched
+`codex exec` session may have `thread_source = 'exec'` and no parent. Preserve
+launching tool calls and child metadata so callers can reconstruct such links.
+Do not classify every CLI session as a subagent or infer a parent solely from a
+shared project directory. Explicit dispatch records should carry both source
+and session IDs; reconstructed links should state their evidence separately.
+
+Claude child transcripts can carry their parent's `session_id`; distinguish
+siblings by transcript `file_path`/`file_name` and child identity, not session ID
+alone. `parent_uuid` links messages and is not a conversation parent ID.
+
+The current reader loads history before SQL filters apply. When checking known
+Codex transcripts, use `read_conversations(path := '<exact rollout file>',
+source := 'codex')` through the repaired reader. This completed in two seconds
+for a root, three native children and one CLI session; a full-history query
+exceeded the MCP transport wait and completed later. A transport timeout does
+not mean the query stopped. Check state before replaying writes.
+
 `agent.conversations` is the complete `read_conversations()` base view on dev. It
 includes raw events, metadata, identities, usage, tools, and diagnostics. Select
 only the columns needed for a query; NULL means the source or reader has no value.
