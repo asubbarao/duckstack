@@ -321,3 +321,7 @@ https://github.com/teaguesterling/duck_hunt/blob/main/docs/examples.md (pytest J
 GitHub Actions, `context := N` for surrounding lines, cross-run `fingerprint` joins).
 Prefer, in order: a native test report (`junit_xml`, `pytest_json`) → the workflow parser
 for step units → the `regexp:` reader over timestamped lines.
+
+`references/log_events.sql` is the portable form: report files by path or glob, raw text kept
+beside every event, `webbed` loaded for the XML parsers, unknown formats rejected; see
+`docs/portable-readers.md`.
