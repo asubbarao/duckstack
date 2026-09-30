@@ -47,6 +47,44 @@ outputs, and retains output-only rows with a NULL tool name. Failure counts
 use explicit status only; a completed transport does not prove the command
 succeeded. Query `agent.stream` for complete arguments and outputs.
 
+## Multi-term tool-history search
+
+When investigating an extension or workflow from tool-call text, use a token
+array and `array_intersect`, rather than a chain of text predicates. Keep the
+match terms in the query, project them directly with each stream row, and set
+the threshold deliberately: `>= 1` is a broad discovery pass; raise it only
+when the task needs co-occurrence. This captures calls that mention any of the
+related tools without requiring a brittle Boolean text expression.
+
+```sql
+WITH candidates AS (
+    SELECT
+        ['webbed', 'crawler', 'quickjs', 'jsonata', 'tera', 'shellfs'] AS match_arr,
+        ts,
+        system,
+        session_id,
+        tool_data ->> 'name' AS tool_name,
+        message_content,
+        string_split(lower(coalesce(message_content, '')), ' ') AS tokens
+    FROM agent.stream
+    WHERE message_role = 'tool_call'
+)
+SELECT
+    ts,
+    system,
+    session_id,
+    tool_name,
+    array_intersect(tokens, match_arr) AS matched_terms,
+    message_content
+FROM candidates
+WHERE len(array_intersect(tokens, match_arr)) >= 1
+ORDER BY ts DESC
+LIMIT 20;
+```
+
+For exact punctuation-sensitive terms, normalize the text before splitting;
+do not fall back to Boolean `OR` text matching.
+
 `agent.stream_day` is another grain, but includes all roles in its samples.
 The complete base view is installed by `server/agent_base.sql`; the five-minute
 job runs `server/agent_stream_incremental.sql` through

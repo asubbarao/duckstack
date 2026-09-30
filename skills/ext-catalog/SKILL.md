@@ -125,6 +125,72 @@ representation: it does not replace the saved raw HTML or the source README.
 
 ## Stored layers and refresh
 
+### Upstream documentation sites
+
+`~/duckdb-skills/readthedocs_catalog.sql` adds a separate, joinable documentation layer.
+Run it after the normal catalog setup; it fetches at most three due representations per
+invocation. Re-run deliberately to expand the discovered same-site page frontier. It is
+not registered with cron, does not crawl the entire web, and does not change `ext_catalog`.
+
+- `agents.ext_doc_source`: extension name → documentation root; currently Duck Hunt,
+  Duck Tails and Sitting Duck. Add source registrations here, not columns per extension.
+- `agents.ext_doc_fetch` / `ext_doc_page`: raw attempts / last successful bodies by
+  `(url, representation)`, with timestamps. Failed attempts remain inspectable and never
+  overwrite a successful cached page. Good pages expire after three days; attempts have
+  a five-minute retry cooldown. The cache is bounded per run, not in total page count.
+- `agents.ext_doc_links`: source page → normalized label, target URL, fetchable page URL,
+  fragment, and original label. Fragments are section coordinates, not additional fetches.
+- `agents.ext_doc_content` / `ext_doc_blocks`: full content and derived ordered blocks.
+- `agents.ext_doc_sections`: ID-bearing headings → section URL, ordered block list,
+  HTML, Markdown and extracted links. Includes child headings, stops at the next equal/lower
+  heading or enclosing-container exit. It parses cached HTML; selecting a fragment does
+  not fetch again. This is a heading-section index, not a selector for arbitrary DOM IDs.
+- `agents.ext_catalog_documented`: existing catalog plus its documentation-root pointer.
+
+```sql
+SELECT extension_name, source_url, label, target_url
+FROM agents.ext_doc_links
+WHERE extension_name = 'duck_hunt'
+  AND source_url = 'https://duck-hunt.readthedocs.io/en/latest/schema/'
+  AND fragment IS NOT NULL
+  AND label NOT IN ('¶', 'Skip to content')
+LIMIT 7;
+```
+
+Discover available section coordinates, then consume just the chosen sections:
+
+```sql
+SELECT DISTINCT fragment
+FROM agents.ext_doc_sections
+WHERE url = 'https://duck-hunt.readthedocs.io/en/latest/examples/'
+ORDER BY fragment;
+
+SELECT fragment, markdown
+FROM agents.ext_doc_sections
+WHERE url = 'https://duck-hunt.readthedocs.io/en/latest/examples/'
+  AND fragment IN ('#aggregation', '#dynamic-regexp-parser')
+ORDER BY start_order;
+```
+
+Preview with `len(markdown)` and `left(markdown, 240)` before returning content. `html`
+and `links` are available from the same row. Verified on this page: pytest/ESLint anchors,
+both sections above, inclusion of nested Quality Gate, and exclusion of the last section's
+footer. Webbed's `block.level` is nesting depth; `attributes['heading_level']` is heading rank.
+Do not infer missing sections until their parent page has been successfully cached.
+
+Known documentation pages need only `http_get`, not the Read the Docs management API.
+Request `Accept: text/markdown` for compact content; fetch HTML separately when navigation
+or section anchors are needed, then parse with webbed. The Read the Docs API/config skills
+are for managing projects/builds/configuration, not prerequisites to reading public pages.
+See [Markdown negotiation](https://docs.readthedocs.com/platform/latest/reference/markdown-for-agents.html).
+
+The installed `http_get` returns `{status, reason, body}` without response headers.
+`representation` therefore records the request preference, not proven Content-Type on
+every response. Verify uncertain negotiation separately. Observed on 2026-09-29: Duck Hunt
+schema returned `text/markdown` via curl, 13,911 downloaded bytes in 58 ms; no timing SLA
+or guarantee of Markdown support on arbitrary hosts. Raw bodies stay in DuckDB; return
+lengths, bounded links/headings and errors to the agent, not the entire fetched document.
+
 | Object | Contents |
 |---|---|
 | `agents.ext_page` | Table, one row per fetched url: `url`, `fetched_at`, `response` (http_get JSON: status, headers, body) |

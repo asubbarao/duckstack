@@ -142,5 +142,13 @@ The starting claims are correct: `is_parsable(text)` distinguishes the two SQL b
   required per row.
 - `is_parsable` answers syntax, not bindability, permissions, or whether referenced tables and
   functions exist. It is a parser gate, not an execution guarantee.
+- Verified 2026-09-29: **table functions are invisible to the parser facts.** For a query with
+  `FROM read_duck_hunt_log('x', 'gcc_text')`, `parse_function_names`, `parse_functions` and `parse_tables`
+  (scalar and table form) return only the scalar functions (`left`, `starts_with`) and no table at all. To
+  know which extension a query calls, read a tag or the text; the parser will not tell you.
+- Verified 2026-09-29: `parse_statements(text)` returns `VARCHAR[]` (not structs) of re-serialized SQL:
+  normalized (`CAST('t' AS BOOLEAN)`, quoted identifiers, added parentheses) with every comment removed.
+  Use it to split and validate; to keep comments, split the file text yourself and hand each piece to the
+  scalars. `is_parsable` on a piece that starts with bare prose returns false, so pass SQL (comments are fine).
 - Parse the text inside a fenced code block, not the backticks and language tag. Preserve the
   original block beside the parsed result as evidence.
