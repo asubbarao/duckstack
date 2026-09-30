@@ -1,3 +1,4 @@
 _plan.md
 _data/
-.duckdb-skills/
+.duckdb-skills/__pycache__/
+.pytest_cache/
