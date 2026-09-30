@@ -1,6 +1,6 @@
 -- Temporary unsigned reader; the signed main database owns the stream and indexes.
 LOAD quack;
-LOAD '/Users/aloksubbarao/.duck/reader-artifacts/d24c270/agent_data.duckdb_extension';
+LOAD '/Users/aloksubbarao/.duck/reader-artifacts/44494e6/agent_data.duckdb_extension';
 
 CREATE VIEW conversations AS
 SELECT 'claude' AS system, *
