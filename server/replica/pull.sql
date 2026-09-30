@@ -6,10 +6,12 @@
 -- from pull_log, never tracked; a failure is a row the next tick retries.
 -- CREATE OR REPLACE swaps a table in one transaction; a reader sees the previous copy until the new one commits.
 -- READ_ONLY: the replica never writes to its source. IF NOT EXISTS: a source that was down is attached next tick.
--- Two sources: the staging clone lands in schema public, the fake business profiles (bp_fake) in schema bp_fake.
+-- Two sources: the staging clone lands in schema public, the business profile database bp (VOP and its fake
+-- businesses, defined by ~/business-profile/schema/bp.sql) in schema bp. The attach is named bpdb so that bp.x names
+-- only the replica's schema.
 ATTACH IF NOT EXISTS 'host=/tmp port=5432 user=aloksubbarao dbname=staging_extensions_20260929' AS pg (TYPE postgres, READ_ONLY);
-ATTACH IF NOT EXISTS 'host=/tmp port=5432 user=aloksubbarao dbname=bp_fake' AS bp (TYPE postgres, READ_ONLY);
-CREATE SCHEMA IF NOT EXISTS bp_fake;
+ATTACH IF NOT EXISTS 'host=/tmp port=5432 user=aloksubbarao dbname=bp' AS bpdb (TYPE postgres, READ_ONLY);
+CREATE SCHEMA IF NOT EXISTS bp;
 -- The attach caches the source catalog; clearing it lets a table or column added upstream arrive.
 CALL pg_clear_cache();
 
@@ -21,13 +23,13 @@ CALL pg_clear_cache();
 INSERT INTO pull_log BY NAME
 WITH source AS (
     -- Base tables from the source's own catalog; the attach's duckdb_tables() also lists its 6 views.
-    -- pull_log's table_name is schema-qualified (public.x, bp_fake.x) so the two sources never collide.
+    -- pull_log's table_name is schema-qualified (public.x, bp.x) so the two sources never collide.
     SELECT 'pg' AS src, 'public' AS target, table_name, 'public.' || table_name AS key
     FROM postgres_query('pg', $$SELECT table_name::text AS table_name FROM information_schema.tables
         WHERE table_schema = 'public' AND table_type = 'BASE TABLE'$$)
     UNION ALL
-    SELECT 'bp', 'bp_fake', table_name, 'bp_fake.' || table_name
-    FROM postgres_query('bp', $$SELECT table_name::text AS table_name FROM information_schema.tables
+    SELECT 'bpdb', 'bp', table_name, 'bp.' || table_name
+    FROM postgres_query('bpdb', $$SELECT table_name::text AS table_name FROM information_schema.tables
         WHERE table_schema = 'public' AND table_type = 'BASE TABLE'$$)
 ), last_attempt AS (
     SELECT table_name AS key,
