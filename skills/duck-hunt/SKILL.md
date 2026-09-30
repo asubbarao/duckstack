@@ -16,12 +16,20 @@ argument-hint: "<run id | log path | 'this PR'> [question]"
 allowed-tools: Bash, mcp__dev__ci_hunt
 ---
 
+## Upstream documentation
+
+Read the [Duck Hunt schema](https://duck-hunt.readthedocs.io/en/latest/schema/)
+when interpreting event columns, status/severity, test durations, hierarchy or
+fingerprints. Use the [Duck Hunt documentation](https://duck-hunt.readthedocs.io/en/latest/)
+for supported formats and reader examples. Confirm the installed result schema with
+`DESCRIBE`; local observed behavior below supplements, rather than replaces, upstream docs.
+
 **After every CI/CD analysis, add each new log reading to `recipes.sql` as a view, with the
 question it answers and one verified line. Add each new gotcha to §Learned as a dated one-liner.
 Don't inline one-offs.** The library only improves if every analysis leaves something in it.
 
 Where it runs: this doc and `recipes.sql` (next to it), in your own `duckdb :memory:` or through
-`uvx --from duckdb duckdb`. The `dev` MCP tool `ci_hunt(zip, glob, format)` is a shortcut for one
+`uvx --from duckdb-cli duckdb`. The `dev` MCP tool `ci_hunt(zip, glob, format)` is a shortcut for one
 read over an Actions log zip. Recipes are views, never macros. A page built from them is
 `/duckstack:live-page`.
 
@@ -90,6 +98,24 @@ Dated one-liners. Add to this list; don't rewrite it.
   triggered; quackapi PR #25's failing attempt 3 was missing. List own repos unfiltered.
 - 2026-09-26: GitHub answers HTTP 410 (a ~150-byte JSON body) for a job log it has expired. On
   upstream repos this hit logs about 3 months old. Treat a sub-1 KB log file as expired, not parsed.
+- 2026-09-29: read each stage of a local build with its own parser: `black_text`/`auto` for the formatter
+  (a clean run is silent: 0 rows), `cmake_build` for the build (warnings only on success), `duckdb_test` for
+  the suite. On a passing suite `duckdb_test` returns one INFO row ("no specific test results found") and no
+  counts; the `All tests passed (N assertions in M test cases)` line is a `read_lines` filter. duck_hunt is
+  the failure reader; success is the absence of FAIL/ERROR rows plus that summary line.
+- 2026-09-29: `gcc_text` on a GitHub Actions job log reads the leading timestamp as the file
+  (`ref_file = '2026-09-29T22'`, `ref_line = 48`). The `message` column is right: on a red Linux build it named
+  the cause (`use of 'auto' in lambda parameter declaration only available with -std=c++14`) that a grep for
+  `error` buried under template instantiation noise. Filter `severity = 'error'`, use `message`.
+- 2026-09-29: a job log can be read straight from the API, no zip, as a shellfs source:
+  `read_duck_hunt_log('GH_TOKEN=… gh api --allow-escape-sequences repos/<o>/<r>/actions/jobs/<job_id>/logs |', 'duckdb_test')`.
+  Without `--allow-escape-sequences` gh refuses ("the response contains terminal escape sequences")
+  and the pipe exits 1 with no output. `gh run view --log-failed` only works once the whole run has
+  finished; the per-job endpoint works as soon as that job has.
+- 2026-09-29: `duckdb_test` returned 1 FAIL row for a job whose summary said `2 failed`: it caught
+  `read_pdf_columns.test:154` and missed `read_pdf_url.test:84` (same "Wrong result" block shape).
+  Check the FAIL rows against the `test cases: N | P passed | F failed` summary line before trusting
+  the list. `context := N` came back NULL on this parser.
 - 2026-09-26: sqllogictest prints "FAILED: explicitly with message: 0". The `0` is the runner's
   `FAIL_LINE` marker; the reason is a separate stderr block ("1. test/sql/x.test:72 / Wrong result…").
 - 2026-09-23: `status_badge(status)` and `status_badge(errors, warnings[, running])` return `[FAIL]`,
