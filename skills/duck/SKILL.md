@@ -16,6 +16,10 @@ agent may also own a fresh `:memory:` instance. In either case, callers use an e
 network door. SQL definitions and skills are authoritative; database files and WALs are rebuildable
 outputs, not irreplaceable state.
 
+## Query first
+
+Read [references/query-first.md](references/query-first.md) before building a data-generation or exploration workflow. It contains a runnable UNPIVOT example, measured checks, and guidance for choosing native readers, LATERAL, or self-dispatch. Start with a SELECT and rerun it; do not create tables/views, export files, or design a framework before its grain is correct.
+
 ## 1. The stack
 
 The selected MCP is the primary agent workspace. Submit ordinary SQL, native
@@ -165,9 +169,10 @@ not a re-paste). Neither side pastes SQL at the other through chat.
 
 ## 5. SQL process rules (procedures, not style)
 
-Project scalars directly: SELECT 'widget' AS term, * FROM items. Do not cross join
-singleton settings CTEs, including JOIN ON true or comma joins. CROSS JOIN UNNEST(arr)
-is allowed; other expansion needs a relational purpose.
+Project scalars directly: SELECT 'widget' AS term, * FROM items. No any_value or
+CROSS JOIN in agent-authored queries. Expand lists with SELECT unnest(arr); use
+SELECT unnest(range(n)) when intentionally repeating rows. Native correlated
+JOIN LATERAL calls remain available; do not disguise a Cartesian product as a join.
 
 Verbatim source: `~/.duck/catalog/2026-09-15.md`. Breaking one is a procedural failure.
 

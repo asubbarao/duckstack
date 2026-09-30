@@ -34,6 +34,13 @@ A local :memory: client with quack_query to quack:localhost:9494 is another
 transport to the same service; see /duckstack:quack. Do not open the database file,
 create another service or silently switch endpoints. Pass the endpoint to subagents.
 
+## Shelf of useful queries
+
+`references/useful_queries.sql` is a shared, append-only file of small verified queries that do not
+deserve their own .sql or skill (a job-status check, a CI-log reader, a hard-won crawler/webbed expression).
+Read it before writing a query of that kind; when a query of yours earns its keep, append it with the
+recipe in the file's header and one line saying when to reach for it.
+
 ## Explore and compose
 
 - Issue live SELECTs first and iterate on useful result sets. A saved SQL file is
