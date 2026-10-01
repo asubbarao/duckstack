@@ -37,13 +37,29 @@ FROM quack_query('quack:127.0.0.1:19494',
 
 CREATE OR REPLACE TEMP TABLE stream_delta AS
 WITH source_rows AS (
-    SELECT *, coalesce(nullif(message_role, ''), message_type) AS transport,
-        CASE WHEN message_type IN ('function_call_output', 'custom_tool_call_output', 'tool_result') THEN false
-             WHEN message_type IN ('function_call', 'custom_tool_call', 'tool_call') THEN true
-             WHEN nullif(tool_input, '') IS NOT NULL THEN true
-             WHEN transport = 'tool' THEN false
-             WHEN nullif(tool_name, '') IS NOT NULL THEN true
-             ELSE false END AS is_call,
+    -- speaker: the source's role when it has one, else its record type.
+    SELECT *, CASE WHEN message_role <> '' THEN message_role ELSE message_type END AS speaker,
+        -- event_kind is derived, so its values never collide with a source's own type names.
+        CASE WHEN message_type IN ('function_call_output', 'custom_tool_call_output', 'tool_result') THEN 'call_result'
+             WHEN message_type IN ('function_call', 'custom_tool_call', 'tool_call') THEN 'call_request'
+             WHEN tool_input <> '' THEN 'call_request'
+             WHEN speaker = 'tool' THEN 'call_result'
+             WHEN tool_name <> '' THEN 'call_request'
+             WHEN speaker = 'user' THEN 'user_text'
+             WHEN speaker IN ('assistant', 'reasoning', 'agent_message') THEN 'agent_text'
+             WHEN speaker IN ('system', 'developer') THEN 'system_text'
+             WHEN message_type = '_parse_error' THEN 'reader_error'
+             WHEN message_type IN ('token_usage', 'token_usage_total', 'token_count') THEN 'token_count'
+             WHEN message_type IN ('attachment', 'image_view') THEN 'attachment'
+             WHEN message_type IN ('file_change', 'file-history-snapshot', 'file-history-delta') THEN 'file_edit'
+             WHEN message_type IN ('inter_agent_communication_metadata', 'subagent_activity') THEN 'subagent_link'
+             WHEN message_type IN ('queue-operation', 'task_started', 'task_complete', 'turn_aborted', 'compacted',
+                 'compaction', 'compaction_summary', 'retained_context', 'plan') THEN 'turn_lifecycle'
+             WHEN message_type IN ('last-prompt', 'ai-title', 'custom-title', 'agent-name', 'agent-setting', 'mode',
+                 'permission-mode', 'pr-link', 'frame-link', 'bridge-session', 'worktree-state', 'relocated',
+                 'continued-in', 'history-suppression', 'cost-state', 'atis-latch', 'artifact-autoreact-ledger',
+                 'artifact-comment-monitor', 'world_state', 'thread_settings_applied', 'extension') THEN 'session_state'
+             ELSE 'unlabeled' END AS event_kind,
         sha256(to_json({system: system, session_id: session_id, file_name: file_name,
             project_path: project_path, line_number: line_number, uuid: uuid,
             message_type: message_type, tool_use_id: tool_use_id})) AS source_key,
@@ -53,27 +69,30 @@ WITH source_rows AS (
 ), parts AS (
     SELECT *, 'text' AS part, nullif(message_content, '') AS content, NULL AS tool_data
     FROM source_rows
-    WHERE CASE WHEN NOT is_call THEN true
-        WHEN transport IN ('user', 'assistant') THEN nullif(message_content, '') IS NOT NULL
-        WHEN transport = 'tool' AND message_type NOT IN ('function_call', 'custom_tool_call', 'tool_call')
-            THEN nullif(message_content, '') IS NOT NULL ELSE false END
+    WHERE CASE WHEN event_kind <> 'call_request' THEN true
+        WHEN speaker IN ('user', 'assistant') THEN message_content <> ''
+        WHEN speaker = 'tool' AND message_type NOT IN ('function_call', 'custom_tool_call', 'tool_call')
+            THEN message_content <> '' ELSE false END
     UNION ALL BY NAME
     SELECT *, 'tool' AS part,
-        nullif(concat_ws(' ', nullif(tool_name, ''), coalesce(nullif(tool_input, ''),
-            CASE WHEN transport IN ('user', 'assistant') THEN NULL ELSE nullif(message_content, '') END)), '') AS content,
+        nullif(concat_ws(' ', nullif(tool_name, ''),
+            CASE WHEN tool_input <> '' THEN tool_input
+                 WHEN speaker IN ('user', 'assistant') THEN NULL
+                 ELSE nullif(message_content, '') END), '') AS content,
         {name: tool_name, input: tool_input, call_id: tool_use_id} AS tool_data
-    FROM source_rows WHERE is_call
+    FROM source_rows WHERE event_kind = 'call_request'
 ), normalized AS (
     SELECT COLUMNS(c -> c NOT IN ('tool_name', 'tool_input', 'raw_event', 'metadata', 'session_updated_at',
-        'source_key', 'occurrence', 'part', 'is_call', 'transport', 'content', 'message_role', 'message_content',
+        'source_key', 'occurrence', 'part', 'speaker', 'content', 'message_role', 'message_content',
         'input_tokens', 'output_tokens', 'cache_creation_tokens', 'cache_read_tokens', 'reasoning_tokens')),
         message_role AS source_message_role, source_key || ':' || occurrence || ':' || part AS id,
+        -- A call row's text part keeps its speaker's role; event_kind stays the row's kind.
         CASE WHEN part = 'tool' THEN 'tool_call'
              WHEN message_type IN ('function_call_output', 'custom_tool_call_output', 'tool_result') THEN 'tool_result'
-             WHEN transport = 'tool' THEN 'tool_result'
-             WHEN transport = 'user' THEN 'user'
-             WHEN transport IN ('assistant', 'reasoning', 'agent_message') THEN 'agent'
-             WHEN transport IN ('system', 'developer') THEN 'system' ELSE 'other' END AS message_role,
+             WHEN speaker = 'tool' THEN 'tool_result'
+             WHEN speaker = 'user' THEN 'user'
+             WHEN speaker IN ('assistant', 'reasoning', 'agent_message') THEN 'agent'
+             WHEN speaker IN ('system', 'developer') THEN 'system' ELSE 'other' END AS message_role,
         content AS message_content, length(content) AS content_length,
         try_cast(timestamp AS TIMESTAMPTZ) AS ts,
         (ts AT TIME ZONE 'UTC')::DATE AS day, time_bucket(INTERVAL '5 minutes', ts) AS block
@@ -117,6 +136,7 @@ FROM stream_preflight;
 CREATE TABLE IF NOT EXISTS agent.stream AS SELECT * FROM stream_delta WHERE false;
 -- This is session transport metadata, not event data; old normalized tables retained it.
 ALTER TABLE agent.stream DROP COLUMN IF EXISTS session_updated_at;
+ALTER TABLE agent.stream ADD COLUMN IF NOT EXISTS event_kind VARCHAR;
 -- Keep only IDs for accounting; MERGE owns full-row comparison atomically.
 CREATE OR REPLACE TEMP TABLE stream_mutation_ids AS
 SELECT s.id
