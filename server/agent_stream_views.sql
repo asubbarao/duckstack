@@ -78,3 +78,9 @@ SELECT *, now() - source_coverage_at AS source_snapshot_age,
        source_coverage_at IS NOT NULL
            AND now() - source_coverage_at <= INTERVAL '10 minutes' AS within_ten_minutes
 FROM freshness;
+
+-- Create the durable human-text view when the stream first becomes available.
+FROM post_file('/Users/aloksubbarao/duckdb-skills/server/agent_user_text.sql');
+-- Public reader surfaces use sanitized data, never the reader's raw transcript view.
+CREATE OR REPLACE VIEW agent.conversations AS FROM agent.stream;
+CREATE OR REPLACE VIEW agent.subagent_chats AS FROM agent.stream WHERE is_agent;
