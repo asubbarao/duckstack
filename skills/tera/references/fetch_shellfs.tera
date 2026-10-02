@@ -1,0 +1,9 @@
+{#- One page through shellfs: curl's stdout is read_text's content. Context: url, user_agent, timeout, max_bytes,
+    headers = [{name, value}], params = [{name, value}]. Flags: the same values become curl flags.
+    Loops: one -H per header, one --data-urlencode per param (with --get they land in the query string).
+    --fail turns a non-2xx into a read error; curl prints no status here. The command sits in $cmd$ so its quotes need no doubling. -#}
+SELECT 'shellfs' AS method, NULL::INTEGER AS status, content AS body, NULL AS error
+FROM read_text($cmd$curl -sS --fail --max-time {{ timeout }} --max-filesize {{ max_bytes }} -A '{{ user_agent }}'
+{%- for h in headers %} -H '{{ h.name }}: {{ h.value }}'{% endfor %} --get
+{%- for p in params %} --data-urlencode '{{ p.name }}={{ p.value }}'{% endfor %} '{{ url }}' |$cmd$)
+LIMIT 100000

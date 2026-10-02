@@ -20,6 +20,25 @@ that readers can glob, seek into, and hive-partition. `git://data/**/*.parquet@H
 dataset as of five commits ago, with no checkout, no `git show >` to a temp file, and no
 second language in the data path.
 
+## Upstream documentation and query patterns
+
+Use the [Duck Tails documentation](https://duck-tails.readthedocs.io/en/latest/) for
+URI syntax, function reference, repository analytics, historical data analysis and
+advanced queries. Adapt examples to installed overloads; the published examples are
+not a guarantee that every correlated reader or schema query binds in your version.
+
+Read [references/analytics-patterns.sql](references/analytics-patterns.sql) for CTE
+reuse, pruning/limiting before LATERAL, historical file comparisons, snapshot trees
+and contributor activity. Read [references/lateral-queries.sql](references/lateral-queries.sql)
+for the native `_each` forms and signature discovery. Start with the source relation,
+then compose downstream projections and aggregations rather than introducing bespoke
+views or macros for each question.
+
+Relative `git://path@ref` resolves from the process's repository; from a server whose
+cwd is elsewhere, use an absolute repo URI or explicit repo argument. `git_tree` already
+returns `repo_path` and `git_uri`: shell `git rev-parse`, trimming and captured variables
+are unnecessary just to discover the root or read committed files.
+
 `/duckstack:git-github` is the companion: `gh` for **remote** GitHub, `gh` CLI for private repos.
 This skill is the **local** repository, and it corrects three things `git-github` states wrongly.
 
@@ -208,16 +227,37 @@ Also present: `git_branches`, `git_tags`, `git_parents`, `git_diff_tree`, `git_b
 
 ## 5. Many files — the correlated form, and the wall
 
-Every relation has an `_each` twin that **takes a column**. This is the correlated form and the
-only legal way to fan out; verified reading all 19 `.md` files of this fork in one statement:
+Use [references/lateral-queries.sql](references/lateral-queries.sql) for selected-file reads,
+bounded file history, and trees across commits. These adapt the user's supplied queries and
+record what was actually tested. Select the recipe that answers the current question.
+
+The documented `_each` twins accept correlated columns. Prefer the native correlated
+function when available; use self-dispatch for literal-only readers without a suitable twin.
+Inspect installed overloads instead of assuming every function shares one signature.
+Previously verified reading all 19 `.md` files of this fork in one statement:
 
 ```sql
 LOAD duck_tails;
 SELECT len(array_agg(DISTINCT r.file_path)) AS n_files, len(array_agg(r.text)) AS n_texts
-FROM (SELECT file_path FROM git_tree('.', 'HEAD') WHERE file_ext = '.md' AND kind = 'file') t,
-     git_read_each(t.file_path) r;
+FROM (SELECT git_uri FROM git_tree('.', 'HEAD') WHERE file_ext = '.md' AND kind = 'file') t,
+     git_read_each(t.git_uri) r;
 -- 19 | 19
 ```
+
+Any repo, from anywhere (verified 2026-09-28 on the bare clone of `closure`): pass `git_uri`, filter in
+the WHERE before the join, and read a big file a slice at a time by splitting it into lines:
+
+```sql
+SELECT t.file_path, u.n, u.line
+FROM git_tree('/Users/aloksubbarao/reviews/closure.git', 'HEAD') t, git_read_each(t.git_uri) r,
+     unnest(string_split(r.text, chr(10))) WITH ORDINALITY AS u(line, n)
+WHERE t.file_path IN ('server/routes.sql', 'server/views.sql') AND starts_with(upper(trim(u.line)), 'CREATE')
+LIMIT 100;
+```
+
+One file across history: `git_read_each(git_uri(repo, 'README.md', l.commit_hash))` over `git_log(repo)`
+(docs: duck-tails.readthedocs.io/en/latest/guide/lateral-joins/). Never `find`/`ls` a repo, and never
+self-dispatch per-file `read_text` — the `_each` twin is the lateral.
 
 `git_read_each`, `git_tree_each`, `git_log_each`, `git_blame_each`, `git_status_each`,
 `git_branches_each`, `git_tags_each`, `git_parents_each`, `git_diff_tree_each`.

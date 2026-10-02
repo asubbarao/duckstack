@@ -2,21 +2,31 @@
 name: duck
 description: >
   The DuckDB execution boundary and SQL process rules for this machine — read before any
-  DuckDB work. One persistent dev DuckDB is held locked by a quack server; every agent is a
-  stateless `:memory:` client that LOADs quack and talks to it — one statement, or one `.sql`
-  artifact. Use whenever a task touches DuckDB, the duckstack, quack, the dev MCP,
+  DuckDB work. Dev and agent-owned DuckDBs are disposable runtimes rebuilt from SQL; every caller
+  uses an explicitly selected MCP, QuackAPI or Quack endpoint.
+  Use whenever a task touches DuckDB, the duckstack, quack, the dev MCP,
   crawler/webbed, Chrome-as-relations, or when an agent is about to write SQL for this user.
   Every other duckdb-skills skill assumes this one.
 argument-hint: "[topic: boundary | client | rules | repos | facts]"
-allowed-tools: Bash
+allowed-tools: mcp__dev__query_with_limit, mcp__dev__query_no_limit, mcp__dev__self_dispatch, mcp__dev__dispatch_sql, mcp__dev__dispatch_sequence, mcp__dev__hostfs_ls, mcp__dev__read_lines
 ---
 
-You are working on a machine whose data substrate is the **duckstack**: one persistent DuckDB
-per machine, always on, always locked, reached only through the network. The stock
-duckdb-skills model ("open `file.duckdb`, keep a session file, `INSTALL` what you need") is
-wrong here. This skill is the record label the other skills ship under.
+The **duckstack** is source-defined, not file-defined. Dev is the convenient shared default; an
+agent may also own a fresh `:memory:` instance. In either case, callers use an explicitly selected
+network door. SQL definitions and skills are authoritative; database files and WALs are rebuildable
+outputs, not irreplaceable state.
+
+## Query first
+
+Read [references/query-first.md](references/query-first.md) before building a data-generation or exploration workflow. It contains a runnable UNPIVOT example, measured checks, and guidance for choosing native readers, LATERAL, or self-dispatch. Start with a SELECT and rerun it; do not create tables/views, export files, or design a framework before its grain is correct.
 
 ## 1. The stack
+
+The selected MCP is the primary agent workspace. Submit ordinary SQL, native
+readers and ShellFS through query/sql. Submit a SELECT producing `statement`
+to self_dispatch for row-driven work; the tool handles routing and returns
+raw receipts. Start with the MCP forms in agent-door, not the historical
+standalone/client examples below. No new macro without explicit approval.
 
 | Door | What | Token | Who |
 |---|---|---|---|
@@ -26,10 +36,16 @@ wrong here. This skill is the record label the other skills ship under.
 | `quack:localhost:9497` + OTLP `:4318` | telemetry DuckDB | `~/.duck/telemetry/` | observability |
 
 `~/.duck/dev.duckdb` is held open by `com.inframe.quack` (launchd `KeepAlive`); `~/.duck/setup.sql`
-is THE server, identical on every machine (a symlink to the copy in git, `~/duckdb-skills/server/setup.sql`).
+is the dev definition (a symlink to the copy in git, `~/duckdb-skills/server/setup.sql`). A watcher
+restarts it when server SQL changes. In-flight queries may die; agents announce the restart and retry
+only reads or writes proven not to have happened.
 DuckDB **1.5.5** osx_arm64. Server extensions: `~/.duck/extensions`; local CLI: `~/.duckdb/extensions`.
 
 ## 2. The boundary (hard rules)
+
+Use the selected MCP query/sql tools first, including readers and ShellFS host work.
+If unavailable in the harness, use the same service's QuackAPI or quack_query.
+Give subagents this endpoint. Missing tool exposure is not service failure.
 
 1. **Nobody opens the file.** `~/.duck/dev.duckdb` is locked; even `-readonly` is refused.
    A lock error means the caller is wrong. Go through `quack_query` instead.
@@ -37,16 +53,17 @@ DuckDB **1.5.5** osx_arm64. Server extensions: `~/.duck/extensions`; local CLI: 
    *explicitly selected* `quack:localhost:<port>`, call an explicitly selected localhost
    service, or use the `dev` MCP when `dev` is the target. Never assume there is only one
    Quack; never silently substitute one localhost service for another.
-3. **Persistent state lives on the server.** Tables, views, secrets, crawl state, cron — on
-   dev. **There is no client-side session to restore: no `state.sql`, no `.read`, no `-init`.**
-   Anything an agent would "remember" between calls is a table on dev.
+3. **Definitions live in source.** Required schemas, views, macros, tools and schedules belong in
+   replayable SQL. Runtime tables may live on the selected service, but deleting dev plus its WAL
+   must not erase the system definition. Agent-owned instances use `own_server.sql`; durable evidence
+   publication is a separate stage.
 4. **`~/.duckdbrc` is the resource floor** (4 threads, 4 GiB, temp dir, per-process
    QueryLog/Metrics/HTTP capture). `-c`, `-f` and `-cmd` keep it; `-init` *replaces* it
    (verified: 15 threads / 38 GiB, no telemetry). Never `-init`.
-5. **No `SET`, `INSTALL`, `LOAD` against dev** — `lock_configuration = true` is the last
-   statement of `setup.sql` ("the configuration has been locked"); `autoinstall_known_extensions
-   = false`. Endpoints, regions, URL styles are **secrets**, never settings. Anything a server
-   needs goes in `setup.sql`, nowhere else.
+5. **Install and load needed community extensions on the selected service.** Inspect
+   actual errors rather than assuming configuration locking prohibits all extension work.
+   Send LOAD separately before batches using extension PRAGMAs or parser syntax.
+   Persist required startup loads in setup.sql when maintaining the service.
 6. **Spell URIs `quack:host:port`.** That is the repo standard and what every secret `SCOPE`
    is written against (a literal prefix match). Verified 2026-09-17 on quack c154811: the
    `quack://host:port` spelling *also* works for `quack_query`, so the inframe CONTEXT.md line
@@ -55,9 +72,10 @@ DuckDB **1.5.5** osx_arm64. Server extensions: `~/.duck/extensions`; local CLI: 
 7. **The token is an environment variable on the shell line, never a literal in SQL, never in
    a file, never printed.** `QUACK_TOKEN="$(cat ~/.duck/token)" duckdb :memory: …` and
    `getenv('QUACK_TOKEN')` in the statement.
-8. **Lateral functions are correlated or they do not run.** `crawl_url`, `read_lines_lateral`
-   only as `FROM rel CROSS JOIN LATERAL f(rel.col)`. The incident behind this rule was an
-   uncorrelated lateral run locally.
+8. **Column-bound table functions self-dispatch.** For each URL row, render a literal
+   `crawl(...)` or `crawl_url(...)` statement and post it to the selected service. A binding
+   complaint means this step was skipped. `read_lines_lateral` remains an explicit supported
+   correlation: `FROM rel CROSS JOIN LATERAL read_lines_lateral(rel.col)`.
 9. **Do not claim a timeout exists because a config reports one.** duckdb_mcp a6b8648 shows
    `request_timeout_seconds 30` in `mcp_server_config()` and enforces nothing; the launchd
    process ceilings are the boundary.
@@ -151,6 +169,11 @@ not a re-paste). Neither side pastes SQL at the other through chat.
 
 ## 5. SQL process rules (procedures, not style)
 
+Project scalars directly: SELECT 'widget' AS term, * FROM items. No any_value or
+CROSS JOIN in agent-authored queries. Expand lists with SELECT unnest(arr); use
+SELECT unnest(range(n)) when intentionally repeating rows. Native correlated
+JOIN LATERAL calls remain available; do not disguise a Cartesian product as a join.
+
 Verbatim source: `~/.duck/catalog/2026-09-15.md`. Breaking one is a procedural failure.
 
 - **No extraction until you are an expert in the data.** No `html_extract_*` on raw strings,
@@ -176,7 +199,7 @@ Verbatim source: `~/.duck/catalog/2026-09-15.md`. Breaking one is a procedural f
   `SELECT *` is a tabular grid of X; upstream CTE columns stay even if unprojected.
 - **One layer (one column, even) at a time. Never one-shot.** Iterate on a plain query; a view
   only once it is right. CTEs, not subqueries inside table-function arguments.
-- **Start at `LIMIT 1` / `WHERE name IN (…)` and widen.** Lazy, incremental, 3–5 at a time;
+- **Start with a bounded slice / `WHERE name IN (…)` and widen.** Incremental, 3–5 at a time;
   `cron()` hydrates the rest.
 - **No macros yet** — until the shape of the data is "just known". Conduit's six are the
   ceiling, and each is a wire mechanic or a gate.
@@ -195,9 +218,9 @@ Verbatim source: `~/.duck/catalog/2026-09-15.md`. Breaking one is a procedural f
   `record_element := 'tr'` silently ignores `attr_mode`/`attr_prefix`; `htmlpath(…'@href[*]')`
   returns NULL; `jq()` is first-match only.
 - `crawl()`/`crawl_url()`/`quack_query()` are table functions: arguments bind
-  literals, `getenv`, `getvariable` or pure concatenation — never a column. The correlated form
-  is `CROSS JOIN LATERAL crawl_url(rel.url, …)`; a previous stage's list rides in via
-  `SET VARIABLE urls = (SELECT list(url) FROM …)`.
+  literals, `getenv`, `getvariable` or pure concatenation — never a column. Apply either crawl
+  function per URL row by rendering a literal statement and self-dispatching it. Treat a binder
+  complaint as a missing dispatch stage, not an extension limitation.
 - `enable_logging(..., storage_path := '…csv')` writes ONE denormalized file; `QueryLog` is a
   start record, not a completion record.
 - `COPY … PARTITION_BY` writes one file per partition (`FILENAME_PATTERN 'part'` → `part0.parquet`)

@@ -1,0 +1,19 @@
+{#- One gh read per row. kind picks the reader; create makes the table from the first read of its kind.
+    Every row keeps its source keys and fetched_at; nothing is filtered, later reads append. -#}
+{% if create %}CREATE TABLE IF NOT EXISTS agents.gh_{{ kind }} AS{% else %}INSERT INTO agents.gh_{{ kind }} BY NAME{% endif %}
+{% if kind == "pr" %}
+SELECT now() AS fetched_at, '{{ author }}' AS author, *
+FROM read_json('gh search prs --author {{ author }} --state open --limit 100 --json repository,number,title,url,isDraft,updatedAt,createdAt |')
+{% elif kind == "pr_state" %}
+SELECT now() AS fetched_at, '{{ repo }}' AS repo, *
+FROM read_json('gh pr view {{ number }} -R {{ repo }} --json number,headRefOid,headRefName,baseRefName,mergeStateStatus,mergeable,reviewDecision,isDraft |')
+{% elif kind == "run" %}
+SELECT now() AS fetched_at, '{{ repo }}' AS repo, {{ number }} AS number, *
+FROM read_json('gh run list -R {{ repo }} --commit {{ sha }} --limit 100 --json databaseId,workflowName,name,event,status,conclusion,headSha,url,createdAt,updatedAt |')
+{% elif kind == "job" %}
+SELECT now() AS fetched_at, '{{ repo }}' AS repo, {{ run_id }} AS run_id, unnest(jobs, max_depth := 2)
+FROM read_json('gh run view {{ run_id }} -R {{ repo }} --json jobs |')
+{% elif kind == "log_line" %}
+SELECT now() AS fetched_at, '{{ repo }}' AS repo, {{ run_id }} AS run_id, *
+FROM read_lines('gh run view {{ run_id }} -R {{ repo }} --log-failed |', "trim" := true)
+{% endif %}

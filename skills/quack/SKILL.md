@@ -19,6 +19,18 @@ LOAD quack;
 FROM quack_query('quack:localhost:9494', $$<one complete body>$$, token := getenv('QUACK_TOKEN'));
 ```
 
+For ordinary work, begin the complete body with DuckDB's native profiler settings so the
+shared `Metrics` log records wall time, CPU, rows, bytes, spill and buffer metrics:
+
+```sql
+SET enable_profiling = 'no_output';
+SET profiling_coverage = 'ALL';
+<the requested SQL>
+```
+
+The server's configuration lock permits only those two LOCAL settings. QueryLog and Quack
+logging still record malformed or rejected requests that never reach profiling.
+
 That is the whole interface. No `ATTACH`, no alias, no `dev.` prefix, no state file, nothing
 to establish before it and nothing to re-establish after a restart.
 

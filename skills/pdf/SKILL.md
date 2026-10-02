@@ -35,17 +35,11 @@ worse than the default for reading a document:
 - An unrecognised value throws:
   `layout must be one of ['auto', 'physical', 'reading', 'raw'], not 'banana'`.
 
-Measured on the DuckDB Friendly SQL Calendar, page 2, with the build installed
-here (`bef4b27`):
+Measured on the DuckDB Friendly SQL Calendar, page 2:
 
     default            MON TUE WED THU FRI SAT SUN
                        1 2 3 4                       <- 1 Jan 2026 is a Thursday
     layout 'physical'  PREFIX ALIASES     MON   TUE   WED   THU   FRI   SAT   SUN
-
-**Version caveat.** `'auto'` and the fail-loud validation land in 0.9.0. The
-published community build (0.8.0, `6535c81`) still defaults to `'reading'` and
-still falls back silently on a bad value — against that build, and only that
-build, `layout := 'physical'` is the least-bad workaround.
 
 ## The five grains — pick by what the question needs
 
@@ -131,3 +125,10 @@ scores it — filter on confidence, never on a hunch.
 - Claude Code's own PDF reader shells out to `pdftoppm`. If it errors with
   "poppler-utils not installed", do not install poppler — render with
   `pdf_write_page_images` and read the PNGs.
+- **A long document (a book, a 100-page report) is `/duckstack:pdf-digest`**, not a `read_pdf` dump: it builds a
+  contents-first card from word geometry in one SQL file (verified 2026-09-29, duckdb-pdf `c804ebc`; its §1 says how
+  to build).
+- Facts that file established: `pdf_pages_info.label` is the PDF's own printed page number; `pdf_chunks` takes only
+  `chunk_size` positionally (`overlap := 0`); ligature runs split words (`Profi ling`) at every grain, so glue words
+  whose gap is < 0.5pt; `read_pdf_tables` misses most borderless tables; `pdf_outline` has no page column. Evidence in
+  `pdf-digest/references/pdf-extension-findings.md`.

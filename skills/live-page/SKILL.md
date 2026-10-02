@@ -17,9 +17,11 @@ Read `/duckstack:duck` first; its SQL rules apply. This skill covers only how a 
 The analysis supplies its own relations and prose. An example analysis is `/duckstack:ci-timing`,
 which covers CI/CD and duck_hunt.
 
-**Where it runs.** Use this doc in your own `duckdb :memory:`, or run `uvx --from duckdb duckdb`
-for anything a teammate re-runs. The `dev` MCP has one related tool: `render(template, ctx)` returns
-`tera_render` of a template file on dev. No MCP tool or Python entrypoint serves pages. No macros.
+**Where it runs.** Use the selected DuckDB MCP. `render(template, ctx)` renders a named
+template file on that server; `query`/`sql` run the full program. Do not start another
+database or listener to make a page. Register any requested route on the selected
+QuackAPI. Standalone serving examples below apply only to an explicitly selected
+isolated environment. No new macros.
 
 ## Start any page
 
@@ -127,7 +129,7 @@ FROM page_data, chart;
 | No `//` operator. Filters bind looser than arithmetic, and `(x \| f) * n` is a parse error | compute durations, widths and percentages in SQL (`printf('%dm %02ds', s // 60, s % 60)`) |
 | `escape` throws on a null or a number | `autoescape := false` and escape in SQL or JS; `coalesce` nulls in SQL |
 | A context field or view aliased as an existing table name binds to that table's struct and fails with odd `+(STRUCT…)` errors | give aliases unique names |
-| No file loader, so `include`, `extends` and `import` fail | keep the template inline as `$tpl$…$tpl$`, or read it with `read_text`; use `{% macro %}` for repeats |
+| Included template is not found | pass `template_path := '/explicit/templates/*.tera'` and render a named template; every included file must match the glob |
 | No `date`, `now()` or `urlencode` in the template | `strftime`, `url_encode` in SQL |
 | A missing variable is an error | `{{ x \| default(value="…") }}`; `{{ __tera_context }}` dumps what arrived |
 

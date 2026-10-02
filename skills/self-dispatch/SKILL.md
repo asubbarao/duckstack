@@ -1,196 +1,71 @@
 ---
 name: self-dispatch
-description: >
-  Self-dispatch — the database writes the statement it cannot bind, then runs it. Use whenever a
-  table function (glob, ls, lsr, read_text, read_csv, read_blob, crawl, quack_query, query) needs
-  a value that lives in a column ("does not support lateral join column parameters"), whenever
-  work must fan out per row, or whenever an agent is about to reach for SET VARIABLE, a macro, a
-  loop, Python or a shell script to get around that wall. On dev: rows → statements → array_agg(http_post_form to /sql) → UNNEST,
-  through the dev MCP `sql` tool or POST localhost:9495/sql. No macro. Other DuckDBs:
-  quackapi in-process, the two-pipe form, or the quack loopback.
-argument-hint: "[inprocess | pipe | quack] [what varies per row]"
-allowed-tools: Bash
+description: Run SQL that writes SQL and executes it on the same dev DuckDB — per-row table functions (ls, read_csv, read_lines on a path column), crawls, fan-outs, ordered DDL. Use whenever a table function refuses a column argument, when work repeats per row, or when a stage depends on the rows of the one before.
+allowed-tools: mcp__dev__query_with_limit, mcp__dev__query_no_limit, mcp__dev__dispatch_sql, mcp__dev__self_dispatch, mcp__dev__dispatch_sequence
 ---
 
-"Self-dispatch works. Every time. Agents never know how to use it." This skill is the how.
+# Self-dispatch
 
-## On this machine: dev serves `/sql` — the molecule
+A table function such as `ls(path)` or `read_csv(path)` takes a literal, not a column. Self-dispatch
+gets around it without a loop, a script or a second server: one CTE writes the statement for each
+row as text and posts it to this same server's `/sql` route; the next CTE unnests the receipts back
+into rows. The database writes the statement it cannot bind, then runs it.
 
-Fastest: the `dev` MCP tool `self_dispatch(rows_sql)` — give it a SELECT with a column named
-`statement`; it posts every statement to dev's `/sql` in one `array_agg` and returns one row
-per statement. Write the molecule yourself (below) when you need the results joined back.
-
-Dev runs quackapi in its own process; `POST /sql` runs any SQL. The molecule: a CTE of rows,
-a CTE that writes one statement per row (`replace()` on a template, or an array of tokens
-joined — never a `||` chain), `array_agg` of the `http_post_form` to self, `UNNEST` the array.
-The statement selects its own key so each response carries it. Every intermediate column stays
-visible; pick the few you want at the end. One statement or ten thousand, same shape.
-No `VALUES`, no macro, no `SET VARIABLE`, no `WITH ORDINALITY`, no doubled quotes — `chr(39)`.
+## The molecule: two CTEs
 
 ```sql
-WITH tables AS (
-  SELECT table_schema, table_name, table_schema || '.' || table_name AS table_ref
-  FROM information_schema.tables
-  WHERE table_schema = 'main'
-  ORDER BY table_name
-  LIMIT 3
-),
-statements AS (
-  SELECT *,
-         'SELECT @TABLE_REF_LITERAL AS table_ref, * FROM @TABLE_REF LIMIT 2' AS template,
-         replace(replace(template, '@TABLE_REF_LITERAL', chr(39) || table_ref || chr(39)), '@TABLE_REF', table_ref) AS statement
-  FROM tables
-),
-fired AS (
-  SELECT array_agg(http_post_form(listen_url || '/sql', MAP {}, MAP {'sql': statement})) AS responses
-  FROM statements, quackapi_servers()
+-- http_post(url VARCHAR, headers MAP(VARCHAR, VARCHAR), body JSON [, params MAP]) -> JSON {status, reason, body}
+post AS (
+    SELECT array_agg(http_post(
+        'http://127.0.0.1:9495/sql',
+        MAP {'Content-Type': 'application/json'},
+        json_object('sql', printf($$SELECT path FROM ls('%s') LIMIT 100000$$, path))
+    )) AS receipts
+    FROM previous
+    WHERE <the rows worth dispatching>
+), result AS (
+    SELECT receipt ->> '$.status' AS status, entry.*
+    FROM post
+    CROSS JOIN UNNEST(receipts) AS r(receipt)
+    CROSS JOIN UNNEST(from_json(receipt ->> '$.body', '[{"path":"VARCHAR"}]')) AS e(entry)
 )
-SELECT response.status AS status, json_extract_string(response.body, '$') AS rows_json
-FROM fired, UNNEST(responses) AS fired_responses(response)
 ```
 
-`quackapi_servers()` is the URL of the server the query runs in — nothing hardcoded.
-Submit the outer query through the `dev` MCP `sql` tool, `curl -X POST localhost:9495/sql
---data-urlencode sql@file.sql`, or `quack_query(...)` from a `:memory:` DuckDB.
+Chain it as often as needed: stage N+1 is written FROM stage N, so the data dependency is the order.
 
-Verified 2026-09-22 on live dev. Reference: `pgedge-rag/docs/techniques/self-dispatch-molecules.md`,
-`~/personal/self-dispatch/sql/`. The forms below are for a DuckDB that is not dev.
+## Every form, side by side
 
-## The wall, stated exactly (verified DuckDB 1.5.5, 2026-09-17)
+`references/selfdispatch.sql` runs the same per-row `ls` six ways and returns every receipt: naked JSON POST to
+`/sql` (the default), the `MAP` form post, a tera template file (`references/ls.tera`), printf (shown, not
+preferred), `quack_query` to a quack server (point the URI at another agent's port), and the `httpserver`
+extension (GET with `query` and `default_format`). Verified 2026-09-28: 6 forms × 2 rows, all 200, identical
+listings. `/sql` returns the first statement that produces rows, so setup/teardown in a body are CTAS, not SELECT.
 
-`glob()`, `ls()`, `lsr()`, `read_text()`, `read_csv()`, `read_blob()`, `crawl()`, `quack_query()`,
-`quack_query()` are **table functions: their arguments bind at parse time** — a literal, `getenv()`,
-`getvariable()`, or pure concatenation of those. A column is refused:
+## Worked example: crawl a tree, pruning before descending
 
-```
-Binder Error: Table function "glob" does not support lateral join column parameters
-```
+`references/declarative_ls.sql` is the whole thing, verified 2026-09-28 on `~/duckdb-skills`
+(10 → 64 → 48 paths over three waves, every receipt 200, nothing read under `.git`):
 
-A **scalar** function takes columns. `http_post_form(url, headers, params)` is a scalar. So:
-build the statement you need *as a string, per row*, hand it to a scalar that runs SQL, read the
-rows back. The database dispatches to itself. No `SET VARIABLE`, no macro, no loop, no script.
+1. `wave1`: `ls(root)` with `is_dir(path)`, `file_name(path)` beside it.
+2. `post2`: one `ls('<folder>')` statement per folder that survives
+   `NOT starts_with(name, '.') AND name NOT IN ('node_modules', '__pycache__', 'venv')`.
+3. `wave2`: the receipts unnested. Repeat 2–3 for each further level.
 
-## Form 1 — quackapi in-process (canonical: one process, one route, no server, no file)
+The filter sits **before** the dispatch, so a pruned folder is never listed. Filtering the output of
+`lsr(root)` is the opposite: it walks all of `.venv` first. The server can run the file itself:
+`SELECT http_post(…, json_object('sql', 'SELECT … FROM (' || content || ') …')) FROM read_text('<file>')`.
 
-`quackapi` is the user's own extension (`CREATE ROUTE` turns SQL into a typed HTTP endpoint;
-`quackapi_serve` serves it from this process). The executor is **one route whose handler is
-`query($q)`**. Verified verbatim (`INSTALL quackapi FROM community` once on the client):
+## Traps (measured)
 
-```sql
-LOAD hostfs; LOAD http_client; LOAD quackapi;
--- the executor: one route, one handler, any statement; a JSON array of typed rows comes back
-CREATE OR REPLACE ROUTE dispatch POST '/q' AS SELECT rows.* FROM query($q) rows;
--- quackapi_serve(port, host := ...) returns at once; loopback only
-FROM quackapi_serve(19502, host := '127.0.0.1');
+- `/sql` caps an unlimited SELECT at **20 rows**, silently. Every dispatched SELECT gets its own
+  outer `LIMIT`, or returns `array_agg` of its rows as one value.
+- The receipt body is a JSON array inside a string: `from_json(receipt ->> '$.body', '[{…}]')`.
+- A failed statement is a receipt with a non-200 status and the error in its body; keep it as a row.
+- Large bodies: don't `array_agg` tens of MB of receipts; post one row each instead.
+- Dependent DDL (create → alter → insert) goes in one ordered body (`dispatch_sequence`), not as
+  parallel rows, which can run out of order.
+- A path containing `'` breaks the `printf` quoting; double it with `replace(path, chr(39), chr(39) || chr(39))`.
 
-WITH roots AS (SELECT path FROM ls('/some/root') WHERE is_dir(path)),
--- the statement is TEXT built per row; chr(39) is the quote — no doubled-quote soup
-stmts AS (SELECT path AS root, format('SELECT path FROM lsr({}{}{}, 1)', chr(39), path, chr(39)) AS q FROM roots),
--- the barrier: array_agg forces every POST to complete before any row below exists
-fired AS (SELECT array_agg(struct_pack(root := root,
-                                       r := http_post_form('http://127.0.0.1:19502/q', MAP{}, MAP{'q': q}))
-                           ORDER BY root) AS responses FROM stmts),
--- a JSON array of row objects back: unnest it, read by name, types follow the columns
-wave1 AS (SELECT (u.e).root AS root, ((u.e).r).status AS status, row.path AS path
-          FROM fired CROSS JOIN UNNEST(responses) WITH ORDINALITY AS u(e, idx),
-               unnest(from_json((((u.e).r).body ->> '$'), '[{"path":"VARCHAR"}]')) AS s(row))
-SELECT root, status, path, is_file(path) AS is_file, file_size(path) AS file_size
-FROM wave1 ORDER BY path;
-
-FROM quackapi_stop();
-```
-
-Result: one `lsr` per root row, `status 200`, typed rows. The payload is *any* statement —
-a reader, `COPY … TO`, DDL — so a heterogeneous fan-out is the same shape with a different
-`stmts` CTE. Route params bind from path, query, JSON body and form alike (`$q` here is the
-form field); a fixed-shape handler can instead declare `PARAM`s and a `STATUS`.
-
-**Why `ls` and not `glob`.** `glob('dir/*')` matches the *filesystem*; `ls`/`lsr` over a map
-you already hold matches the *map* — policy-excluded junk cannot re-enter through a pattern,
-and the typed scalars come with the row. The same holds for the read: `read_blob([explicit
-list])`, never `read_text('dir/*')`.
-
-`status = -1` means nothing HTTP answered at that URL. Quack's port (`9494`) speaks the Quack
-Remote Protocol, not HTTP — posting `q=` there is the mistake every agent makes. The executor
-is *your own* route, or a port you were explicitly given. (`httpserver`'s `httpserve_start`
-is the generic-form-executor variant the reference repos also use; quackapi is the one to
-reach for here.)
-
-## Form 2 — stock duckdb, two constant pipes (no extension beyond shellfs, no file written)
-
-For parallel *other binaries* (LLM CLIs, curl, osascript) or when a listener is not wanted.
-Both pipe commands are constant text; what varies is data the inner generator reads:
-
-```sql
-LOAD shellfs;
--- read_csv('<cmd> |', ...) : the constant pipe IS the dispatch and the barrier — the scan
--- returns when the child exits. Inner duckdb emits one statement per row; outer duckdb runs them.
-FROM read_csv($p$duckdb -csv -noheader -c "COPY (SELECT format('LOAD hostfs; SELECT ''{}'' AS dir, count(*) AS n FROM ls(''{}'');', d, d) AS stmt FROM read_csv('/path/dirs.csv', header := false, columns := {'d': 'VARCHAR'})) TO '/dev/stdout' (FORMAT csv, QUOTE '', HEADER false)" | duckdb -csv -noheader |$p$,
-              header := false, columns := {'dir': 'VARCHAR', 'n': 'BIGINT'});
-```
-
-Verified (with `glob` as the stand-in; `ls` is the same shape). `closure/server/judge.sql` is this form with `| bash |` as the
-executor: DuckDB prints one env-carrying command per LLM judge, the shell runs them with `&` and
-`wait`, each writes its own vote file, the scan returns when `wait` does. The generated commands
-are never written to a `.sh` — they go down the pipe.
-
-## Form 3 — the quack loopback (server runs a whole body it built)
-
-The dev server can call **itself**; its own token is in its environment:
-
-```sql
-FROM dev.query($$
-  FROM quack_query('quack:localhost:9494', 'SELECT 42 AS self_dispatched', token := getenv('QUACK_TOKEN'))
-$$);
-```
-
-Verified: `42`. This is a table function, so the inner SQL is literal / `getvariable` /
-concatenation — the whole body, not per row. Use it when the body is one statement built from
-constants and the result should stay on dev; use Form 1 when each row needs a different one.
-The reference repos' `ATTACH … AS self` is the same thing with an alias; not needed here.
-
-## Rules (from the reference repos, all of which do this)
-
-1. **Statements are rows.** A `stmts` CTE with one column `q`. `format()` builds it; a value
-   that might contain `'` is `replace(v, '''', '''''')` first. Never `||` chains.
-2. **`array_agg` then `UNNEST … WITH ORDINALITY`** — the aggregate is the barrier, the
-   ordinality is the order. No `LATERAL` keyword, no variables, no macros.
-3. **Gate on `status`** before parsing; keep the failed rows with their body — an error is a
-   row, not a missing row.
-4. **The port is a parameter row, never a fact about the machine.** `agent-stream` runs Quack
-   `:9494` + HTTPServer `:9496` + QuackAPI `:9497` in one process; the inframe duckstack runs
-   the MCP sidecar on `:9496` and telemetry on `:9497` and **no httpserver at all** — the same
-   `dispatch` macro is dead on one box and live on the other. serve your own route.
-5. **Loopback only.** `127.0.0.1`, no auth needed, stop it when done.
-6. **Generated statement, not generated `.sh`.** If the executor is a shell, it is a pipe.
-7. **Prefer no dispatch.** If a reader accepts an explicit list literal (`read_text(['a','b'])`,
-   `read_blob([...])`), build that list from the map with `string_agg` as ONE statement and run
-   it once — the llm-waves teardown design. Dispatch when the fan-out is truly per row.
-
-## Reference artifacts (proposed from the review worktrees, both run as-is)
-
-- `references/declarative_pipeline.sql` — Form 1 end to end in one process (quackapi route): `lsr` discovery →
-  a `readers` **rows table** (extension → table function + full named args) joined on extension →
-  one `format()` per file → fire → NDJSON rows → a second `read_lines` wave. Params are a row;
-  failures are rows. Verified 11/11 files, 608 lines.
-- `references/declarative_ls.sql` — the shape as written (`roots` → one `lsr(child, 1)` per
-  row), kept exactly, with the per-row call self-dispatched through the quackapi route. Verified 11 rows. The binder error
-  is not a constraint; it is the cue.
-
-- `references/frontier_crawl.sql` — the level-by-level directory crawl (llm-waves): prune by
-  name BEFORE descending, one `ls` per frontier row through the route, nine unrolled levels
-  (no `WITH RECURSIVE`), no macros. Verified 3 folders / 11 files / 0 leaks on its own repo.
-
-Origin: review branches `review/2026-09-17` under `~/reviews/`. The originals are unchanged
-on each repo's `main`.
-
-## Where it is written down (review worktrees)
-
-- `~/reviews/agent-stream/personal-recovery/sql/declarative_pipeline.sql` — Form 1 end to end:
-  `lsr` discovery → per-extension reader statements → fire → NDJSON rows → a second wave of
-  `read_lines` over what the readers touched.
-- `~/reviews/duckdb-ops-toolkit/conduit/docs/self-dispatch*.md` — the why, the molecule, the
-  executor matrix.
-- `~/reviews/duckdb-llm-waves/sql/crawl.sql` — the nine-level frontier crawl (posts to `:9494`,
-  which is quack here — see `dev.review_findings`).
-- `~/reviews/closure/server/judge.sql` — Form 2 with `bash` as the executor.
+Never: `SET VARIABLE` as orchestration, `WITH RECURSIVE`, `AS MATERIALIZED`, `LEFT JOIN LATERAL
+UNNEST`, a second server, or a shell loop around DuckDB. If dev itself misbehaves, restart it
+(the `light-switch` skill) rather than working around it.
