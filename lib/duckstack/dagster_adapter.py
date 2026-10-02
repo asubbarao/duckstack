@@ -10,7 +10,9 @@ from duckstack.factory import TableOperator, execute_operator
 
 
 def assets(
-    operators: Sequence[TableOperator], *, database: Executor | None = None,
+    operators: Sequence[TableOperator],
+    *,
+    database: Executor | None = None,
     partitions_def: dg.PartitionsDefinition[Any] | None = None,
     retry_policy: dg.RetryPolicy | None = None,
 ) -> list[dg.AssetsDefinition]:
@@ -39,21 +41,27 @@ def assets(
                 for check in op.checks:
                     if f"DQCheck failed: {check.name}" in str(exc):
                         yield dg.AssetCheckResult(
-                            passed=False, asset_key=key, check_name=check.name,
+                            passed=False,
+                            asset_key=key,
+                            check_name=check.name,
                             metadata={"partition": partition or "unpartitioned"},
                         )
                 raise
             for check in op.checks:
                 yield dg.AssetCheckResult(
-                    passed=True, asset_key=key, check_name=check.name,
+                    passed=True,
+                    asset_key=key,
+                    check_name=check.name,
                     metadata={"partition": partition or "unpartitioned"},
                 )
-            yield dg.MaterializeResult(metadata={
-                "database_dialect": op.dialect,
-                "table": ".".join(op.key),
-                "partition": partition or "unpartitioned",
-                "receipt": str(receipt),
-            })
+            yield dg.MaterializeResult(
+                metadata={
+                    "database_dialect": op.dialect,
+                    "table": ".".join(op.key),
+                    "partition": partition or "unpartitioned",
+                    "receipt": str(receipt),
+                }
+            )
 
         return compute
 
@@ -61,10 +69,17 @@ def assets(
 
 
 def definitions(
-    operators: Sequence[TableOperator], *, database: Executor | None = None,
+    operators: Sequence[TableOperator],
+    *,
+    database: Executor | None = None,
     partitions_def: dg.PartitionsDefinition[Any] | None = None,
     retry_policy: dg.RetryPolicy | None = None,
 ) -> dg.Definitions:
-    return dg.Definitions(assets=assets(
-        operators, database=database, partitions_def=partitions_def, retry_policy=retry_policy,
-    ))
+    return dg.Definitions(
+        assets=assets(
+            operators,
+            database=database,
+            partitions_def=partitions_def,
+            retry_policy=retry_policy,
+        )
+    )

@@ -2,8 +2,8 @@
 
 operators.py builds them; ducks.py runs them."""
 
-from duckstack.ducks import Duck, Quack, run
 from duckstack.connections import ConnectToDatabase, Executor
+from duckstack.ducks import Duck, Quack, run
 from duckstack.factory import (
     DuckDBCreateTableWithSchemaOperator,
     PostgresCreateTableWithSchemaOperator,
@@ -24,22 +24,22 @@ from duckstack.operators import (
 )
 
 __all__ = [
-    "ConnectToDatabase",
-    "Executor",
-    "DuckDBCreateTableWithSchemaOperator",
-    "PostgresCreateTableWithSchemaOperator",
-    "TableOperator",
-    "col",
-    "compile_operator",
-    "execute_operator",
     "LOCAL",
+    "ConnectToDatabase",
     "Duck",
+    "DuckDBCreateTableWithSchemaOperator",
     "DuckDBOperator",
     "DuckDBWaitForPartitionOperator",
     "DuckDBWaitForTableOperator",
     "Env",
+    "Executor",
     "Operator",
+    "PostgresCreateTableWithSchemaOperator",
     "Quack",
+    "TableOperator",
+    "col",
+    "compile_operator",
+    "execute_operator",
     "render",
     "resolve",
     "run",

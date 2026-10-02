@@ -3,13 +3,17 @@
 from duckstack import DuckDBCreateTableWithSchemaOperator, col
 from duckstack.dagster_adapter import definitions
 
-source_records = DuckDBCreateTableWithSchemaOperator(
-    create="source_records",
-    schema={"id": "INTEGER", "legal_name": "VARCHAR"},
-    sql="SELECT 1 AS id, 'Example Builder' AS legal_name",
-).DQCheck(type=col.NOTNULL, column="id").DQCheck(
-    name="unique_id",
-    sql="SELECT id FROM <TABLE> GROUP BY id HAVING sum(1) > 1",
+source_records = (
+    DuckDBCreateTableWithSchemaOperator(
+        create="source_records",
+        schema={"id": "INTEGER", "legal_name": "VARCHAR"},
+        sql="SELECT 1 AS id, 'Example Builder' AS legal_name",
+    )
+    .DQCheck(type=col.NOTNULL, column="id")
+    .DQCheck(
+        name="unique_id",
+        sql="SELECT id FROM <TABLE> GROUP BY id HAVING sum(1) > 1",
+    )
 )
 
 entities = DuckDBCreateTableWithSchemaOperator(

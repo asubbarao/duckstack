@@ -79,16 +79,26 @@ class TableOperator:
 
 
 def DuckDBCreateTableWithSchemaOperator(
-    *, create: str, sql: str, schema: dict[str, str], namespace: str = "main",
-    database: Executor | None = None, deps: tuple[TableOperator, ...] = (),
+    *,
+    create: str,
+    sql: str,
+    schema: dict[str, str],
+    namespace: str = "main",
+    database: Executor | None = None,
+    deps: tuple[TableOperator, ...] = (),
     partition: dict[str, Any] | None = None,
 ) -> TableOperator:
     return TableOperator(create, sql, schema, namespace, database, tuple(deps), partition)
 
 
 def PostgresCreateTableWithSchemaOperator(
-    *, create: str, sql: str, schema: dict[str, str], namespace: str = "public",
-    database: Executor | None = None, deps: tuple[TableOperator, ...] = (),
+    *,
+    create: str,
+    sql: str,
+    schema: dict[str, str],
+    namespace: str = "public",
+    database: Executor | None = None,
+    deps: tuple[TableOperator, ...] = (),
     partition: dict[str, Any] | None = None,
 ) -> TableOperator:
     return TableOperator(
@@ -127,20 +137,18 @@ def compile_operator(op: TableOperator, partition_key: str | None = None) -> str
     stage = identifier("duckstack_stage_" + uuid4().hex)
     definitions = ", ".join(f"{identifier(k)} {v}" for k, v in op.schema.items())
     columns = ", ".join(identifier(k) for k in op.schema)
-    part = {
-        k: partition_key if v == "<DATEID>" else v for k, v in (op.partition or {}).items()
-    }
+    part = {k: partition_key if v == "<DATEID>" else v for k, v in (op.partition or {}).items()}
     if any(v == "<DATEID>" for v in (op.partition or {}).values()) and partition_key is None:
         raise ValueError("Partition <DATEID> requires a partition key")
     projection = ", ".join(
-        f"{literal(part[k])} AS {identifier(k)}" if k in part else identifier(k)
-        for k in op.schema
+        f"{literal(part[k])} AS {identifier(k)}" if k in part else identifier(k) for k in op.schema
     )
     statements = [
         "BEGIN",
         f"CREATE SCHEMA IF NOT EXISTS {identifier(op.namespace)}",
         f"CREATE TEMP TABLE {stage} ({definitions})",
-        f"INSERT INTO {stage} ({columns}) SELECT {projection} FROM ({_date(op.sql, partition_key)}) AS input",
+        f"INSERT INTO {stage} ({columns}) SELECT {projection} "
+        f"FROM ({_date(op.sql, partition_key)}) AS input",
     ]
     for check in op.checks:
         violations = (
@@ -175,7 +183,10 @@ def compile_operator(op: TableOperator, partition_key: str | None = None) -> str
 
 
 def execute_operator(
-    op: TableOperator, partition_key: str | None = None, *, database: Executor | None = None,
+    op: TableOperator,
+    partition_key: str | None = None,
+    *,
+    database: Executor | None = None,
 ) -> list[tuple[Any, ...]]:
     """Execute only this declaration. Dependency scheduling belongs to the caller."""
     executor = op.database or database

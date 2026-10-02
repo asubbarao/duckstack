@@ -7,6 +7,7 @@ from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, Protocol
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 import duckdb
@@ -45,10 +46,12 @@ class ConnectToDatabase:
             conn = duckdb.connect()
             try:
                 conn.execute("LOAD quack")
-                return list(conn.execute(
-                    "SELECT * FROM quack_query(?, ?, token := ?)",
-                    [self.db, sql, token],
-                ).fetchall())
+                return list(
+                    conn.execute(
+                        "SELECT * FROM quack_query(?, ?, token := ?)",
+                        [self.db, sql, token],
+                    ).fetchall()
+                )
             finally:
                 conn.close()
         if self.type == "quackapi":
@@ -57,8 +60,12 @@ class ConnectToDatabase:
                 data=json.dumps({"sql": sql}).encode(),
                 headers={"Content-Type": "application/json"},
             )
-            with urlopen(request, timeout=self.timeout) as response:
-                rows = json.load(response)
+            try:
+                with urlopen(request, timeout=self.timeout) as response:
+                    rows = json.load(response)
+            except HTTPError as exc:
+                detail = exc.read().decode("utf-8", errors="replace")
+                raise RuntimeError(f"QuackAPI HTTP {exc.code}: {detail}") from exc
             if not isinstance(rows, list):
                 raise RuntimeError(f"QuackAPI did not return rows: {rows!r}")
             return [tuple(row.values()) for row in rows]
@@ -67,7 +74,7 @@ class ConnectToDatabase:
                 import psycopg
             except ImportError as exc:
                 raise ImportError("Install duckstack[postgres] for PostgreSQL") from exc
-            with psycopg.connect(self.db) as conn, conn.cursor() as cursor:
+            with psycopg.connect(self.db) as pg_conn, pg_conn.cursor() as cursor:
                 cursor.execute(sql, prepare=False)
                 result: list[tuple[Any, ...]] = []
                 while True:
