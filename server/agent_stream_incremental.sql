@@ -1,4 +1,4 @@
--- Read one full snapshot, normalize locally, and mutate only changed stream rows.
+-- Read full Claude coverage and changed Codex files; retain unchanged stream rows.
 CREATE SCHEMA IF NOT EXISTS agent;
 CREATE TABLE IF NOT EXISTS agent.stream_refresh (
     run_id UUID PRIMARY KEY,
@@ -27,15 +27,45 @@ SELECT run_id, instance_id, started_at, source_coverage_at, NULL AS completed_at
        NULL::BIGINT AS mutated_rows, NULL::BIGINT AS stream_rows
 FROM stream_run;
 
--- The reader is authoritative: take one complete snapshot, then normalize locally.
+-- Capture the start watermark before listing files: mid-run changes stay eligible next time.
+-- Five seconds overlap covers whole-second mtimes. No successful refresh uses the full rebuild.
+SET VARIABLE stream_source_cutoff = (
+    SELECT max(source_coverage_at) - INTERVAL '5 seconds'
+    FROM agent.stream_refresh WHERE status = 'success'
+        AND EXISTS (SELECT table_name FROM duckdb_tables()
+            WHERE schema_name = 'agent' AND table_name = 'stream')
+);
+CREATE OR REPLACE TEMP TABLE stream_pending_files AS
+SELECT file AS path,
+    CASE WHEN starts_with(file, '/Users/aloksubbarao/.claude/') THEN 'claude' ELSE 'codex' END AS source,
+    file_last_modified(file) AT TIME ZONE 'UTC' AS modified_at
+FROM glob(['/Users/aloksubbarao/.claude/projects/**/*.jsonl',
+           '/Users/aloksubbarao/.codex/sessions/**/*.jsonl'])
+WHERE modified_at >= getvariable('stream_source_cutoff')::TIMESTAMPTZ;
+
+-- Codex accepts literal transcript paths. This reader's Claude discovery requires a root,
+-- so retain full Claude coverage while avoiding the much larger unchanged Codex transfer.
+SET VARIABLE stream_reader_query = (
+    SELECT CASE WHEN getvariable('stream_source_cutoff') IS NULL
+        THEN $full$SELECT * EXCLUDE (raw_event, metadata,
+            input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens, reasoning_tokens)
+            FROM conversations$full$
+        ELSE $claude$SELECT 'claude' AS system, * EXCLUDE (raw_event, metadata,
+            input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens, reasoning_tokens)
+            FROM read_conversations(path := '~/.claude', source := 'claude')$claude$ ||
+            coalesce(' UNION ALL BY NAME ' || string_agg(
+                'SELECT ' || chr(39) || source || chr(39) || ' AS system, * EXCLUDE (raw_event, metadata, ' ||
+                'input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens, reasoning_tokens) ' ||
+                'FROM read_conversations(path := ' || chr(39) || replace(path, chr(39), chr(39) || chr(39)) ||
+                chr(39) || ', source := ' || chr(39) || source || chr(39) || ')',
+                ' UNION ALL BY NAME ' ORDER BY path), '') END
+    FROM stream_pending_files WHERE source = 'codex'
+);
 CREATE OR REPLACE TEMP TABLE stream_source AS
-FROM quack_query('quack:127.0.0.1:19494',
-    $reader$SELECT * EXCLUDE (raw_event, metadata,
-        input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens, reasoning_tokens)
-    FROM conversations$reader$,
+FROM quack_query('quack:127.0.0.1:19494', getvariable('stream_reader_query'),
     token := getenv('QUACK_TOKEN'));
 
-CREATE OR REPLACE TEMP TABLE stream_delta AS
+CREATE OR REPLACE TEMP TABLE stream_changed_delta AS
 WITH source_rows AS (
     -- speaker: the source's role when it has one, else its record type.
     SELECT *, CASE WHEN message_role <> '' THEN message_role ELSE message_type END AS speaker,
@@ -103,19 +133,33 @@ SELECT *, CASE WHEN content_length > 2000
     ELSE message_content END AS content_headtail
 FROM normalized;
 
+-- Retain only sessions absent from this complete changed-session read.
+-- The conditional query also makes an empty database use its own full rebuild path.
+SET VARIABLE stream_retained_query = (
+    SELECT CASE WHEN count(table_name) = 0
+        THEN 'SELECT * FROM stream_changed_delta WHERE false'
+        ELSE 'SELECT t.* FROM agent.stream AS t ANTI JOIN ' ||
+             '(SELECT DISTINCT system, file_path FROM stream_source) AS s USING (system, file_path)' END
+    FROM duckdb_tables() WHERE schema_name = 'agent' AND table_name = 'stream'
+);
+CREATE OR REPLACE TEMP TABLE stream_delta AS
+FROM stream_changed_delta
+UNION ALL BY NAME
+FROM query(getvariable('stream_retained_query'));
+
 -- The volume floor catches major source loss, not completeness; bulk removal needs inspection.
 CREATE OR REPLACE TEMP TABLE stream_preflight_observations AS
 SELECT count(1) AS source_rows, NULL::BIGINT AS delta_rows,
        NULL::BIGINT AS nonnull_ids, NULL::BIGINT AS distinct_ids,
-       NULL::BIGINT AS previous_source_rows
+       NULL::BIGINT AS previous_stream_rows
 FROM stream_source
 UNION ALL
 SELECT NULL::BIGINT, count(1), count(id), count(DISTINCT id), NULL::BIGINT
 FROM stream_delta
 UNION ALL
-SELECT NULL::BIGINT, NULL::BIGINT, NULL::BIGINT, NULL::BIGINT, source_rows
+SELECT NULL::BIGINT, NULL::BIGINT, NULL::BIGINT, NULL::BIGINT, stream_rows
 FROM (
-    SELECT source_rows, row_number() OVER (ORDER BY source_coverage_at DESC, run_id DESC) AS prior_rank
+    SELECT stream_rows, row_number() OVER (ORDER BY source_coverage_at DESC, run_id DESC) AS prior_rank
     FROM agent.stream_refresh
     WHERE status = 'success'
 )
@@ -123,13 +167,13 @@ WHERE prior_rank = 1;
 CREATE OR REPLACE TEMP TABLE stream_preflight AS
 SELECT max(source_rows) AS source_rows, max(delta_rows) AS delta_rows,
        max(nonnull_ids) AS nonnull_ids, max(distinct_ids) AS distinct_ids,
-       max(previous_source_rows) AS previous_source_rows
+       max(previous_stream_rows) AS previous_stream_rows
 FROM stream_preflight_observations;
-SELECT CASE WHEN source_rows = 0 THEN error('stream source is empty')
+SELECT CASE WHEN delta_rows = 0 THEN error('stream snapshot is empty')
             WHEN delta_rows IS DISTINCT FROM nonnull_ids THEN error('stream source has NULL ids')
             WHEN delta_rows IS DISTINCT FROM distinct_ids THEN error('stream source has duplicate ids')
-            WHEN previous_source_rows IS NOT NULL AND source_rows < previous_source_rows * 0.95
-                THEN error('stream source fell below 95 percent of the last successful snapshot')
+            WHEN previous_stream_rows IS NOT NULL AND delta_rows < previous_stream_rows * 0.95
+                THEN error('stream snapshot fell below 95 percent of the last successful snapshot')
             ELSE 'stream preflight passed' END AS preflight
 FROM stream_preflight;
 
