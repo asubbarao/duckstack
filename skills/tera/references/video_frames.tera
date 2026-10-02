@@ -1,0 +1,46 @@
+{#- video_frames.tera: a video becomes rows of frames, streamed through read_csv, each frame hashed by pic2vec.
+    Context (SQL prepares it; values are trusted authored fragments, not escaped):
+      video        absolute path of the video file
+      out_dir      absolute directory for the JPEG frames (created if missing)
+      fps          frames per second to sample, e.g. 2
+      width        frame width in pixels; height keeps the aspect ratio, e.g. 1400
+      engine       'avfoundation' (macOS built-in, no install) or 'ffmpeg' (needs ffmpeg on PATH)
+      ffmpeg_flags extra ffmpeg output flags, e.g. '-q:v 3'; ffmpeg only, optional
+      table        table to create, e.g. 'frames'
+      sql_tag      dollar-quote tag that does not occur in the script, e.g. 'frames_cmd'
+    Output columns: second DOUBLE, path VARCHAR, phash (pic_phash of the frame).
+    avfoundation streams: each frame is written, printed and hashed as it arrives.
+    ffmpeg writes every frame first, then lists them; the rows arrive when ffmpeg finishes. -#}
+LOAD shellfs;
+LOAD pic2vec;
+CREATE OR REPLACE TABLE {{ table }} AS
+SELECT second, path, pic_phash(path) AS phash
+FROM read_csv(${{ sql_tag }}$mkdir -p '{{ out_dir }}' && {% if engine == "ffmpeg" -%}
+ffmpeg -nostdin -loglevel error -i '{{ video }}' -vf 'fps={{ fps }},scale={{ width }}:-2' {{ ffmpeg_flags | default(value="-q:v 3") }} '{{ out_dir }}/frame_%06d.jpg' && echo second,path && ls '{{ out_dir }}' | sort | awk -v d='{{ out_dir }}' '{ n = substr($0, 7, 6) + 0; printf "%.3f,%s/%s\n", (n - 1) / {{ fps }}, d, $0 }'
+{%- else -%}
+swift - '{{ video }}' '{{ out_dir }}' {{ fps }} {{ width }} 2>/dev/null <<'VIDEO_FRAMES_SWIFT'
+import AVFoundation
+import AppKit
+setvbuf(stdout, nil, _IOLBF, 0)
+let a = CommandLine.arguments
+let asset = AVURLAsset(url: URL(fileURLWithPath: a[1]))
+let generator = AVAssetImageGenerator(asset: asset)
+generator.appliesPreferredTrackTransform = true
+generator.requestedTimeToleranceBefore = .zero
+generator.requestedTimeToleranceAfter = .zero
+generator.maximumSize = CGSize(width: Double(a[4])!, height: Double(a[4])!)
+let step = 1.0 / Double(a[3])!
+let duration = CMTimeGetSeconds(asset.duration)
+print("second,path")
+var t = 0.0
+while t < duration {
+  if let image = try? generator.copyCGImage(at: CMTime(seconds: t, preferredTimescale: 600), actualTime: nil) {
+    let path = String(format: "%@/frame_%010.3f.jpg", a[2], t)
+    try? NSBitmapImageRep(cgImage: image).representation(using: .jpeg, properties: [.compressionFactor: 0.8])?.write(to: URL(fileURLWithPath: path))
+    print("\(t),\(path)")
+  }
+  t += step
+}
+VIDEO_FRAMES_SWIFT
+{%- endif %}
+|${{ sql_tag }}$, delim = ',', header = true, columns = {'second': 'DOUBLE', 'path': 'VARCHAR'});
