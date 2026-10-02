@@ -5,6 +5,25 @@ description: "Build a Duckstack pipeline inspired by Meta's Dataswarm — DuckDB
 
 # asset-factory — Duckstack operators on DuckDB
 
+## Checked schema factories and generated Dagster assets
+
+For new declarative pipelines, use `DuckDBCreateTableWithSchemaOperator` or
+`PostgresCreateTableWithSchemaOperator`, `ConnectToDatabase`, and attached
+`.DQCheck(type=col.NOTNULL, column=...)` or `.DQCheck(name=..., sql=...)` checks.
+Keep SQL inline. The factory stages typed candidate rows, checks them, then replaces
+the declared table or partition. Custom check SQL reads `<TABLE>` and returns
+violations; zero rows passes, including valid empty outputs.
+
+The optional `duckstack.dagster_adapter.definitions` generates Dagster assets and
+blocking check specs. Dagster owns dependencies, validation, retries and scheduling;
+do not wrap the recursive legacy `run()` inside a generated asset. Operators accept
+a lazy connection declaration or caller-supplied executor; no named resource is
+required. Install the `dagster` and/or `postgres` extras when needed.
+
+See `lib/DESIGN.md` for the exact supported contracts and
+`lib/examples/business_profile.py` for a runnable declaration-only example.
+The API below remains the compatible legacy surface.
+
 Inspired by Meta's description of Dataswarm
 ([Analytics at Meta](https://medium.com/@AnalyticsAtMeta/data-engineering-at-meta-high-level-overview-of-the-internal-tech-stack-a200460a44fe)):
 a pipeline is operators; a wait operator blocks until an upstream partition lands; each query

@@ -8,6 +8,10 @@ dependencies = [
     "mcp>=1.2",
 ]
 
+[project.optional-dependencies]
+dagster = ["dagster>=1.11,<2"]
+postgres = ["psycopg[binary]>=3.2,<4"]
+
 [project.scripts]
 duckstack-mcp = "duckstack.mcp:main"
 
