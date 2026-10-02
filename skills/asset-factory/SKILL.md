@@ -1,11 +1,11 @@
 ---
 name: asset-factory
-description: "Build a DuckDB pipeline the way Meta's Dataswarm does — DuckDBOperator(dep_list, sql, create, partition) creates its table and INSERT OVERWRITEs the partition; DuckDBWaitForPartitionOperator / DuckDBWaitForTableOperator are the dependencies; run() executes the dep_list first on one Duck. Use when writing a DAG, a snapshot-to-lake job, an operator, or anything that says DuckDBOperator, WaitFor, dep_list, create, partition, pre_sql/post_sql, <TABLE:x>, <DATEID>, <LATEST_DS:x>, to_lake, pg_attach, or 'land this table in the lake'. Read /duckstack:duck first; its SQL rules bind every sql an operator runs."
+description: "Build a Duckstack pipeline inspired by Meta's Dataswarm — DuckDBOperator(dep_list, sql, create, partition) creates its table and INSERT OVERWRITEs the partition; DuckDBWaitForPartitionOperator / DuckDBWaitForTableOperator are the dependencies; run() executes the dep_list first on one Duck. Use when writing a DAG, a snapshot-to-lake job, an operator, or anything that says DuckDBOperator, WaitFor, dep_list, create, partition, pre_sql/post_sql, <TABLE:x>, <DATEID>, <LATEST_DS:x>, to_lake, pg_attach, or 'land this table in the lake'. Read /duckstack:duck first; its SQL rules bind every sql an operator runs."
 ---
 
-# asset-factory — Dataswarm operators on DuckDB
+# asset-factory — Duckstack operators on DuckDB
 
-Straight from Meta's own description of Dataswarm
+Inspired by Meta's description of Dataswarm
 ([Analytics at Meta](https://medium.com/@AnalyticsAtMeta/data-engineering-at-meta-high-level-overview-of-the-internal-tech-stack-a200460a44fe)):
 a pipeline is operators; a wait operator blocks until an upstream partition lands; each query
 operator names its dependencies in `dep_list`, the table it fills in `create`, and the

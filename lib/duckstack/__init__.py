@@ -1,4 +1,6 @@
-"""Dataswarm-style operators for DuckDB. operators.py builds them; ducks.py runs them."""
+"""Duckstack operators for DuckDB, inspired by Meta's Dataswarm.
+
+operators.py builds them; ducks.py runs them."""
 
 from duckstack.ducks import Duck, Quack, run
 from duckstack.operators import (

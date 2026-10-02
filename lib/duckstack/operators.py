@@ -1,9 +1,12 @@
-"""Dataswarm-style operators for DuckDB. Every node is an operator: an ordered bundle of SQL
+"""Duckstack operators for DuckDB, inspired by Meta's Dataswarm.
+
+Every node is an operator: an ordered bundle of SQL
 plus the operators in its dep_list. Dependencies are operators too — a wait operator fails
 until its table or partition has landed — and run() executes a dep_list before the operator.
 
-DuckDBOperator is PrestoOperator: the author writes sql, names the table in create and the
-partition in partition; the operator creates the table if missing (never the author),
+DuckDBOperator follows the PrestoOperator pattern: the author writes sql, names the table
+in create and the partition in partition; the operator creates the table if missing
+(never the author),
 overwrites that partition, optionally lands it in the lake, and can attach Postgres read-only.
 The operators do not know what a query is for. Nothing here imports a scheduler or reads an
 env var: the Env is handed in at render time.
