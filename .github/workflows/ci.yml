@@ -24,6 +24,22 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: duckstack_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d duckstack_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DUCKSTACK_TEST_POSTGRES_DSN: postgresql://postgres:postgres@localhost:5432/duckstack_test
     defaults:
       run:
         working-directory: lib
@@ -38,7 +54,7 @@ jobs:
           cache-dependency-glob: lib/uv.lock
 
       - name: Install locked dependencies
-        run: uv sync --locked --python 3.12
+        run: uv sync --locked --python 3.12 --extra dagster --extra postgres
 
       - name: Run tests
         run: uv run --locked pytest -q
