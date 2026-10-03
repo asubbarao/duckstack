@@ -35,10 +35,19 @@ What it does, and the knobs (all `SET VARIABLE`, all optional except `video`):
 | `engine` | avfoundation | macOS built-in, nothing to install; `ffmpeg` if ffmpeg is on PATH (branch written, not yet run) |
 | `scene_bits` | 10 | a scene starts when the perceptual hash moves this many bits; 4 is sensitive, 16 coarse |
 | `out_dir` | `<video>.frames` | where the JPEGs go |
+| `busy_bits` | 16 | a scene whose hash moved this much gets a second pass |
+| `busy_fps` | 10 | the rate of that second pass, so fast motion inside a busy scene is not lost |
+| `max_busy_scenes` | 20 | how many busy scenes get the second pass, most movement first |
+
+Two passes: the whole video at `fps`, then each busy scene re-rendered from the same template with `start`,
+`end` and `busy_fps` (one rendered statement per scene, appended to the same table). Every bash flag is a
+context value of the template: `ffmpeg_input_flags`, `ffmpeg_filters`, `ffmpeg_output_flags`, `quality`,
+`width`, so a different capture is a different context, never a different program. Verified: the second pass
+at 10 fps over the 5 busiest scenes added 330 frames in 25 s, same 75 scenes.
 
 The template is `~/duckdb-skills/skills/tera/references/video_frames.tera`. It renders a `read_csv` over a
 pipe: the frame writer prints `second,path` per frame as it writes it, `read_csv` consumes the stream, and
-`pic_phash(path)` runs per row as it arrives. Tables left behind: `frames(second, path, phash)` and
+`pic_phash(path)` runs per row as it arrives. A slice (`start`, `end`) at any `fps` is the same template. Tables left behind: `frames(second, path, phash)` and
 `scenes(scene, starts, ends, settled_frame, frames)`.
 
 ## 2. Read the settled frames, longest scenes first
