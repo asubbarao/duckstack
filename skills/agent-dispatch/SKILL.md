@@ -64,8 +64,11 @@ log or diff.
 `git submodule update --init --depth 1 --recursive` in it before dispatch, so the worker can
 build and run the suite instead of returning an untested patch. Give every worker its own
 branch name: worktrees share one branch namespace, and parallel workers given the same name
-collide. For Codex, launch with `-C <worktree>` (verified: it can branch and commit there;
-in a full clone `.git` is read-only) — see the codex skill's Worktrees section.
+collide. For Codex, launch with `-C <worktree>`. Worktrees isolate edits but do not guarantee
+Git write access. Read-only review uses `-s read-only`; file-only edits can use workspace-write;
+authorized local staging/commits use `-s danger-full-access -c 'approval_policy="never"'`.
+Keep task scope and push/merge authorization unchanged; full access does not enforce path
+ownership. See the local codex skill for the reproduced Git metadata denial and recovery.
 
 `write_scope` is an **enforcement boundary**, not documentation: a worker with no
 declared boundary silently edits central files. Classify honestly — two workers on

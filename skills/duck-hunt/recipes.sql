@@ -53,6 +53,34 @@ SELECT job_id,
          x -> {k: string_split(x, ' ')[1], v: rtrim(string_split(x, ' ')[2], 's')::DOUBLE})) AS phase_s
 FROM d;
 
+-- backend_shard_balance — is pytest-split actually balancing execution cost, rather than only test count?
+-- worker_seconds sums the xdist-worker gaps; observed_wall_seconds is the first-to-last result span.
+-- verified 2026-09-30, inframe staging run 36274924301: shard walls 350.0 s, 359.3 s, 468.7 s.
+CREATE OR REPLACE VIEW backend_shard_balance AS
+SELECT job_id,
+       len(array_agg(nodeid)) AS tests,
+       list_sum(array_agg(ms) FILTER (WHERE ms IS NOT NULL)) / 1000.0 AS worker_seconds,
+       date_diff('millisecond', min(ts), max(ts)) / 1000.0 AS observed_wall_seconds,
+       max(ms) / 1000.0 AS slowest_test_seconds
+FROM pytest_xdist_tests
+GROUP BY job_id;
+
+-- frontend_shard_balance — did Vitest's file-count sharding balance measured cost?
+-- Join the file-level work to Vitest's own wall/phase summary; equal file counts can hide expensive shards.
+-- verified 2026-09-30, inframe staging run 36274924301: 208-211 files but 340.9-431.4 s walls.
+CREATE OR REPLACE VIEW frontend_shard_balance AS
+WITH files AS (
+  SELECT job_id,
+         len(array_agg(file)) AS files,
+         list_sum(array_agg(n_tests)) AS tests,
+         list_sum(array_agg(file_ms)) / 1000.0 AS file_seconds,
+         max(file_ms) / 1000.0 AS slowest_file_seconds
+  FROM vitest_files
+  GROUP BY job_id)
+SELECT f.*, p.wall_s, p.phase_s
+FROM files f
+JOIN vitest_phases p USING (job_id);
+
 -- gha_steps — when did each step start, and how long did it run, from the log alone? A step opens with
 -- "##[group]Run <command>" and ends where the next one opens, or at "Post job cleanup." for the last one.
 -- The jobs API's steps array is exact and named; use this when only the log is at hand. (The workflow

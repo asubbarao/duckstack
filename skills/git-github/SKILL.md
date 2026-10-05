@@ -101,6 +101,14 @@ Compare against upstream without leaving SQL: `gh api repos/<o>/<r>/compare/<bas
 
 ## Which to use
 
+For a complete inventory of an account's open PRs, use the GitHub GraphQL
+`user(login: ...).pullRequests(states: OPEN, first: 100)` connection and follow
+`pageInfo` when needed. Verify current heads with `gh pr view`. On 2026-10-01,
+`gh search prs --author asubbarao --state open` returned only three PRs while
+the direct account connection returned all 24; search results alone did not
+establish completeness. Preserve skipped, cancelled and absent checks separately
+from success, and distinguish administrative checks from actual test execution.
+
 | Need | Tool |
 |---|---|
 | this checkout, any revision, diffs, blame | `duck_tails` |
