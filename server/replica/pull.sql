@@ -6,12 +6,11 @@
 -- from pull_log, never tracked; a failure is a row the next tick retries.
 -- CREATE OR REPLACE swaps a table in one transaction; a reader sees the previous copy until the new one commits.
 -- READ_ONLY: the replica never writes to its source. IF NOT EXISTS: a source that was down is attached next tick.
--- Two sources: the staging clone lands in schema public, the business profile database bp (VOP and its fake
--- businesses, defined by ~/business-profile/schema/bp.sql) in schema bp. The attach is named bpdb so that bp.x names
--- only the replica's schema.
+-- One source, four schemas: the staging clone lands in schema public; the three business-profile shapes (VOP and its
+-- fake businesses, defined by ~/business-profile/schema/bp.sql) land in schemas of the same names, bp_records,
+-- bp_graph and bp_assertions.
 ATTACH IF NOT EXISTS 'host=/tmp port=5432 user=aloksubbarao dbname=staging_extensions_20260929' AS pg (TYPE postgres, READ_ONLY);
-ATTACH IF NOT EXISTS 'host=/tmp port=5432 user=aloksubbarao dbname=bp' AS bpdb (TYPE postgres, READ_ONLY);
-CREATE SCHEMA IF NOT EXISTS bp;
+CREATE SCHEMA IF NOT EXISTS bp_records; CREATE SCHEMA IF NOT EXISTS bp_graph; CREATE SCHEMA IF NOT EXISTS bp_assertions;
 -- The attach caches the source catalog; clearing it lets a table or column added upstream arrive.
 CALL pg_clear_cache();
 
@@ -23,14 +22,10 @@ CALL pg_clear_cache();
 INSERT INTO pull_log BY NAME
 WITH source AS (
     -- Base tables from the source's own catalog; the attach's duckdb_tables() also lists its 6 views.
-    -- pull_log's table_name is schema-qualified (public.x, bp.x) so the two sources never collide.
-    SELECT 'pg' AS src, 'public' AS target, table_name, 'public.' || table_name AS key
-    FROM postgres_query('pg', $$SELECT table_name::text AS table_name FROM information_schema.tables
-        WHERE table_schema = 'public' AND table_type = 'BASE TABLE'$$)
-    UNION ALL
-    SELECT 'bpdb', 'bp', table_name, 'bp.' || table_name
-    FROM postgres_query('bpdb', $$SELECT table_name::text AS table_name FROM information_schema.tables
-        WHERE table_schema = 'public' AND table_type = 'BASE TABLE'$$)
+    -- pull_log's table_name is schema-qualified (public.x, bp_records.x) so the four schemas never collide.
+    SELECT 'pg' AS src, table_schema AS target, table_name, table_schema || '.' || table_name AS key
+    FROM postgres_query('pg', $$SELECT table_schema::text AS table_schema, table_name::text AS table_name FROM information_schema.tables
+        WHERE table_schema IN ('public', 'bp_records', 'bp_graph', 'bp_assertions') AND table_type = 'BASE TABLE'$$)
 ), last_attempt AS (
     SELECT table_name AS key,
         run_started + CASE WHEN status = 'ok' THEN INTERVAL 5 MINUTE ELSE INTERVAL 30 SECOND END AS due_at
@@ -39,7 +34,7 @@ WITH source AS (
 ), due AS (
     SELECT s.key AS table_name, now() AS run_started, strftime(now(), '%Y%m%dT%H%M%SZ') AS run_id,
         s.target || '.' || chr(34) || s.table_name || chr(34) AS ident,
-        s.src || '.public.' || chr(34) || s.table_name || chr(34) AS origin, chr(39) || s.key || chr(39) AS lit,
+        s.src || '.' || s.target || '.' || chr(34) || s.table_name || chr(34) AS origin, chr(39) || s.key || chr(39) AS lit,
         chr(34) || '_pull_' || s.target || '_' || s.table_name || chr(34) AS mark
     FROM source s LEFT JOIN last_attempt l USING (key)
     WHERE coalesce(l.due_at, '-infinity'::TIMESTAMPTZ) <= now()
