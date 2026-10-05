@@ -1,10 +1,12 @@
 -- Each dispatch binds the complete saved query as a literal PRAGMA argument.
+-- stream_semantic embeds its question with quackformers' embed(); LOAD here so it works before the first cron tick.
+LOAD quackformers;
 WITH programs AS (
     SELECT filename,
         CASE WHEN ends_with(filename, 'search.sql') THEN 'stream_search' ELSE 'stream_semantic' END AS name,
         CASE WHEN ends_with(filename, 'search.sql')
-            THEN 'BM25 over messages and tools: ten session-days with bounded user/agent previews. Drill into agent.stream by id.'
-            ELSE 'Local vector search. Embeddings fill in bounded batches; BM25 covers all non-null message text.' END AS description,
+            THEN 'BM25 search over agent.stream_hour (one row per session-hour): five hours with up to five matching condensed items (id + speaker-prefixed head/tail, at most 205 chars). Never full text; use stream_message with an id for that.'
+            ELSE 'Vector (cosine) search over agent.stream_hour embeddings of the human/agent exchange: five session-hours with up to five dialog items (id + head/tail). Use stream_message with an id for full text.' END AS description,
         rtrim(replace(content, '''launchctl plist wrapper server exits log''', '$q::VARCHAR'), chr(10) || chr(13) || ' ;') AS query
     FROM read_text([
         '/Users/aloksubbarao/duckdb-skills/server/agent_stream_search.sql',
@@ -17,24 +19,34 @@ WITH programs AS (
     FROM programs
 ), sent AS (
     SELECT array_agg({name: name, sql: sql,
-        receipt: http_post_form('http://localhost:9495/sql', MAP{}, MAP{'sql': sql})}) AS receipts
+        receipt: http_post('http://localhost:9495/sql', MAP{'Content-Type': 'application/json'}, {'sql': sql}::JSON)}) AS receipts
     FROM statements
 )
 SELECT r.name, r.receipt.status AS status, r.receipt.body AS body
 FROM sent CROSS JOIN UNNEST(receipts) t(r);
 
 PRAGMA mcp_publish_tool('stream_session',
-    'Conversation previews by UTC session-day, including other records. Full original records are available in agent.conversations, keyed by source/session/file/line.',
+    'Compact UTC day rows for one session, with up to ten message head/tail previews per day. Use stream_message with an id for full text.',
     'SELECT * FROM agent.stream_day WHERE session_id = $session_id ORDER BY day LIMIT 100',
     '{"session_id":{"type":"string"}}', '["session_id"]', 'markdown');
 PRAGMA mcp_publish_tool('stream_recent',
-    'Recent sessions with ten ordered short user/agent messages each. Tool calls and outputs are available separately in agent.stream.',
-    'SELECT system, session_id, project_path, days, last_ts, message_count,
-        list_transform(preview, m -> [m.role, left(m.text, 100), m.ts::VARCHAR]) AS preview
-     FROM agent.stream_conversation
-     WHERE last_ts >= current_timestamp - to_hours($hours::INTEGER)
-     ORDER BY last_ts DESC LIMIT 10',
+    'The 10 most recent compact stream rows. Text up to 200 characters is in content_head; longer text has 100-character head/tail previews. Use stream_message with an id for full text.',
+    $query$WITH full_text AS (
+        SELECT id, system, session_id, ts, day, message_role, status, tool_data,
+            message_content, content_length, content_headtail
+        FROM agent.stream WHERE ts >= current_timestamp - to_hours($hours::INTEGER)
+    ), bounded AS (
+        SELECT * EXCLUDE (message_content, content_headtail, tool_data), tool_data.name AS tool_name,
+            CASE WHEN content_length <= 200 THEN message_content ELSE left(message_content, 100) END AS content_head,
+            CASE WHEN content_length > 200 THEN right(message_content, 100) END AS content_tail
+        FROM full_text
+    )
+    SELECT * FROM bounded ORDER BY ts DESC NULLS LAST, id DESC LIMIT 10$query$,
     '{"hours":{"type":"integer","description":"look back this many hours"}}', '["hours"]', 'markdown');
+PRAGMA mcp_publish_tool('stream_message',
+    'Explicitly fetch the complete text of one stream row by its id.',
+    'SELECT id, system, session_id, ts, message_role, tool_data, message_content, content_length FROM agent.stream WHERE id = $id LIMIT 3',
+    '{"id":{"type":"string","description":"exact agent.stream id from a compact result"}}', '["id"]', 'markdown');
 PRAGMA mcp_publish_tool('stream_tools',
     'Collapse a session''s recent tool calls and outputs by hour, tool and command program. Full rows remain in agent.stream.',
     $query$WITH calls AS (
@@ -77,9 +89,17 @@ PRAGMA mcp_publish_tool('stream_tools',
     '{"session_id":{"type":"string"},"hours":{"type":"integer"}}',
     '["session_id","hours"]', 'markdown');
 PRAGMA mcp_publish_tool('user_messages',
-    'User-role message samples from the last N hours, grouped by UTC session-day. At most thirty 100-character samples per group.',
-    'SELECT day, system, session_id, count(id) AS message_count,
-        list(left(message_content, 100) ORDER BY ts)[1:30] AS samples
-     FROM agent.stream WHERE message_role = ''user'' AND ts >= now() - to_hours($hours::INTEGER)
-     GROUP BY ALL ORDER BY day DESC LIMIT 100',
+    'The 30 most recent compact user-role rows. Text up to 200 characters is in content_head; longer text has 100-character head/tail previews. Use stream_message with an id for full text.',
+    $query$WITH full_text AS (
+        SELECT id, system, session_id, ts, day, message_role, status, tool_data,
+            message_content, content_length, content_headtail
+        FROM agent.stream
+        WHERE message_role = 'user' AND ts >= now() - to_hours($hours::INTEGER)
+    ), bounded AS (
+        SELECT * EXCLUDE (message_content, content_headtail, tool_data), tool_data.name AS tool_name,
+            CASE WHEN content_length <= 200 THEN message_content ELSE left(message_content, 100) END AS content_head,
+            CASE WHEN content_length > 200 THEN right(message_content, 100) END AS content_tail
+        FROM full_text
+    )
+    SELECT * FROM bounded ORDER BY ts DESC NULLS LAST, id DESC LIMIT 30$query$,
     '{"hours":{"type":"integer","description":"how far back"}}', '["hours"]', 'markdown');

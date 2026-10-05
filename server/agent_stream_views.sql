@@ -2,19 +2,21 @@ CREATE OR REPLACE VIEW agent.stream_day AS
 WITH days AS (
     SELECT system, session_id, day, count(id) AS message_count, min(ts) AS first_ts, max(ts) AS last_ts,
         list(DISTINCT coalesce(nullif(cwd, ''), nullif(project_path, ''))) AS directories,
-        list({id: id, uuid: uuid, role: message_role, content: message_content, ts: ts}
+        list({id: id, uuid: uuid, role: message_role,
+              content_head: CASE WHEN content_length <= 200 THEN message_content ELSE left(message_content, 100) END,
+              content_tail: CASE WHEN content_length > 200 THEN right(message_content, 100) END,
+              content_length: content_length, ts: ts}
             ORDER BY ts DESC NULLS LAST, file_name, line_number, id) AS messages
     FROM agent.stream GROUP BY ALL
 )
-SELECT * EXCLUDE (messages), list_transform(messages[:10],
-    m -> {id: m.id, uuid: m.uuid, role: m.role, text: left(m.content, 150), ts: m.ts}) AS samples
+SELECT * EXCLUDE (messages), messages[:10] AS samples
 FROM days;
 
 -- Session entry point: only the human/agent exchange appears in the preview.
 CREATE OR REPLACE VIEW agent.stream_conversation AS
 WITH messages AS (
     SELECT system, session_id, project_path, day, block, ts, id, uuid,
-        message_role, message_content,
+        message_role, message_content, content_length,
         row_number() OVER (PARTITION BY system, session_id
             ORDER BY ts DESC NULLS LAST, id DESC) AS recent_rank
     FROM agent.stream
@@ -24,7 +26,9 @@ WITH messages AS (
         list(DISTINCT day ORDER BY day) AS days,
         min(ts) AS first_ts, max(ts) AS last_ts, count(id) AS message_count,
         list({id: id, uuid: uuid, role: message_role,
-              text: left(message_content, 150), ts: ts} ORDER BY ts, id)
+              content_head: CASE WHEN content_length <= 200 THEN message_content ELSE left(message_content, 100) END,
+              content_tail: CASE WHEN content_length > 200 THEN right(message_content, 100) END,
+              content_length: content_length, ts: ts} ORDER BY ts, id)
             FILTER (WHERE recent_rank <= 10) AS preview
     FROM messages
     GROUP BY system, session_id
