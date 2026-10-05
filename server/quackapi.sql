@@ -5,6 +5,8 @@ INSTALL quackapi FROM community; LOAD quackapi;
 -- Opt-in incubator SQL executor and typed browser-capture handoff.
 .read /Users/aloksubbarao/incubator/relational-acquisition/sql/routes.sql
 .read /Users/aloksubbarao/incubator/relational-acquisition/tests/routes.sql
+-- Luna CI-fix webhook: POST /luna/ci-fix {repo, number[, source, jobs, task]}; handler in luna_ci/handler.sql.
+.read /Users/aloksubbarao/duckdb-skills/server/routes/luna_ci.sql
 CREATE SCHEMA IF NOT EXISTS agents;
 CREATE OR REPLACE VIEW agents.path_aliases AS
 SELECT 'asubbarao.github' AS alias, 'ASUBBARAO_GITHUB_ROOT' AS environment_variable,
@@ -47,8 +49,18 @@ COPY (SELECT '{"resourceLogs":[]}' AS payload, 'logs' AS signal
       UNION ALL SELECT '{"resourceMetrics":[]}', 'metrics')
 TO '@OTLP_DIR' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '', PARTITION_BY (signal),
                 FILENAME_PATTERN '_seed', FILE_EXTENSION 'json', OVERWRITE_OR_IGNORE true);
+CREATE OR REPLACE ROUTE inbox POST '/inbox' AS
+  COPY (SELECT json_object('received_at', now(), 'source', coalesce(b ->> 'source', 'unknown'), 'kind', b ->> 'kind',
+                           'payload', b) AS line FROM (SELECT json($body::VARCHAR) AS b))
+  TO '| cat >> /Users/aloksubbarao/.duck/raw/inbox/inbox.ndjson' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '');
 SELECT 'routes ok' AS routes
 $routes$, '@QUACK_URI', getvariable('quack_uri')), '@OTLP_DIR', getvariable('otlp_dir')),
   token := getenv('QUACK_TOKEN'));
+-- Agent inbox: POST /inbox with any JSON body; luna_ci_done.sql posts completion receipts here.
+FROM read_text('mkdir -p /Users/aloksubbarao/.duck/raw/inbox && touch /Users/aloksubbarao/.duck/raw/inbox/inbox.ndjson |');
+CREATE OR REPLACE VIEW agent_inbox AS
+SELECT received_at, source, kind, payload, filename
+FROM read_json('/Users/aloksubbarao/.duck/raw/inbox/inbox.ndjson', format = 'newline_delimited', filename = true,
+               columns = {received_at: 'TIMESTAMPTZ', source: 'VARCHAR', kind: 'VARCHAR', payload: 'JSON'});
 CREATE OR REPLACE TABLE _quackapi_serve AS
 SELECT now() AS started_at, * FROM quackapi_serve(getvariable('quackapi_port'), host := '127.0.0.1');
