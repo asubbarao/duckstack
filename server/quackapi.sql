@@ -1,4 +1,4 @@
--- Public SQL routes preserve explicit limits; other top-level SELECTs default to 20, unless the MCP-generated
+-- Public SQL routes preserve explicit limits; other top-level SELECTs default to 3, unless the MCP-generated
 -- leading request comment carries no_limit=true (query_no_limit sets it, so its "no cap" is true).
 -- Only the MCP-generated leading request comment is retained as transport provenance.
 INSTALL quackapi FROM community; LOAD quackapi;
@@ -22,7 +22,7 @@ coalesce(array_to_string(list_transform(try(parse_statements($sql)), s ->
  CASE WHEN (CASE WHEN starts_with($sql, '/* request_id=') THEN contains(left($sql, strpos($sql, chr(10))), 'no_limit=true') ELSE false END) THEN s
    WHEN coalesce(json_serialize_sql(s)->>'error' = 'false'
    AND len(list_filter(json_extract(json_serialize_sql(s), '$.statements[0].node.modifiers[*].limit'), x -> x <> 'null'::JSON)) = 0, false)
- THEN printf('SELECT * FROM (%s) AS agent_result LIMIT 20', s) ELSE s END), ';' || chr(10)), $sql), token := getenv('QUACK_TOKEN'));
+ THEN printf('SELECT * FROM (%s) AS agent_result LIMIT 3', s) ELSE s END), ';' || chr(10)), $sql), token := getenv('QUACK_TOKEN'));
 CREATE OR REPLACE ROUTE query POST '/query'
   AS SELECT * FROM quack_query('@QUACK_URI', $session$SET enable_profiling = 'no_output';
 SET profiling_coverage = 'ALL';
@@ -32,7 +32,7 @@ coalesce(array_to_string(list_transform(try(parse_statements($sql)), s ->
  CASE WHEN (CASE WHEN starts_with($sql, '/* request_id=') THEN contains(left($sql, strpos($sql, chr(10))), 'no_limit=true') ELSE false END) THEN s
    WHEN coalesce(json_serialize_sql(s)->>'error' = 'false'
    AND len(list_filter(json_extract(json_serialize_sql(s), '$.statements[0].node.modifiers[*].limit'), x -> x <> 'null'::JSON)) = 0, false)
- THEN printf('SELECT * FROM (%s) AS agent_result LIMIT 20', s) ELSE s END), ';' || chr(10)), $sql), token := getenv('QUACK_TOKEN'));
+ THEN printf('SELECT * FROM (%s) AS agent_result LIMIT 3', s) ELSE s END), ';' || chr(10)), $sql), token := getenv('QUACK_TOKEN'));
 CREATE OR REPLACE ROUTE otlp_logs POST '/v1/logs' AS
   COPY (SELECT $body::VARCHAR AS payload, 'logs' AS signal) TO '@OTLP_DIR'
   (FORMAT csv, HEADER false, QUOTE '', ESCAPE '', PARTITION_BY (signal), FILENAME_PATTERN '{uuid}', FILE_EXTENSION 'json', OVERWRITE_OR_IGNORE true);

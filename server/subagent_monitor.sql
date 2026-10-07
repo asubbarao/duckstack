@@ -12,7 +12,7 @@ WITH line AS (
 agent AS (
   SELECT session_id, replace(replace(file_name, 'agent-', ''), '.jsonl', '') AS agent_id,
     (array_agg(model ORDER BY line_number) FILTER (model IS NOT NULL))[1] AS model,
-    (array_agg(message_content ORDER BY line_number) FILTER (message_role = 'user'))[1][:140] AS brief,
+    (array_agg(message_content ORDER BY line_number) FILTER (message_role = 'user'))[1] AS message_content,
     (array_agg(ts ORDER BY ts))[1] AS started,
     (array_agg(ts ORDER BY ts DESC))[1] AS last_seen,
     array_agg(tool_name ORDER BY line_number) FILTER (tool_name IS NOT NULL) AS tools,
@@ -22,13 +22,19 @@ agent AS (
     sum(input_tokens) AS input_tokens, sum(output_tokens) AS output_tokens,
     sum(cache_read_tokens) AS cache_read_tokens, sum(cache_creation_tokens) AS cache_creation_tokens
   FROM line
-  GROUP BY ALL)
-SELECT session_id, agent_id, model, brief, started, last_seen - started AS ran_for,
+  GROUP BY ALL),
+bounded AS (
+  SELECT * EXCLUDE (message_content),
+    CASE WHEN length(message_content) <= 200 THEN message_content ELSE left(message_content, 100) END AS content_head,
+    CASE WHEN length(message_content) > 200 THEN right(message_content, 100) END AS content_tail,
+    length(message_content) AS content_length
+  FROM agent)
+SELECT session_id, agent_id, model, content_head, content_tail, content_length, started, last_seen - started AS ran_for,
   now() - last_seen AS idle, len(tools) AS tool_calls, last_tool,
   input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
   CASE WHEN last_stop = 'end_turn' THEN 'finished'
        WHEN now() - last_seen > INTERVAL 5 MINUTE THEN 'quiet (stopped or stuck)'
        ELSE 'working' END AS state
-FROM agent
+FROM bounded
 WHERE last_seen > now() - INTERVAL 6 HOUR
 ORDER BY started DESC;
