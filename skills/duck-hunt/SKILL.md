@@ -49,6 +49,8 @@ parsed from the file name, so you can join it back to the jobs API.
 | `pytest_xdist_tests` | how long did each backend test take? Measured as the gap to the previous line on its xdist worker | 19,187 tests over 3 shards |
 | `vitest_files` | which vitest files are slow? | 545 files; RequestPicker.test.tsx 14.8 s |
 | `vitest_phases` | where does a vitest shard's wall time go (import, environment, tests)? | phases = 95% of wall: files run one at a time |
+| `backend_shard_balance` | did pytest-split balance measured worker cost and wall time? | 350.0-468.7 s across 3 shards |
+| `frontend_shard_balance` | did Vitest's equal-file shards balance measured cost? | 208-211 files but 340.9-431.4 s walls |
 | `gha_steps` | when did each step start and how long did it run, from the log alone? | pytest step 566.6 s, API 566 s |
 | `gha_errors` | which `##[error]` annotations did each job raise? | 5 failed jobs |
 | `biome_diagnostics` | which lint rule fired where, and which one failed the job? Uses `context := 3` | the one `×` error found |
@@ -61,6 +63,11 @@ that reads a view more than once lands it first: `CREATE OR REPLACE TABLE x AS F
 ## Learned
 
 Dated one-liners. Add to this list; don't rewrite it.
+
+- 2026-09-30: equal shard counts are not balance. On inframe staging run 36274924301, Vitest put
+  208-211 files in each shard but walls ranged 340.9-431.4 s; pytest-split's current durations
+  artifact produced 350.0-468.7 s observed test walls. Gate on measured slowest/fastest wall ratio
+  and record artifact age/coverage, rather than treating equal file or test counts as success.
 
 - 2026-09-23: fetching per-job logs.
   - Save the per-job log to a file first with `gh api --allow-escape-sequences …/jobs/<id>/logs > f`,

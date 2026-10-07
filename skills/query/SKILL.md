@@ -17,7 +17,7 @@ stream_search, read_lines and ext_docs when they fit.
 query/sql are primary execution tools: complete SQL bodies go through QuackAPI
 to the same Quack server, including filesystem readers, ShellFS host commands,
 HTTP and authorized writes. They return HTTP status/reason plus the full raw
-response. The final SELECT defaults to 20 rows unless it has an explicit
+response. The final SELECT defaults to 3 rows unless it has an explicit
 outer LIMIT (including LIMIT ALL). Writes are never row-limited. parser_tools
 splits statements; DuckDB's SELECT AST identifies limits, not text heuristics.
 Receipts expose request_id, submitted_sql, executed_sql and default_limit_applied.
@@ -45,7 +45,7 @@ recipe in the file's header and one line saying when to reach for it.
 
 - Issue live SELECTs first and iterate on useful result sets. A saved SQL file is
   an outcome of exploration, not a prerequisite. Reuse the source CTE, vary later
-  CTEs, and use outer LIMIT 4 or LIMIT 7 while shaping columns. Save the verified,
+  CTEs, and use outer LIMIT 3 while shaping columns. Save the verified,
   reusable program after it proves useful. Read-only exploration is cheap to
   reconstruct; uncertain writes still require receipt/state inspection before retry.
 - SQL is the interactive workspace, not only a saved artifact format. ShellFS and
@@ -77,6 +77,19 @@ recipe in the file's header and one line saying when to reach for it.
 - Keep base data and intermediate columns. Return bounded previews and IDs for
   drill-down. Exploration does not require saving every query; save the reusable
   pipeline once its shape is verified.
+- Agent-facing `agent.stream` results do not return `message_content`,
+  `content_headtail`, or complete `tool_data`. They return the row ID,
+  `content_head`, `content_tail`, and `content_length`: text at most 200
+  characters is wholly in the head with a NULL tail; longer text has 100
+  characters at each end. Use the `stream_message` tool with an exact row ID
+  when complete message text or tool data is explicitly needed.
+- Search the stream with `stream_search` (BM25) or `stream_semantic` (vectors).
+  Both read `agent.stream_hour` (one row per session-hour) and return ids plus
+  condensed head/tail items. See /duckstack:agent-stream.
+- `/sql` returns `[]` with HTTP 200 for a statement that fails to *parse* (for
+  example an implicit alias that is a keyword: `count(x) hours`). Binder errors
+  come back as `detail`. Alias with `AS`, and treat an unexpected `[]` as a
+  possible parse error.
 
 ## Inspect the result
 
