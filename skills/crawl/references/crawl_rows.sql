@@ -37,7 +37,7 @@ FROM crawl('@URL@', cache := false, cache_ttl := 24, timeout := @TIMEOUT@, delay
 fired AS (
     -- the array_agg is the barrier: every post completes before a row below exists
     SELECT array_agg(struct_pack(seed := url, statement := statement,
-                                 r := http_post_form(endpoint, MAP {}, MAP {'sql': statement})) ORDER BY url) AS receipts
+                                 r := http_post(endpoint, MAP {'Content-Type': 'application/json'}, json_object('sql', statement))) ORDER BY url) AS receipts
     FROM statements
 ),
 landed AS (

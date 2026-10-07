@@ -1,22 +1,19 @@
--- Same model and normalized message_content as the scheduled local embedding job.
-WITH asked AS (
-    SELECT embed('launchctl plist wrapper server exits log')::FLOAT[384] AS embedding,
-        extension_version AS model_version
-    FROM duckdb_extensions() WHERE extension_name = 'quackformers'
-), matches AS (
-    SELECT s.system, s.session_id, s.day,
-        max(array_cosine_similarity(v.embedding, q.embedding)) AS similarity
-    FROM agent.stream_vector v
-    JOIN agent.stream s ON s.id = v.id AND sha256(s.message_content) = v.content_hash
-    CROSS JOIN asked q
-    WHERE v.model_version = q.model_version
-    GROUP BY ALL
+-- Cosine search over agent.stream_hour_vector (same model and text as agent_stream_hour_index.sql). An exact scan:
+-- at ~1.5k hour vectors it is milliseconds, so there is no HNSW index. Returns five session-hours with up to five
+-- human/agent condensed items (id + head/tail); full text via stream_message(id). The quoted phrase is $q.
+WITH scored AS (
+    SELECT v.hour_id, array_cosine_similarity(v.embedding,
+        embed('launchctl plist wrapper server exits log')::FLOAT[384]) AS similarity
+    FROM agent.stream_hour_vector AS v
+    JOIN duckdb_extensions() AS e ON e.extension_name = v.model_extension AND e.extension_version = v.model_version
     ORDER BY similarity DESC
-    LIMIT 10
+    LIMIT 5
 )
-SELECT m.similarity, d.*
-FROM matches m JOIN agent.stream_day d
-    ON m.system IS NOT DISTINCT FROM d.system
-    AND m.session_id IS NOT DISTINCT FROM d.session_id
-    AND m.day IS NOT DISTINCT FROM d.day
-ORDER BY m.similarity DESC;
+SELECT round(s.similarity, 3) AS similarity, h.system, h.session_id, h.hour, h.project_path, h.first_ts, h.last_ts,
+    h.message_count, h.role_counts, h.hour_id,
+    list_filter(list_transform(list_zip(h.ids, h.condensed_items), x -> {id: x[1], item: x[2]}),
+        x -> split_part(x.item, ':', 1) IN ('human', 'agent'))[:5] AS dialog
+FROM scored AS s
+JOIN agent.stream_hour AS h USING (hour_id)
+ORDER BY s.similarity DESC
+LIMIT 5;

@@ -1,4 +1,4 @@
--- ext_catalog. Raw first: agents.ext_page is every fetched page exactly as http_get returned it (grain: url). The rest are views:
+-- ext_catalog. Raw first: ext_page retains the raw document and crawler receipt (grain: url). The rest are views:
 -- ext_url reads each extension's community page, GitHub repo and description.yml off the community list page (webbed links),
 -- ext_catalog PIVOTs the raw responses to one row per extension, ext_docs is the README: the GitHub <article>, parsed by webbed.
 -- A page is fetched only when missing or older than three days; drop ext_page and rerun to rebuild everything.
@@ -21,10 +21,19 @@ FROM (SELECT 'list' AS kind, 'https://duckdb.org/community_extensions/list_of_ex
 ANTI JOIN (FROM agents.ext_page WHERE fetched_at > now() - INTERVAL 3 DAY
            AND try_cast(response->>'status' AS INTEGER) = 200) USING (url)
 ANTI JOIN (FROM agents.ext_fetch WHERE fetched_at > now() - INTERVAL 5 MINUTE) USING (url);
--- Small batches share the scheduler with stream ingestion; failures never replace good pages.
+-- Six HTTP workers hydrate a cold catalog in bounded 90-page minute batches.
+-- No link following or crawler cache: the raw document and receipt stay in ext_fetch.
+SET VARIABLE ext_due_urls = (SELECT list(url ORDER BY kind = 'list' DESC, url)
+ FROM (SELECT url,min(kind) AS kind FROM agents.ext_stale GROUP BY url
+ ORDER BY min(kind) = 'list' DESC,url LIMIT 90));
 INSERT OR REPLACE INTO agents.ext_fetch BY NAME
-SELECT url, now() AS fetched_at, http_get(url) AS response
-FROM (FROM agents.ext_stale ORDER BY kind = 'list' DESC, url LIMIT 3);
+SELECT url, now() AS fetched_at,
+ json_object('status',status,'body',html.document,'error',error,
+ 'content_type',content_type,'response_time_ms',response_time_ms) AS response
+FROM crawl(coalesce(getvariable('ext_due_urls'), []::VARCHAR[]),
+ workers := 6, batch_size := 6, timeout := 15000, delay := 0,
+ follow := 'none', max_depth := 0, cache := false, max_results := 90)
+QUALIFY row_number() OVER(PARTITION BY url ORDER BY response_time_ms)=1;
 INSERT OR REPLACE INTO agents.ext_page BY NAME
 SELECT f.* FROM agents.ext_fetch f
 LEFT JOIN agents.ext_page p USING (url)

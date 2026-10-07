@@ -1,191 +1,130 @@
--- Read one full snapshot, normalize locally, and mutate only changed stream rows.
+-- Bounded provider roots: the native reader accepts roots, not individual JSONL paths.
+-- SQL owns source discovery, normalization and writes. ShellFS only creates symlinks
+-- and submits the generated JSON SQL bodies sequentially to the existing dev API.
 CREATE SCHEMA IF NOT EXISTS agent;
-CREATE TABLE IF NOT EXISTS agent.stream_refresh (
-    run_id UUID PRIMARY KEY,
-    instance_id VARCHAR,
-    started_at TIMESTAMPTZ NOT NULL,
-    source_coverage_at TIMESTAMPTZ NOT NULL,
-    completed_at TIMESTAMPTZ,
-    status VARCHAR NOT NULL,
-    error VARCHAR,
-    source_updated_through TIMESTAMPTZ,
-    source_rows BIGINT,
-    normalized_rows BIGINT,
-    mutated_rows BIGINT,
-    stream_rows BIGINT
-);
-ALTER TABLE agent.stream_refresh ADD COLUMN IF NOT EXISTS mutated_rows BIGINT;
-
+CREATE TABLE IF NOT EXISTS agent.stream_ingest_batches (
+ run_id UUID, source VARCHAR, batch BIGINT, source_rows BIGINT, normalized_rows BIGINT,
+ completed_at TIMESTAMPTZ);
+UPDATE agent.stream_refresh SET status='failed', error='interrupted before completion'
+ WHERE status='running';
 CREATE OR REPLACE TEMP TABLE stream_run AS
-SELECT uuid() AS run_id, getenv('QUACK_INSTANCE_ID') AS instance_id,
-       now() AS started_at, now() AS source_coverage_at;
-
+ SELECT uuid() AS run_id,getenv('QUACK_INSTANCE_ID') AS instance_id,
+ now() AS started_at,now() AS source_coverage_at;
 INSERT INTO agent.stream_refresh BY NAME
-SELECT run_id, instance_id, started_at, source_coverage_at, NULL AS completed_at,
-       'running' AS status, NULL AS error, NULL AS source_updated_through,
-       NULL::BIGINT AS source_rows, NULL::BIGINT AS normalized_rows,
-       NULL::BIGINT AS mutated_rows, NULL::BIGINT AS stream_rows
-FROM stream_run;
-
--- The reader is authoritative: take one complete snapshot, then normalize locally.
-CREATE OR REPLACE TEMP TABLE stream_source AS
-FROM quack_query('quack:127.0.0.1:19494',
-    $reader$SELECT * EXCLUDE (raw_event, metadata,
-        input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens, reasoning_tokens)
-    FROM conversations$reader$,
-    token := getenv('QUACK_TOKEN'));
-
-CREATE OR REPLACE TEMP TABLE stream_delta AS
-WITH source_rows AS (
-    -- speaker: the source's role when it has one, else its record type.
-    SELECT *, CASE WHEN message_role <> '' THEN message_role ELSE message_type END AS speaker,
-        -- event_kind is derived, so its values never collide with a source's own type names.
-        CASE WHEN message_type IN ('function_call_output', 'custom_tool_call_output', 'tool_result') THEN 'call_result'
-             WHEN message_type IN ('function_call', 'custom_tool_call', 'tool_call') THEN 'call_request'
-             WHEN tool_input <> '' THEN 'call_request'
-             WHEN speaker = 'tool' THEN 'call_result'
-             WHEN tool_name <> '' THEN 'call_request'
-             WHEN speaker = 'user' THEN 'user_text'
-             WHEN speaker IN ('assistant', 'reasoning', 'agent_message') THEN 'agent_text'
-             WHEN speaker IN ('system', 'developer') THEN 'system_text'
-             WHEN message_type = '_parse_error' THEN 'reader_error'
-             WHEN message_type IN ('token_usage', 'token_usage_total', 'token_count') THEN 'token_count'
-             WHEN message_type IN ('attachment', 'image_view') THEN 'attachment'
-             WHEN message_type IN ('file_change', 'file-history-snapshot', 'file-history-delta') THEN 'file_edit'
-             WHEN message_type IN ('inter_agent_communication_metadata', 'subagent_activity') THEN 'subagent_link'
-             WHEN message_type IN ('queue-operation', 'task_started', 'task_complete', 'turn_aborted', 'compacted',
-                 'compaction', 'compaction_summary', 'retained_context', 'plan') THEN 'turn_lifecycle'
-             WHEN message_type IN ('last-prompt', 'ai-title', 'custom-title', 'agent-name', 'agent-setting', 'mode',
-                 'permission-mode', 'pr-link', 'frame-link', 'bridge-session', 'worktree-state', 'relocated',
-                 'continued-in', 'history-suppression', 'cost-state', 'atis-latch', 'artifact-autoreact-ledger',
-                 'artifact-comment-monitor', 'world_state', 'thread_settings_applied', 'extension') THEN 'session_state'
-             ELSE 'unlabeled' END AS event_kind,
-        sha256(to_json({system: system, session_id: session_id, file_name: file_name,
-            project_path: project_path, line_number: line_number, uuid: uuid,
-            message_type: message_type, tool_use_id: tool_use_id})) AS source_key,
-        row_number() OVER (PARTITION BY source_key
-            ORDER BY timestamp, sha256(message_content), tool_name, sha256(tool_input)) AS occurrence
-    FROM stream_source
-), parts AS (
-    SELECT *, 'text' AS part, nullif(message_content, '') AS content, NULL AS tool_data
-    FROM source_rows
-    WHERE CASE WHEN event_kind <> 'call_request' THEN true
-        WHEN speaker IN ('user', 'assistant') THEN message_content <> ''
-        WHEN speaker = 'tool' AND message_type NOT IN ('function_call', 'custom_tool_call', 'tool_call')
-            THEN message_content <> '' ELSE false END
-    UNION ALL BY NAME
-    SELECT *, 'tool' AS part,
-        nullif(concat_ws(' ', nullif(tool_name, ''),
-            CASE WHEN tool_input <> '' THEN tool_input
-                 WHEN speaker IN ('user', 'assistant') THEN NULL
-                 ELSE nullif(message_content, '') END), '') AS content,
-        {name: tool_name, input: tool_input, call_id: tool_use_id} AS tool_data
-    FROM source_rows WHERE event_kind = 'call_request'
-), normalized AS (
-    SELECT COLUMNS(c -> c NOT IN ('tool_name', 'tool_input', 'raw_event', 'metadata', 'session_updated_at',
-        'source_key', 'occurrence', 'part', 'speaker', 'content', 'message_role', 'message_content',
-        'input_tokens', 'output_tokens', 'cache_creation_tokens', 'cache_read_tokens', 'reasoning_tokens')),
-        message_role AS source_message_role, source_key || ':' || occurrence || ':' || part AS id,
-        -- A call row's text part keeps its speaker's role; event_kind stays the row's kind.
-        CASE WHEN part = 'tool' THEN 'tool_call'
-             WHEN message_type IN ('function_call_output', 'custom_tool_call_output', 'tool_result') THEN 'tool_result'
-             WHEN speaker = 'tool' THEN 'tool_result'
-             WHEN speaker = 'user' THEN 'user'
-             WHEN speaker IN ('assistant', 'reasoning', 'agent_message') THEN 'agent'
-             WHEN speaker IN ('system', 'developer') THEN 'system' ELSE 'other' END AS message_role,
-        content AS message_content, length(content) AS content_length,
-        try_cast(timestamp AS TIMESTAMPTZ) AS ts,
-        (ts AT TIME ZONE 'UTC')::DATE AS day, time_bucket(INTERVAL '5 minutes', ts) AS block
-    FROM parts
+ SELECT *, 'running' AS status FROM stream_run;
+SET VARIABLE stream_source_cutoff = (SELECT max(source_coverage_at) - INTERVAL '5 seconds'
+ FROM agent.stream_refresh WHERE status='success'
+ AND EXISTS (SELECT table_name FROM duckdb_tables() WHERE schema_name='agent' AND table_name='stream'));
+SET VARIABLE stream_work_root = (SELECT '/Users/aloksubbarao/.duck/stream_ingest/' || run_id FROM stream_run);
+SET VARIABLE stream_mkdir = 'mkdir -p "' || getvariable('stream_work_root') || '" |';
+FROM read_text(getvariable('stream_mkdir'));
+CREATE OR REPLACE TEMP TABLE stream_pending_files AS
+WITH files AS (
+ SELECT file AS path, CASE WHEN starts_with(file,'/Users/aloksubbarao/.claude/') THEN 'claude' ELSE 'codex' END AS source,
+ file_size(file) AS bytes,file_last_modified(file) AT TIME ZONE 'UTC' AS modified_at
+ FROM glob(['/Users/aloksubbarao/.claude/projects/**/*.jsonl','/Users/aloksubbarao/.codex/sessions/**/*.jsonl'])
+), pending AS (
+ SELECT * FROM files WHERE CASE WHEN getvariable('stream_source_cutoff') IS NULL THEN true
+ ELSE modified_at >= getvariable('stream_source_cutoff')::TIMESTAMPTZ END
+), batches AS (
+ SELECT *, floor((sum(bytes) OVER (PARTITION BY source ORDER BY path)-bytes)/134217728)::BIGINT AS batch
+ FROM pending
 )
-SELECT *, CASE WHEN content_length > 2000
-    THEN left(message_content, 1000) || ' … ' || right(message_content, 997)
-    ELSE message_content END AS content_headtail
-FROM normalized;
-
--- The volume floor catches major source loss, not completeness; bulk removal needs inspection.
-CREATE OR REPLACE TEMP TABLE stream_preflight_observations AS
-SELECT count(1) AS source_rows, NULL::BIGINT AS delta_rows,
-       NULL::BIGINT AS nonnull_ids, NULL::BIGINT AS distinct_ids,
-       NULL::BIGINT AS previous_source_rows
-FROM stream_source
-UNION ALL
-SELECT NULL::BIGINT, count(1), count(id), count(DISTINCT id), NULL::BIGINT
-FROM stream_delta
-UNION ALL
-SELECT NULL::BIGINT, NULL::BIGINT, NULL::BIGINT, NULL::BIGINT, source_rows
-FROM (
-    SELECT source_rows, row_number() OVER (ORDER BY source_coverage_at DESC, run_id DESC) AS prior_rank
-    FROM agent.stream_refresh
-    WHERE status = 'success'
+SELECT *, getvariable('stream_work_root') || '/inputs/' || source || '/' || batch AS root,
+ replace(path,'/Users/aloksubbarao/.' || source,root) AS target
+FROM batches;
+COPY (SELECT 'mkdir -p ' || chr(39) || replace(parse_dirpath(target),chr(39),chr(39)||'"'||chr(39)||'"'||chr(39)) || chr(39)
+ || chr(10) || 'ln -s ' || chr(39) || replace(path,chr(39),chr(39)||'"'||chr(39)||'"'||chr(39)) || chr(39) || ' '
+ || chr(39) || replace(target,chr(39),chr(39)||'"'||chr(39)||'"'||chr(39)) || chr(39)
+ FROM stream_pending_files ORDER BY source,batch,path)
+TO '| /bin/bash' (FORMAT csv,HEADER false,QUOTE '');
+SET VARIABLE stream_normalization = (SELECT content FROM read_text('/Users/aloksubbarao/duckdb-skills/server/agent_stream_normalize.sql'));
+CREATE OR REPLACE TEMP TABLE stream_load_jobs AS
+WITH roots AS (SELECT DISTINCT source,batch,root FROM stream_pending_files),
+reader AS (
+ SELECT *, replace(replace($reader$
+WITH native AS (
+ SELECT *, CASE WHEN list_contains(list_transform(
+ ['business-profile','business_profile','customer_name','insured_name','policy_number'],
+ term -> contains(lower(coalesce(message_content,'') || coalesce(tool_input,'') ||
+ coalesce(cwd,'') || coalesce(project_path,'') || coalesce(project_dir,'') ||
+ coalesce(parse_error,'')),term)),true) THEN true ELSE false END AS privacy_redacted
+ FROM read_conversations(path := '@ROOT@',source := '@SOURCE@')
 )
-WHERE prior_rank = 1;
-CREATE OR REPLACE TEMP TABLE stream_preflight AS
-SELECT max(source_rows) AS source_rows, max(delta_rows) AS delta_rows,
-       max(nonnull_ids) AS nonnull_ids, max(distinct_ids) AS distinct_ids,
-       max(previous_source_rows) AS previous_source_rows
-FROM stream_preflight_observations;
-SELECT CASE WHEN source_rows = 0 THEN error('stream source is empty')
-            WHEN delta_rows IS DISTINCT FROM nonnull_ids THEN error('stream source has NULL ids')
-            WHEN delta_rows IS DISTINCT FROM distinct_ids THEN error('stream source has duplicate ids')
-            WHEN previous_source_rows IS NOT NULL AND source_rows < previous_source_rows * 0.95
-                THEN error('stream source fell below 95 percent of the last successful snapshot')
-            ELSE 'stream preflight passed' END AS preflight
-FROM stream_preflight;
-
-CREATE TABLE IF NOT EXISTS agent.stream AS SELECT * FROM stream_delta WHERE false;
--- This is session transport metadata, not event data; old normalized tables retained it.
-ALTER TABLE agent.stream DROP COLUMN IF EXISTS session_updated_at;
-ALTER TABLE agent.stream ADD COLUMN IF NOT EXISTS event_kind VARCHAR;
--- Keep only IDs for accounting; MERGE owns full-row comparison atomically.
-CREATE OR REPLACE TEMP TABLE stream_mutation_ids AS
-SELECT s.id
-FROM stream_delta AS s
-ANTI JOIN agent.stream AS t USING (id)
-UNION ALL
-SELECT s.id
-FROM stream_delta AS s
-JOIN agent.stream AS t USING (id)
-WHERE t IS DISTINCT FROM s
-UNION ALL
-SELECT t.id
-FROM agent.stream AS t
-ANTI JOIN stream_delta AS s USING (id);
-
-MERGE INTO agent.stream AS dst
-USING stream_delta AS src
-ON dst.id = src.id
-WHEN MATCHED AND dst IS DISTINCT FROM src THEN UPDATE BY NAME
-WHEN NOT MATCHED THEN INSERT BY NAME
-WHEN NOT MATCHED BY SOURCE THEN DELETE;
-
-CREATE OR REPLACE TEMP TABLE stream_refresh_result AS
-SELECT max(greatest(coalesce(try_cast(session_updated_at AS TIMESTAMPTZ),
-                            to_timestamp(try_cast(session_updated_at AS DOUBLE))),
-                    try_cast(timestamp AS TIMESTAMPTZ)))
-           AS source_updated_through,
-       count(1) AS source_rows,
-       NULL::BIGINT AS normalized_rows, NULL::BIGINT AS mutated_rows, NULL::BIGINT AS stream_rows
-FROM stream_source
-UNION ALL
-SELECT NULL::TIMESTAMPTZ, NULL::BIGINT, count(id), NULL::BIGINT, NULL::BIGINT FROM stream_delta
-UNION ALL
-SELECT NULL::TIMESTAMPTZ, NULL::BIGINT, NULL::BIGINT, count(id), NULL::BIGINT FROM stream_mutation_ids
-UNION ALL
-SELECT NULL::TIMESTAMPTZ, NULL::BIGINT, NULL::BIGINT, NULL::BIGINT, count(id) FROM agent.stream;
-CREATE OR REPLACE TEMP TABLE stream_refresh_summary AS
-SELECT max(source_updated_through) AS source_updated_through,
-       sum(source_rows) AS source_rows, sum(normalized_rows) AS normalized_rows,
-       sum(mutated_rows) AS mutated_rows, sum(stream_rows) AS stream_rows
-FROM stream_refresh_result;
-SET VARIABLE stream_run_id = (SELECT run_id FROM stream_run);
-
-UPDATE agent.stream_refresh AS r
-SET completed_at = now(), status = 'success', source_updated_through = s.source_updated_through,
-    source_rows = s.source_rows, normalized_rows = s.normalized_rows,
-    mutated_rows = s.mutated_rows, stream_rows = s.stream_rows
-FROM stream_refresh_summary AS s
-WHERE r.run_id = getvariable('stream_run_id')::UUID;
-
-SELECT * FROM agent.stream_refresh
-WHERE run_id = getvariable('stream_run_id')::UUID;
+SELECT '@SOURCE@' AS system,
+ * EXCLUDE (raw_event,metadata,input_tokens,output_tokens,cache_creation_tokens,cache_read_tokens,reasoning_tokens,
+ file_path,file_name,message_content,tool_input,parse_error),
+ replace(file_path,'@ROOT@','/Users/aloksubbarao/.@SOURCE@') AS file_path,
+ replace(file_name,'@ROOT@','/Users/aloksubbarao/.@SOURCE@') AS file_name,
+ CASE WHEN privacy_redacted AND message_content <> '' THEN '[redacted: client-data boundary]' ELSE message_content END AS message_content,
+ CASE WHEN privacy_redacted AND tool_input <> '' THEN '[redacted: client-data boundary]' ELSE tool_input END AS tool_input,
+ CASE WHEN privacy_redacted AND parse_error <> '' THEN '[redacted: client-data boundary]' ELSE parse_error END AS parse_error
+FROM native
+$reader$,'@ROOT@',replace(root,chr(39),chr(39)||chr(39))),'@SOURCE@',source) AS reader_sql
+ FROM roots
+)
+SELECT source,batch,
+ 'CREATE OR REPLACE TEMP TABLE stream_source AS FROM quack_query(' ||
+ chr(39) || 'quack:127.0.0.1:19494' || chr(39) || ', $native$' || reader_sql ||
+ '$native$,token := getenv(' || chr(39) || 'QUACK_TOKEN' || chr(39) || '));' ||
+ chr(10) || getvariable('stream_normalization') || chr(10) ||
+ $write$
+CREATE OR REPLACE TEMP TABLE stream_assert AS
+ SELECT CASE WHEN count(id)=0 THEN error('native provider batch is empty')
+ WHEN count(id) <> count(DISTINCT id) THEN error('duplicate normalized IDs')
+ ELSE true END AS valid FROM stream_changed_delta;
+CREATE TABLE IF NOT EXISTS agent.stream AS SELECT * FROM stream_changed_delta WHERE false;
+ALTER TABLE agent.stream ADD COLUMN IF NOT EXISTS privacy_redacted BOOLEAN;
+DELETE FROM agent.stream WHERE (system,file_path) IN (SELECT DISTINCT system,file_path FROM stream_source);
+INSERT INTO agent.stream BY NAME FROM stream_changed_delta;
+INSERT INTO agent.stream_ingest_batches BY NAME
+ SELECT '@RUN@'::UUID AS run_id,'@SOURCE@' AS source,@BATCH@::BIGINT AS batch,
+ max(source_rows) AS source_rows,max(normalized_rows) AS normalized_rows,now() AS completed_at
+ FROM (SELECT count(1) AS source_rows,NULL::BIGINT AS normalized_rows FROM stream_source
+ UNION ALL SELECT NULL::BIGINT,count(id) FROM stream_changed_delta);
+SELECT count(id) AS stream_rows FROM agent.stream;
+$write$ AS sql
+FROM reader;
+UPDATE stream_load_jobs SET sql=replace(replace(replace(sql,'@RUN@',
+ (SELECT run_id::VARCHAR FROM stream_run)),'@SOURCE@',source),'@BATCH@',batch::VARCHAR);
+SET VARIABLE stream_job_dir = getvariable('stream_work_root') || '/jobs';
+COPY (SELECT 'mkdir -p "' || getvariable('stream_job_dir') || '"; printf %s ' ||
+ chr(39) || replace(json_object('sql',sql)::VARCHAR,chr(39),chr(39)||'"'||chr(39)||'"'||chr(39)) || chr(39) ||
+ ' > "' || getvariable('stream_job_dir') || '/' || source || '_' || lpad(batch::VARCHAR,4,'0') || '.json"'
+ FROM stream_load_jobs ORDER BY source,batch)
+TO '| /bin/bash' (FORMAT csv,HEADER false,QUOTE '');
+SET VARIABLE stream_submit_command =
+ 'set -e; if [ -d "' || getvariable('stream_job_dir') || '" ]; then find "' || getvariable('stream_job_dir') ||
+ '" -name "*.json" -type f | sort | while IFS= read -r job; do ' ||
+ 'attempt=0; while :; do attempt=$((attempt+1)); ' ||
+ 'code=$(curl --silent --show-error --max-time 300 -o "$job.receipt" -w "%{http_code}" ' ||
+ '-H "Content-Type: application/json" --data-binary @"$job" http://localhost:9495/sql); ' ||
+ 'if [ "$code" = 200 ]; then cat "$job.receipt"; printf "\n"; break; fi; ' ||
+ 'body=$(cat "$job.receipt"); case "$body" in ' ||
+ '*"Could not connect to server"*|*"Failed to send message"*) ' ||
+ 'if [ "$attempt" -lt 3 ]; then sleep 2; continue; fi;; esac; ' ||
+ 'printf "%s\n" "$body" >&2; exit 1; done; done; fi |';
+CREATE OR REPLACE TEMP TABLE stream_submit_receipt AS FROM read_text(getvariable('stream_submit_command'));
+CREATE OR REPLACE TEMP TABLE stream_totals AS
+ SELECT count(id) AS stream_rows,max(ts) AS source_updated_through FROM agent.stream;
+CREATE OR REPLACE TEMP TABLE stream_batch_totals AS
+ SELECT sum(source_rows) AS source_rows,sum(normalized_rows) AS normalized_rows
+ FROM agent.stream_ingest_batches WHERE run_id=(SELECT run_id FROM stream_run);
+CREATE OR REPLACE TEMP TABLE stream_summary AS
+ SELECT max(stream_rows) AS stream_rows,max(source_updated_through) AS source_updated_through,
+ max(source_rows) AS source_rows,max(normalized_rows) AS normalized_rows
+ FROM (SELECT *,NULL::BIGINT AS source_rows,NULL::BIGINT AS normalized_rows FROM stream_totals
+ UNION ALL BY NAME FROM stream_batch_totals);
+CREATE OR REPLACE TEMP TABLE stream_coverage_assert AS
+ SELECT CASE WHEN count(id)=0 THEN error('stream is empty')
+ WHEN count(id) <> count(DISTINCT id) THEN error('stream has duplicate IDs')
+ ELSE true END AS valid FROM agent.stream;
+UPDATE agent.stream_refresh AS r SET
+ completed_at=now(),status='success',source_updated_through=s.source_updated_through,
+ source_rows=coalesce(s.source_rows,0),normalized_rows=coalesce(s.normalized_rows,0),
+ stream_rows=s.stream_rows,mutated_rows=s.normalized_rows
+ FROM stream_summary s
+ WHERE r.run_id=(SELECT run_id FROM stream_run);
+-- Remove only the generated run directory (symlinks and SQL jobs, never source transcripts).
+SET VARIABLE stream_cleanup_command = 'rm -r "' || getvariable('stream_work_root') || '" |';
+FROM read_text(getvariable('stream_cleanup_command'));
