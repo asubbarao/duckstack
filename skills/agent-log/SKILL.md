@@ -62,7 +62,8 @@ TO '/Users/aloksubbarao/.duck/agent_log/signed'
   hive_partitioning := true)` fails with "Hive partition mismatch … key agent_signature not found".
 
 No `dev` MCP attached? Same statement, same door, over HTTP:
-`curl -s -X POST localhost:9495/sql --data-urlencode sql@statement.sql`.
+`curl -s -X POST localhost:9495/sql -H 'content-type: application/json' \
+  -d "$(jq -n --rawfile s statement.sql '{sql:$s}')"`.
 
 Read it back with the same tool:
 
@@ -203,14 +204,14 @@ hand-wrote `99` for `SELECT 6 * 7` was caught.
 ```sql
 CREATE OR REPLACE ROUTE run POST '/run' AS SELECT rows.* FROM query($q) rows;
 SELECT listen_url FROM quackapi_serve(19584, host := '127.0.0.1');
--- array_agg(http_post_form(...)) is the barrier; compare the answer to the stored result
+-- array_agg(http_post(..., MAP{'Content-Type':'application/json'}, json_object('sql', ...))) is the barrier; compare the answer to the stored result
 SELECT status FROM quackapi_stop(19584);
 ```
 
 ## Dispatching subagents
 
 Give the worker its full `<AGENT>` label (system-model-version-thinking), its session id and a `type`, and tell it to run the COPY above
-through the `dev` MCP `sql` tool (or the local form, with `<DIR>`, for programs) — nothing else. It writes its own rows; you do
+through the `dev` MCP `sql` tool (or the local JSON POST, with `<DIR>`, for programs) — nothing else. It writes its own rows; you do
 not collect them, and a worker that fails writes a row saying so. Then read the directory.
 
 ## Signed notes, decisions, and artifacts
@@ -237,4 +238,3 @@ Use structured note rows when practical: `note_id`, `evidence_state`,
 from inferences and proposed decisions; label synthetic examples explicitly. Store
 superseding notes with a reference to the earlier note rather than rewriting the bank.
 Read the signed rows back and verify their source references, contents, and hashes.
-

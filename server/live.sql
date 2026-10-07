@@ -34,10 +34,6 @@ CREATE OR REPLACE MACRO agents.host_processes() AS TABLE
         parts[5]::DOUBLE AS memory_percent, array_to_string(parts[6:], ' ') AS command, line
     FROM p;
 
--- prometheus wrappers
-CREATE OR REPLACE MACRO agents.prom_query(q, ep) AS TABLE SELECT * FROM prometheus_query(q, endpoint := ep);
-CREATE OR REPLACE MACRO agents.prom_scan(q, t0, t1, ep, step) AS TABLE SELECT * FROM prometheus_scan(q, t0, t1, step := step, endpoint := ep);
-
 -- agent_sql_guide: verified SQL to copy, one row per pattern; sql is read from the file that was run, never retyped.
 -- Add a row: CREATE OR REPLACE TABLE agent_sql_guide AS FROM agent_sql_guide UNION ALL BY NAME SELECT <name>, <sql>, <notes>, <agent_signature>, now() AS added_at
 CREATE TABLE IF NOT EXISTS agent_sql_guide AS

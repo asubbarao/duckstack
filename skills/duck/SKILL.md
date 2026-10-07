@@ -143,8 +143,8 @@ terminal / to_retry (two `WHERE`s). Retry is an unrolled ladder gated by CTE car
 functions bind literals; a scalar takes columns; so build the statement per row and hand it to
 a scalar that runs SQL. Three forms verified on this machine 2026-09-17, all in
 `/duckstack:self-dispatch`: (1) **quackapi in-process** — `CREATE ROUTE dispatch POST '/q' AS SELECT rows.* FROM query($q)
-rows; quackapi_serve(port)` in the same `:memory:` process, `array_agg(http_post_form(url,
-MAP{}, MAP{'q': q}))`, `UNNEST WITH ORDINALITY`, a JSON array of typed rows back, `quackapi_stop()`; (2) **two constant shellfs pipes** —
+rows; quackapi_serve(port)` in the same `:memory:` process, `array_agg(http_post(url,
+MAP{'Content-Type':'application/json'}, json_object('q', q)))`, `UNNEST WITH ORDINALITY`, a JSON array of typed rows back, `quackapi_stop()`; (2) **two constant shellfs pipes** —
 an inner duckdb `COPY`s generated statements to stdout, a child duckdb (or `bash`) runs them;
 (3) **quack loopback** — a body that itself calls `quack_query('quack:localhost:9494', '…',
 token := getenv('QUACK_TOKEN'))`, the server calling itself. Posting `q=` to quack's own port is the
