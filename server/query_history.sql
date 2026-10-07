@@ -1,40 +1,17 @@
--- Incremental archive of DuckDB's native logs. No parallel event model exists here:
--- QueryLog, Quack and Metrics remain the source records and retain their native IDs.
-LOAD ducklake;
--- A fresh machine (or a nuked ~/.duck/lake) has no directory yet; the lake creates its catalog on first ATTACH.
-FROM read_text('mkdir -p /Users/aloksubbarao/.duck/lake/query-history-data |');
-ATTACH IF NOT EXISTS 'ducklake:/Users/aloksubbarao/.duck/lake/query-history.ducklake'
-  AS query_history (
-    DATA_PATH '/Users/aloksubbarao/.duck/lake/query-history-data/',
-    DATA_INLINING_ROW_LIMIT 0
-  );
-CREATE SCHEMA IF NOT EXISTS meta;
-CREATE TABLE IF NOT EXISTS query_history.main.logs AS FROM duckdb_logs LIMIT 0;
-
-INSERT INTO query_history.main.logs BY NAME
-WITH watermark AS (
-  SELECT coalesce(max(timestamp), TIMESTAMPTZ '-infinity') - INTERVAL 1 MINUTE AS cutoff
-  FROM query_history.main.logs
-), source_rows AS (
-  SELECT l.* FROM duckdb_logs l CROSS JOIN watermark w WHERE l.timestamp >= w.cutoff
-), archived_rows AS (
-  SELECT l.* FROM query_history.main.logs l CROSS JOIN watermark w WHERE l.timestamp >= w.cutoff
-)
-FROM (FROM source_rows EXCEPT ALL FROM archived_rows);
-
+-- Rebuildable compatibility views over native logs; no DuckLake backup.
 CREATE OR REPLACE VIEW meta.query_log AS
 SELECT * EXCLUDE (type, message), message AS query
-FROM query_history.main.logs
+FROM duckdb_logs
 WHERE type = 'QueryLog';
 
 CREATE OR REPLACE VIEW meta.query_metrics AS
 SELECT * EXCLUDE (message), unnest(parse_duckdb_log_message('Metrics', message))
-FROM query_history.main.logs
+FROM duckdb_logs
 WHERE type = 'Metrics';
 
 CREATE OR REPLACE VIEW meta.remote_queries AS
 SELECT * EXCLUDE (message), unnest(parse_duckdb_log_message('Quack', message))
-FROM query_history.main.logs
+FROM duckdb_logs
 WHERE type = 'Quack' AND parse_duckdb_log_message('Quack', message).message_type = 'PREPARE_REQUEST';
 
 CREATE OR REPLACE VIEW meta.query_history AS

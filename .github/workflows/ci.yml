@@ -1,0 +1,66 @@
+name: Python library
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/ci.yml"
+      - ".claude-plugin/**"
+      - ".mcp.json"
+      - "lib/**"
+      - "skills/asset-factory/**"
+      - "README.md"
+  push:
+    paths:
+      - ".github/workflows/ci.yml"
+      - ".claude-plugin/**"
+      - ".mcp.json"
+      - "lib/**"
+      - "skills/asset-factory/**"
+      - "README.md"
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: duckstack_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d duckstack_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DUCKSTACK_TEST_POSTGRES_DSN: postgresql://postgres:postgres@localhost:5432/duckstack_test
+    defaults:
+      run:
+        working-directory: lib
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: lib/uv.lock
+
+      - name: Install locked dependencies
+        run: uv sync --locked --python 3.12 --extra dagster --extra postgres
+
+      - name: Run tests
+        run: uv run --locked pytest -q
+
+      - name: Check formatting and lint
+        run: uv run --locked ruff check .
+
+      - name: Type-check
+        run: uv run --locked mypy duckstack

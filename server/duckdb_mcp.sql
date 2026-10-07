@@ -1,7 +1,7 @@
 -- Agent entry points; execution stays on the selected QuackAPI/Quack server.
 INSTALL duckdb_mcp FROM community; LOAD duckdb_mcp;
 PRAGMA mcp_publish_tool('query_with_limit',
-  'The default way to run SQL on the dev DuckDB (complete SQL, DDL/DML, native readers, ShellFS, HTTP). The final SELECT is capped at 20 rows unless it has its own outer LIMIT, so exploration never floods context: start at LIMIT 2-3, widen once the query is right. default_limit_applied in the receipt says whether the cap was added. Writes are not limited. Returns request ID, submitted and executed SQL, and the full HTTP receipt with errors. Never replay an uncertain write.',
+  'The default way to run SQL on the dev DuckDB (complete SQL, DDL/DML, native readers, ShellFS, HTTP). The final SELECT is capped at 3 rows unless it has its own outer LIMIT, so exploration never floods context: start at LIMIT 2-3, widen once the query is right. default_limit_applied in the receipt says whether the cap was added. Writes are not limited. Returns request ID, submitted and executed SQL, and the full HTTP receipt with errors. Never replay an uncertain write.',
   $forward$WITH submitted AS (
   SELECT $sql AS submitted_sql, uuid()::VARCHAR AS request_id
 ), parsed AS (
@@ -12,7 +12,7 @@ PRAGMA mcp_publish_tool('query_with_limit',
   SELECT *, coalesce(ast->>'error' = 'false'
     AND len(list_filter(json_extract(ast, '$.statements[0].node.modifiers[*].limit'), x -> x <> 'null'::JSON)) = 0, false) AS default_limit_applied,
     CASE WHEN default_limit_applied
-      THEN array_to_string(list_concat(statements[:-2], [printf('SELECT * FROM (%s) AS agent_result LIMIT 20', final_sql)]), ';' || chr(10))
+      THEN array_to_string(list_concat(statements[:-2], [printf('SELECT * FROM (%s) AS agent_result LIMIT 3', final_sql)]), ';' || chr(10))
       ELSE submitted_sql END AS executed_sql
   FROM classified
 ), sent AS (
@@ -22,7 +22,7 @@ PRAGMA mcp_publish_tool('query_with_limit',
   FROM prepared JOIN meta.runtime_endpoints endpoint ON endpoint.service = 'quackapi'
 )
 SELECT *, response.status AS status, response.reason AS reason, response.body AS body FROM sent$forward$,
-  '{"sql":{"type":"string","description":"Complete SQL program; final SELECT defaults to LIMIT 20 unless explicitly limited"}}',
+  '{"sql":{"type":"string","description":"Complete SQL program; final SELECT defaults to LIMIT 3 unless explicitly limited"}}',
   '["sql"]', 'json');
 PRAGMA mcp_publish_tool('query_no_limit',
   'Runs SQL on the dev DuckDB exactly as written, with no row cap added. Do not use this to explore: a wide SELECT here can return tens of thousands of rows into context. Use it only when you already know the result is small (you ran it through query_with_limit first) or for writes and programs whose output you need whole. Returns request ID, the SQL and the full HTTP receipt with errors. Never replay an uncertain write.',
@@ -107,13 +107,13 @@ PRAGMA mcp_publish_tool('render',
   '{"template":{"type":"string","description":"Absolute template file path; sibling files are loaded"},"ctx":{"type":"string","description":"JSON object of prepared template data"}}',
   '["template","ctx"]','text');
 PRAGMA mcp_publish_tool('shellfs',
- 'Run a Bash command on the selected server through ShellFS and QuackAPI. Primary host-command tool. Returns raw line content, line numbers and byte offsets, up to 20 rows, plus the HTTP/server/database error receipt. Nonzero command exits are errors. For structured stdout use query/sql with read_csv or read_json. Use explicit paths; do not assume the client working directory. Never replay uncertain writes. No per-command deadline is enforced.',
+ 'Run a Bash command on the selected server through ShellFS and QuackAPI. Primary host-command tool. Returns raw line content, line numbers and byte offsets, up to 3 rows, plus the HTTP/server/database error receipt. Nonzero command exits are errors. For structured stdout use query/sql with read_csv or read_json. Use explicit paths; do not assume the client working directory. Never replay uncertain writes. No per-command deadline is enforced.',
  $shellfs$WITH source AS (
  SELECT $command AS command, uuid()::VARCHAR AS request_id
 ), rendered AS (
  SELECT *, tera_render('reader.tera',
  json_object('reader','read_lines','interpreter','/bin/bash -o pipefail','script',command,
- 'heredoc','END_'||replace(request_id,'-',''),'sql_tag','pipe_'||replace(request_id,'-',''),'row_limit',20),
+ 'heredoc','END_'||replace(request_id,'-',''),'sql_tag','pipe_'||replace(request_id,'-',''),'row_limit',3),
  autoescape := false, template_path := coalesce(nullif(getenv('DATASWARM_ROOT'),''),getenv('HOME')||'/duckdb-dataswarm')||'/duckdb/templates/*.tera') AS q
  FROM source
 )
