@@ -3,7 +3,7 @@
 --   A  discover   lsr from a literal root → prune by name → typed scalars
 --   B  readers    one reader statement per file, chosen from a ROWS table, POSTed to a
 --                 quackapi route this same process serves, whose handler is query($q)
---                 (table functions bind literals; the scalar http_post_form takes columns)
+--                 (table functions bind literals; the scalar JSON http_post takes columns)
 --   C  lines      a second wave: read_lines over every file a reader returned
 --
 -- Verified DuckDB 1.5.5 osx_arm64 2026-09-17: hostfs, markdown, yaml, webbed, read_lines,
@@ -70,7 +70,7 @@ stmts AS (
 -- the barrier: every POST completes before any row below exists; ORDER BY = ordinality
 fired AS (
   SELECT array_agg(struct_pack(path := path, reader := reader,
-                               r := http_post_form(format('http://127.0.0.1:{}/q', port), MAP{}, MAP{'q': q}))
+                               r := http_post(format('http://127.0.0.1:{}/q', port), MAP{'Content-Type':'application/json'}, json_object('q', q)))
                    ORDER BY path) AS responses
   FROM stmts, params
 ),
@@ -94,7 +94,7 @@ line_stmts AS (
 ),
 line_fired AS (
   SELECT array_agg(struct_pack(path := path,
-                               r := http_post_form(format('http://127.0.0.1:{}/q', port), MAP{}, MAP{'q': q}))
+                               r := http_post(format('http://127.0.0.1:{}/q', port), MAP{'Content-Type':'application/json'}, json_object('q', q)))
                    ORDER BY path) AS responses
   FROM line_stmts, params
 ),

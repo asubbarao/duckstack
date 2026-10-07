@@ -67,6 +67,10 @@ CALL enable_logging(['QueryLog', 'HTTP', 'Quack', 'Metrics'], storage := 'file',
 .read /Users/aloksubbarao/duckdb-skills/server/server_diagnostics.sql
 .read /Users/aloksubbarao/duckdb-skills/server/cron.sql
 
+-- Subagents (Lunas, spawned agents) read anything here but write only into agent_scratch; every other
+-- schema is changed by direct sessions. Convention, not enforcement: DuckDB has no per-user grants.
+CREATE SCHEMA IF NOT EXISTS agent_scratch;
+
 -- The effective configuration, every start; then refuse to serve a crippled or over-permissive instance.
 CREATE OR REPLACE TABLE _setup_settings AS SELECT now() AS recorded_at, * FROM duckdb_settings();
 CREATE TABLE IF NOT EXISTS _setup_settings_history AS FROM _setup_settings LIMIT 0;
