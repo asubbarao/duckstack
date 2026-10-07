@@ -72,16 +72,6 @@ DELETE FROM agents.prometheus_endpoints WHERE name = 'aws_amp' OR endpoint ILIKE
 DELETE FROM agents.grafana_datasources WHERE name = 'aws_grafana_prom' OR url ILIKE '%REPLACE_WORKSPACE%';
 DELETE FROM agents.grafana_instances WHERE name = 'inframe_prod_ec2' OR access_mode = 'ssm_port_forward';
 
-CREATE OR REPLACE MACRO agents.prom_endpoint() AS (
-  SELECT endpoint FROM agents.prometheus_endpoints WHERE is_default ORDER BY updated_at DESC LIMIT 1
-);
-
-CREATE OR REPLACE MACRO agents.prom_query(q, ep := 'http://127.0.0.1:9090') AS TABLE
-  SELECT * FROM prometheus_query(q, endpoint := ep);
-
-CREATE OR REPLACE MACRO agents.prom_scan(q, t0, t1, ep := 'http://127.0.0.1:9090', step := INTERVAL 1 MINUTE) AS TABLE
-  SELECT * FROM prometheus_scan(q, t0, t1, step := step, endpoint := ep);
-
 CREATE OR REPLACE VIEW agents.prometheus_endpoints_v AS
 SELECT * FROM agents.prometheus_endpoints;
 
@@ -105,7 +95,7 @@ DELETE FROM agents.prometheus_grafana_findings WHERE topic IN ('local.happy_path
 INSERT INTO agents.prometheus_grafana_findings BY NAME
 SELECT * FROM (VALUES
   ('local.happy_path',
-   'No AWS required. brew prometheus :9090 + brew grafana :3000 + agents.prom_query via MCP/quack.',
+   'No AWS required. brew prometheus :9090 + brew grafana :3000 + prometheus_query(q, endpoint := ...) via MCP/quack.',
    'alok/local-prom-grafana worktree', 'alok', now()),
   ('ext_catalog.prometheus',
    'botan/duckdb-prometheus — prometheus_query/scan/series/labels/metadata. Unauthenticated HTTP.',
