@@ -177,3 +177,10 @@ all side effects completed.
 
 Sources: [extension and cookbook](https://query.farm/products/extensions/tera/),
 [function reference](https://query.farm/products/extensions/tera/functions/category/render/).
+
+## Worked reference: a video as rows
+
+`references/video_frames.tera` renders a `read_csv` over a pipe whose producer is a heredoc program
+(macOS AVFoundation via `swift -`, or ffmpeg) writing one frame per row at a chosen rate; `pic_phash`
+runs per row as the stream arrives. `references/video_frames.sql` renders it, runs it and splits scenes.
+See the `watch-video` skill for the whole flow.

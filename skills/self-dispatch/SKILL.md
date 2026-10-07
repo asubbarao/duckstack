@@ -33,13 +33,14 @@ post AS (
 
 Chain it as often as needed: stage N+1 is written FROM stage N, so the data dependency is the order.
 
-## Every form, side by side
+## Transport choices, side by side
 
-`references/selfdispatch.sql` runs the same per-row `ls` six ways and returns every receipt: naked JSON POST to
-`/sql` (the default), the `MAP` form post, a tera template file (`references/ls.tera`), printf (shown, not
+`references/selfdispatch.sql` runs the same per-row `ls` through the supported transports and returns every
+receipt: JSON POST to `/sql` (the default), a tera template file (`references/ls.tera`), printf (shown, not
 preferred), `quack_query` to a quack server (point the URI at another agent's port), and the `httpserver`
-extension (GET with `query` and `default_format`). Verified 2026-09-28: 6 forms × 2 rows, all 200, identical
-listings. `/sql` returns the first statement that produces rows, so setup/teardown in a body are CTAS, not SELECT.
+extension (GET with `query` and `default_format`). `/sql` receives `json_object('sql', statement)` with an
+`application/json` header; this avoids the approximately 8 KB form-encoding cap. `/sql` returns the first
+statement that produces rows, so setup/teardown in a body are CTAS, not SELECT.
 
 ## Worked example: crawl a tree, pruning before descending
 
@@ -61,7 +62,7 @@ The filter sits **before** the dispatch, so a pruned folder is never listed. Fil
   outer `LIMIT`, or returns `array_agg` of its rows as one value.
 - The receipt body is a JSON array inside a string: `from_json(receipt ->> '$.body', '[{…}]')`.
 - A failed statement is a receipt with a non-200 status and the error in its body; keep it as a row.
-- Large bodies: don't `array_agg` tens of MB of receipts; post one row each instead.
+- Large bodies: don't `array_agg` tens of MB of receipts; post one row each instead and tabulate `r.status`.
 - Dependent DDL (create → alter → insert) goes in one ordered body (`dispatch_sequence`), not as
   parallel rows, which can run out of order.
 - A path containing `'` breaks the `printf` quoting; double it with `replace(path, chr(39), chr(39) || chr(39))`.
