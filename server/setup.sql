@@ -6,6 +6,7 @@ SET GLOBAL extension_directory = getenv('HOME') || '/.duck/extensions';
 SET GLOBAL secret_directory = getenv('HOME') || '/.duck/secrets';
 
 INSTALL quack; LOAD quack; INSTALL httpfs; LOAD httpfs; INSTALL aws; LOAD aws; INSTALL encodings; INSTALL ducklake;
+.read /Users/aloksubbarao/duckdb-skills/server/api_secrets.sql
 LOAD json; LOAD icu; LOAD parquet; INSTALL fts; LOAD fts; INSTALL postgres; LOAD postgres; INSTALL sqlite; LOAD sqlite;
 INSTALL webbed FROM community; LOAD webbed; INSTALL markdown FROM community; LOAD markdown;
 INSTALL crawler FROM community; LOAD crawler; INSTALL cronjob FROM community; LOAD cronjob;
@@ -25,7 +26,7 @@ INSTALL jsonata FROM community; LOAD jsonata; INSTALL sitting_duck FROM communit
 .read /Users/aloksubbarao/duckdb-skills/server/live.sql
 
 -- A laptop tenant: leave memory and cores for the desktop; bounded temp; UTC; patient HTTP; fewer checkpoint pauses.
-SET GLOBAL memory_limit = '24GiB'; SET GLOBAL threads = 10; SET GLOBAL scheduler_process_partial = true;
+SET GLOBAL memory_limit = '8GB'; SET GLOBAL threads = 10; SET GLOBAL scheduler_process_partial = true;
 SET GLOBAL allocator_background_threads = true; SET GLOBAL temp_directory = getenv('HOME') || '/.duck/tmp';
 SET GLOBAL max_temp_directory_size = '50GiB'; SET GLOBAL TimeZone = 'UTC'; SET GLOBAL checkpoint_threshold = '128MiB';
 SET GLOBAL http_timeout = 120; SET GLOBAL http_retries = 5; SET GLOBAL http_retry_wait_ms = 500;
@@ -62,8 +63,13 @@ SELECT service, address, "at" FROM _listeners;
 CALL enable_logging(['QueryLog', 'HTTP', 'Quack', 'Metrics'], storage := 'file', storage_path := getvariable('log_path'), storage_buffer_size := 0);
 
 .read /Users/aloksubbarao/duckdb-skills/server/observability.sql
+.read /Users/aloksubbarao/duckdb-skills/server/query_history.sql
 .read /Users/aloksubbarao/duckdb-skills/server/server_diagnostics.sql
 .read /Users/aloksubbarao/duckdb-skills/server/cron.sql
+
+-- Subagents (Lunas, spawned agents) read anything here but write only into agent_scratch; every other
+-- schema is changed by direct sessions. Convention, not enforcement: DuckDB has no per-user grants.
+CREATE SCHEMA IF NOT EXISTS agent_scratch;
 
 -- The effective configuration, every start; then refuse to serve a crippled or over-permissive instance.
 CREATE OR REPLACE TABLE _setup_settings AS SELECT now() AS recorded_at, * FROM duckdb_settings();

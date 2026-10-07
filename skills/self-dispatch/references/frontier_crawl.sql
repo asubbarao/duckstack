@@ -19,8 +19,8 @@ FROM quackapi_serve(19503, host := '127.0.0.1');
 -- only inside the dispatched statement (chr(39) is the quote).
 CREATE OR REPLACE TABLE node_map AS
 WITH root  AS (SELECT root FROM crawls ORDER BY started_at DESC LIMIT 1),
-fired AS (SELECT root, http_post_form('http://127.0.0.1:19503/q', MAP{},
-                        MAP{'q': format('SELECT path FROM ls({}{}{})', chr(39), root, chr(39))}) AS r FROM root),
+fired AS (SELECT root, http_post('http://127.0.0.1:19503/q', MAP{'Content-Type':'application/json'},
+                        json_object('q', format('SELECT path FROM ls({}{}{})', chr(39), root, chr(39))) AS r FROM root),
 nodes AS (SELECT root, row.path AS path
           FROM fired, unnest(from_json((r.body ->> '$'), '[{"path":"VARCHAR"}]')) AS s(row)
           WHERE r.status = 200)
@@ -34,8 +34,8 @@ WHERE (is_dir(path) AND NOT starts_with(file_name(path), '.')
 -- frontier costs zero dispatches, so levels past the tree's depth are free.
 INSERT INTO node_map BY NAME
 WITH frontier AS (SELECT root, path FROM node_map WHERE depth = 1 AND is_dir_flag),
-fired AS (SELECT root, http_post_form('http://127.0.0.1:19503/q', MAP{},
-                        MAP{'q': format('SELECT path FROM ls({}{}{})', chr(39), path, chr(39))}) AS r FROM frontier),
+fired AS (SELECT root, http_post('http://127.0.0.1:19503/q', MAP{'Content-Type':'application/json'},
+                        json_object('q', format('SELECT path FROM ls({}{}{})', chr(39), path, chr(39))) AS r FROM frontier),
 nodes AS (SELECT root, row.path AS path FROM fired, unnest(from_json((r.body ->> '$'), '[{"path":"VARCHAR"}]')) AS s(row) WHERE r.status = 200)
 SELECT root, path, 2 AS depth, is_dir(path) AS is_dir_flag FROM nodes
 WHERE (is_dir(path) AND NOT starts_with(file_name(path), '.') AND file_name(path) NOT IN (SELECT name FROM policy_skip_dirs))
@@ -43,8 +43,8 @@ WHERE (is_dir(path) AND NOT starts_with(file_name(path), '.') AND file_name(path
 
 INSERT INTO node_map BY NAME
 WITH frontier AS (SELECT root, path FROM node_map WHERE depth = 2 AND is_dir_flag),
-fired AS (SELECT root, http_post_form('http://127.0.0.1:19503/q', MAP{},
-                        MAP{'q': format('SELECT path FROM ls({}{}{})', chr(39), path, chr(39))}) AS r FROM frontier),
+fired AS (SELECT root, http_post('http://127.0.0.1:19503/q', MAP{'Content-Type':'application/json'},
+                        json_object('q', format('SELECT path FROM ls({}{}{})', chr(39), path, chr(39))) AS r FROM frontier),
 nodes AS (SELECT root, row.path AS path FROM fired, unnest(from_json((r.body ->> '$'), '[{"path":"VARCHAR"}]')) AS s(row) WHERE r.status = 200)
 SELECT root, path, 3 AS depth, is_dir(path) AS is_dir_flag FROM nodes
 WHERE (is_dir(path) AND NOT starts_with(file_name(path), '.') AND file_name(path) NOT IN (SELECT name FROM policy_skip_dirs))
@@ -52,8 +52,8 @@ WHERE (is_dir(path) AND NOT starts_with(file_name(path), '.') AND file_name(path
 
 INSERT INTO node_map BY NAME
 WITH frontier AS (SELECT root, path FROM node_map WHERE depth = 3 AND is_dir_flag),
-fired AS (SELECT root, http_post_form('http://127.0.0.1:19503/q', MAP{},
-                        MAP{'q': format('SELECT path FROM ls({}{}{})', chr(39), path, chr(39))}) AS r FROM frontier),
+fired AS (SELECT root, http_post('http://127.0.0.1:19503/q', MAP{'Content-Type':'application/json'},
+                        json_object('q', format('SELECT path FROM ls({}{}{})', chr(39), path, chr(39))) AS r FROM frontier),
 nodes AS (SELECT root, row.path AS path FROM fired, unnest(from_json((r.body ->> '$'), '[{"path":"VARCHAR"}]')) AS s(row) WHERE r.status = 200)
 SELECT root, path, 4 AS depth, is_dir(path) AS is_dir_flag FROM nodes
 WHERE (is_dir(path) AND NOT starts_with(file_name(path), '.') AND file_name(path) NOT IN (SELECT name FROM policy_skip_dirs))
@@ -61,8 +61,8 @@ WHERE (is_dir(path) AND NOT starts_with(file_name(path), '.') AND file_name(path
 
 INSERT INTO node_map BY NAME
 WITH frontier AS (SELECT root, path FROM node_map WHERE depth = 4 AND is_dir_flag),
-fired AS (SELECT root, http_post_form('http://127.0.0.1:19503/q', MAP{},
-                        MAP{'q': format('SELECT path FROM ls({}{}{})', chr(39), path, chr(39))}) AS r FROM frontier),
+fired AS (SELECT root, http_post('http://127.0.0.1:19503/q', MAP{'Content-Type':'application/json'},
+                        json_object('q', format('SELECT path FROM ls({}{}{})', chr(39), path, chr(39))) AS r FROM frontier),
 nodes AS (SELECT root, row.path AS path FROM fired, unnest(from_json((r.body ->> '$'), '[{"path":"VARCHAR"}]')) AS s(row) WHERE r.status = 200)
 SELECT root, path, 5 AS depth, is_dir(path) AS is_dir_flag FROM nodes
 WHERE (is_dir(path) AND NOT starts_with(file_name(path), '.') AND file_name(path) NOT IN (SELECT name FROM policy_skip_dirs))
@@ -70,8 +70,8 @@ WHERE (is_dir(path) AND NOT starts_with(file_name(path), '.') AND file_name(path
 
 INSERT INTO node_map BY NAME
 WITH frontier AS (SELECT root, path FROM node_map WHERE depth = 5 AND is_dir_flag),
-fired AS (SELECT root, http_post_form('http://127.0.0.1:19503/q', MAP{},
-                        MAP{'q': format('SELECT path FROM ls({}{}{})', chr(39), path, chr(39))}) AS r FROM frontier),
+fired AS (SELECT root, http_post('http://127.0.0.1:19503/q', MAP{'Content-Type':'application/json'},
+                        json_object('q', format('SELECT path FROM ls({}{}{})', chr(39), path, chr(39))) AS r FROM frontier),
 nodes AS (SELECT root, row.path AS path FROM fired, unnest(from_json((r.body ->> '$'), '[{"path":"VARCHAR"}]')) AS s(row) WHERE r.status = 200)
 SELECT root, path, 6 AS depth, is_dir(path) AS is_dir_flag FROM nodes
 WHERE (is_dir(path) AND NOT starts_with(file_name(path), '.') AND file_name(path) NOT IN (SELECT name FROM policy_skip_dirs))
@@ -79,8 +79,8 @@ WHERE (is_dir(path) AND NOT starts_with(file_name(path), '.') AND file_name(path
 
 INSERT INTO node_map BY NAME
 WITH frontier AS (SELECT root, path FROM node_map WHERE depth = 6 AND is_dir_flag),
-fired AS (SELECT root, http_post_form('http://127.0.0.1:19503/q', MAP{},
-                        MAP{'q': format('SELECT path FROM ls({}{}{})', chr(39), path, chr(39))}) AS r FROM frontier),
+fired AS (SELECT root, http_post('http://127.0.0.1:19503/q', MAP{'Content-Type':'application/json'},
+                        json_object('q', format('SELECT path FROM ls({}{}{})', chr(39), path, chr(39))) AS r FROM frontier),
 nodes AS (SELECT root, row.path AS path FROM fired, unnest(from_json((r.body ->> '$'), '[{"path":"VARCHAR"}]')) AS s(row) WHERE r.status = 200)
 SELECT root, path, 7 AS depth, is_dir(path) AS is_dir_flag FROM nodes
 WHERE (is_dir(path) AND NOT starts_with(file_name(path), '.') AND file_name(path) NOT IN (SELECT name FROM policy_skip_dirs))
@@ -88,8 +88,8 @@ WHERE (is_dir(path) AND NOT starts_with(file_name(path), '.') AND file_name(path
 
 INSERT INTO node_map BY NAME
 WITH frontier AS (SELECT root, path FROM node_map WHERE depth = 7 AND is_dir_flag),
-fired AS (SELECT root, http_post_form('http://127.0.0.1:19503/q', MAP{},
-                        MAP{'q': format('SELECT path FROM ls({}{}{})', chr(39), path, chr(39))}) AS r FROM frontier),
+fired AS (SELECT root, http_post('http://127.0.0.1:19503/q', MAP{'Content-Type':'application/json'},
+                        json_object('q', format('SELECT path FROM ls({}{}{})', chr(39), path, chr(39))) AS r FROM frontier),
 nodes AS (SELECT root, row.path AS path FROM fired, unnest(from_json((r.body ->> '$'), '[{"path":"VARCHAR"}]')) AS s(row) WHERE r.status = 200)
 SELECT root, path, 8 AS depth, is_dir(path) AS is_dir_flag FROM nodes
 WHERE (is_dir(path) AND NOT starts_with(file_name(path), '.') AND file_name(path) NOT IN (SELECT name FROM policy_skip_dirs))
@@ -97,8 +97,8 @@ WHERE (is_dir(path) AND NOT starts_with(file_name(path), '.') AND file_name(path
 
 INSERT INTO node_map BY NAME
 WITH frontier AS (SELECT root, path FROM node_map WHERE depth = 8 AND is_dir_flag),
-fired AS (SELECT root, http_post_form('http://127.0.0.1:19503/q', MAP{},
-                        MAP{'q': format('SELECT path FROM ls({}{}{})', chr(39), path, chr(39))}) AS r FROM frontier),
+fired AS (SELECT root, http_post('http://127.0.0.1:19503/q', MAP{'Content-Type':'application/json'},
+                        json_object('q', format('SELECT path FROM ls({}{}{})', chr(39), path, chr(39))) AS r FROM frontier),
 nodes AS (SELECT root, row.path AS path FROM fired, unnest(from_json((r.body ->> '$'), '[{"path":"VARCHAR"}]')) AS s(row) WHERE r.status = 200)
 SELECT root, path, 9 AS depth, is_dir(path) AS is_dir_flag FROM nodes
 WHERE (is_dir(path) AND NOT starts_with(file_name(path), '.') AND file_name(path) NOT IN (SELECT name FROM policy_skip_dirs))

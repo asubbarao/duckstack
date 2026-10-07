@@ -17,7 +17,7 @@ allowed-tools: Bash, mcp__dev__query_with_limit, mcp__dev__query_no_limit, mcp__
 These tools are the primary agent workspace, not a last-resort database adapter.
 Use `query`/`sql` for SQL, filesystem readers and ShellFS host commands. Use
 `shellfs(command)` for an ordinary Bash program on the selected host; it returns
-raw lines with line numbers/byte offsets, capped at 20, or an error receipt.
+raw lines with line numbers/byte offsets, capped at 3, or an error receipt.
 For structured stdout use native `read_csv`/`read_json` in query/sql. A streaming
 LIMIT is a preview, not proof that every side effect completed. `render(template,
 ctx)` loads a named Tera file and its siblings for includes; returns text without
@@ -42,7 +42,7 @@ Quack, QuackAPI and MCP endpoints.
 
 | door | how | what it runs |
 |---|---|---|
-| `dev` MCP → `query` | tool call | SQL through QuackAPI; final SELECT defaults to 20 rows unless explicitly limited |
+| `dev` MCP → `query` | tool call | SQL through QuackAPI; final SELECT defaults to 3 rows unless explicitly limited |
 | `dev` MCP → `sql` | tool call | complete SQL bodies; same SELECT default, no limit on writes; full HTTP receipt |
 | HTTP `/sql` | `curl -s -X POST localhost:9495/sql --data-urlencode sql@file.sql` | anything, same as `sql`; JSON rows back |
 | `dev` MCP → `stream_search`, `stream_session`, `user_messages` | tool call | the agent stream — `/duckstack:agent-stream` |
@@ -94,7 +94,7 @@ inside query/sql. The underlying reader is duck_tails `git://`, not a shell fetc
 Direct Quack clients and tools outside those routes need their own session setup;
 see the ScalarFS skill. A local export does not change the running server.
 
-- MCP query/sql and the HTTP SQL routes default top-level SELECTs to 20 rows unless explicitly limited.
+- MCP query/sql and the HTTP SQL routes default top-level SELECTs to 3 rows unless explicitly limited.
   LIMIT ALL explicitly opts out. Receipts identify the submitted/executed SQL
   and whether the default applied. self_dispatch does not cap work/receipt rows.
   Large results still consume memory and bandwidth.
