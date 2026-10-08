@@ -7,6 +7,8 @@
 SELECT cron('FROM post_file(' || chr(39) || '/Users/aloksubbarao/duckdb-skills/server/' || file || chr(39) || ')', schedule) AS job
 FROM (SELECT 'live.sql' AS file, '30 * * * * *' AS schedule
       UNION ALL SELECT 'open_prs.sql', '0 7 * * * *'
+      UNION ALL SELECT 'luna_ci.sql', '0 9 * * * *'
+      UNION ALL SELECT 'luna_ci_done.sql', '40 * * * * *'
       UNION ALL SELECT '../readthedocs_catalog.sql', '20 * * * * *');
 .read /Users/aloksubbarao/duckdb-skills/server/agent_stream_schedule.sql
 .read /Users/aloksubbarao/duckdb-skills/server/ext_catalog_schedule.sql
