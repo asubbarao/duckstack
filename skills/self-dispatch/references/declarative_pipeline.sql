@@ -14,7 +14,7 @@
 -- gone from disk and is dropped rather than erroring.
 -- =============================================================================
 LOAD hostfs; LOAD markdown; LOAD yaml; LOAD webbed; LOAD read_lines;
-LOAD http_client; LOAD quackapi;
+LOAD http_client; INSTALL curl_httpfs FROM community; LOAD curl_httpfs; LOAD quackapi;
 
 -- params are a row, not a variable
 CREATE OR REPLACE TEMP TABLE params AS
@@ -43,6 +43,7 @@ SELECT * FROM (VALUES
 
 -- the executor: one route, one handler, any statement; JSON array of typed rows back
 CREATE OR REPLACE ROUTE dispatch POST '/q' AS SELECT rows.* FROM query($q) rows;
+SET memory_limit = '4GiB'; SET threads = 4; SET httpfs_client_implementation = 'curl';
 FROM quackapi_serve(19502, host := '127.0.0.1');
 
 CREATE OR REPLACE TEMP TABLE pipeline AS

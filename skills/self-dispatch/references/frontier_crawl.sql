@@ -11,8 +11,9 @@
 -- route THIS process serves, whose handler is query($q). Rows come back as a JSON
 -- array. No macros, no variables, no external server, no token: the executor is us.
 -- ============================================================================
-LOAD hostfs; LOAD http_client; LOAD quackapi;
+LOAD hostfs; LOAD http_client; INSTALL curl_httpfs FROM community; LOAD curl_httpfs; LOAD quackapi;
 CREATE OR REPLACE ROUTE dispatch POST '/q' AS SELECT rows.* FROM query($q) rows;
+SET memory_limit = '4GiB'; SET threads = 4; SET httpfs_client_implementation = 'curl';
 FROM quackapi_serve(19503, host := '127.0.0.1');
 
 -- SEED (depth 1): the root is DATA — the latest crawls row — and becomes a literal

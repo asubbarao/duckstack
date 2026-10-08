@@ -7,9 +7,11 @@
 SET GLOBAL extension_directory = getenv('HOME') || '/.duck/extensions';
 INSTALL quack; LOAD quack; INSTALL postgres; LOAD postgres; LOAD json; LOAD icu;
 INSTALL quackapi FROM community; LOAD quackapi; INSTALL cronjob FROM community; LOAD cronjob;
+INSTALL curl_httpfs FROM community; LOAD curl_httpfs;
 
 -- A laptop tenant beside dev: bounded memory and cores, spill under ~/.duck/replica, UTC, no silent downloads.
 SET GLOBAL memory_limit = '6GiB'; SET GLOBAL threads = 4; SET GLOBAL TimeZone = 'UTC';
+SET GLOBAL httpfs_client_implementation = 'curl';
 SET GLOBAL temp_directory = getenv('HOME') || '/.duck/replica/tmp'; SET GLOBAL max_temp_directory_size = '20GiB';
 SET GLOBAL autoinstall_known_extensions = false;
 
@@ -42,4 +44,3 @@ FROM (SELECT 'pull.sql' AS file, '*/10 * * * * *' AS schedule UNION ALL SELECT '
 
 -- After this no connection can SET/PRAGMA/RESET; ATTACH, CREATE and HTTP still work.
 SET GLOBAL lock_configuration = true;
-

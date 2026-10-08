@@ -25,6 +25,7 @@ INSTALL shellfs FROM community; LOAD shellfs;
 INSTALL read_lines FROM community; LOAD read_lines;   -- read_lines() is this extension, not core
 INSTALL quackapi FROM community; LOAD quackapi;
 INSTALL http_client FROM community; LOAD http_client;
+INSTALL curl_httpfs FROM community; LOAD curl_httpfs;
 INSTALL parser_tools FROM community; LOAD parser_tools;
 INSTALL duckdb_mcp FROM community; LOAD duckdb_mcp;
 
@@ -72,12 +73,11 @@ $routes$, '@QUACK_URI', getvariable('quack_uri')),
   token := getenv('QUACK_TOKEN'));
 
 -- quackapi_serve(port, health_routes, static_dir, keep_alive_timeout_sec, host, cors_origins,
---   http_client, memory_limit, log_level, enable_logging, enable_http_metadata_cache, access_log,
---   read_timeout_sec, threads, preserve_insertion_order, query_timeout_ms, worker_threads,
+--   enable_http_metadata_cache, access_log, read_timeout_sec, query_timeout_ms, worker_threads,
 --   compression, compression_min_bytes, pg_dsn, write_timeout_sec, block, max_response_bytes,
---   keep_alive_max_count, max_pending_requests). Defaults it prints at start: enable_logging=false,
---   access_log=true, worker_threads=32, read/write timeouts 30 s, 8 MiB body cap,
---   preserve_insertion_order=false (process-wide). host '127.0.0.1': local only.
+--   keep_alive_max_count, max_pending_requests). Defaults it prints at start: access_log=true,
+--   worker_threads=32, read/write timeouts 30 s, 8 MiB body cap. host '127.0.0.1': local only.
+SET memory_limit = '4GiB'; SET threads = 4; SET httpfs_client_implementation = 'curl';
 CREATE OR REPLACE TABLE _quackapi_serve AS
 SELECT now() AS started_at, * FROM quackapi_serve(getvariable('quackapi_port'), host := '127.0.0.1');
 
