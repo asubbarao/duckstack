@@ -1,4 +1,5 @@
 -- Joinable upstream documentation, separate from the README/community catalog.
+-- Bootstrap attaches lake and prepares lake.agents plus the read-only agents.* compatibility views.
 -- Run on the selected service. Raw receipts are retained; fetch at most 3 due pages/run.
 -- Re-run to follow discovered same-site links. Fragments are indexed, never fetched separately.
 -- No recursive crawler: http_client fetches known URLs; webbed discovers HTML navigation;
@@ -7,20 +8,21 @@ INSTALL http_client FROM community; LOAD http_client;
 INSTALL webbed FROM community; LOAD webbed;
 INSTALL markdown FROM community; LOAD markdown;
 CREATE SCHEMA IF NOT EXISTS agents;
-CREATE TABLE IF NOT EXISTS agents.ext_doc_source (
-    extension_name VARCHAR, doc_url VARCHAR, PRIMARY KEY(extension_name, doc_url)
+CREATE TABLE IF NOT EXISTS lake.agents.ext_doc_source (
+    extension_name VARCHAR, doc_url VARCHAR
 );
-INSERT OR REPLACE INTO agents.ext_doc_source BY NAME
+MERGE INTO lake.agents.ext_doc_source AS target
+USING (
 SELECT 'duck_hunt' AS extension_name, 'https://duck-hunt.readthedocs.io/en/latest/' AS doc_url
 UNION ALL SELECT 'duck_tails', 'https://duck-tails.readthedocs.io/en/latest/'
-UNION ALL SELECT 'sitting_duck', 'https://sitting-duck.readthedocs.io/en/latest/';
-CREATE TABLE IF NOT EXISTS agents.ext_doc_fetch (
-    url VARCHAR, representation VARCHAR, fetched_at TIMESTAMPTZ, response JSON,
-    PRIMARY KEY(url, representation)
+UNION ALL SELECT 'sitting_duck', 'https://sitting-duck.readthedocs.io/en/latest/'
+) AS incoming ON target.extension_name = incoming.extension_name AND target.doc_url = incoming.doc_url
+WHEN NOT MATCHED THEN INSERT BY NAME;
+CREATE TABLE IF NOT EXISTS lake.agents.ext_doc_fetch (
+    url VARCHAR, representation VARCHAR, fetched_at TIMESTAMPTZ, response JSON
 );
-CREATE TABLE IF NOT EXISTS agents.ext_doc_page (
-    url VARCHAR, representation VARCHAR, fetched_at TIMESTAMPTZ, response JSON,
-    PRIMARY KEY(url, representation)
+CREATE TABLE IF NOT EXISTS lake.agents.ext_doc_page (
+    url VARCHAR, representation VARCHAR, fetched_at TIMESTAMPTZ, response JSON
 );
 CREATE OR REPLACE VIEW agents.ext_doc_links AS
 WITH links AS (
@@ -50,13 +52,25 @@ ANTI JOIN (FROM agents.ext_doc_page WHERE fetched_at > now() - INTERVAL 3 DAY) p
 USING (url, representation)
 ANTI JOIN (FROM agents.ext_doc_fetch WHERE fetched_at > now() - INTERVAL 5 MINUTE) f
 USING (url, representation);
-INSERT OR REPLACE INTO agents.ext_doc_fetch BY NAME
+MERGE INTO lake.agents.ext_doc_fetch AS target
+USING (
 SELECT url, representation, now() AS fetched_at,
        http_get(url, MAP {'Accept': 'text/' || representation}, MAP {'timeout':'10'}) AS response
 FROM (FROM agents.ext_doc_due
-      ORDER BY url IN (SELECT doc_url FROM agents.ext_doc_source) DESC, url, representation LIMIT 3);
-INSERT OR REPLACE INTO agents.ext_doc_page BY NAME
-SELECT * FROM agents.ext_doc_fetch WHERE try_cast(response->>'status' AS INTEGER) = 200;
+      ORDER BY url IN (SELECT doc_url FROM agents.ext_doc_source) DESC, url, representation LIMIT 3)
+) AS incoming ON target.url = incoming.url AND target.representation = incoming.representation
+WHEN MATCHED AND (target.fetched_at, target.response)
+    IS DISTINCT FROM (incoming.fetched_at, incoming.response) THEN
+    UPDATE SET fetched_at = incoming.fetched_at, response = incoming.response
+WHEN NOT MATCHED THEN INSERT BY NAME;
+MERGE INTO lake.agents.ext_doc_page AS target
+USING (
+SELECT * FROM agents.ext_doc_fetch WHERE try_cast(response->>'status' AS INTEGER) = 200
+) AS incoming ON target.url = incoming.url AND target.representation = incoming.representation
+WHEN MATCHED AND (target.fetched_at, target.response)
+    IS DISTINCT FROM (incoming.fetched_at, incoming.response) THEN
+    UPDATE SET fetched_at = incoming.fetched_at, response = incoming.response
+WHEN NOT MATCHED THEN INSERT BY NAME;
 CREATE OR REPLACE VIEW agents.ext_doc_errors AS
 FROM agents.ext_doc_fetch WHERE try_cast(response->>'status' AS INTEGER) IS DISTINCT FROM 200;
 CREATE OR REPLACE VIEW agents.ext_doc_content AS
