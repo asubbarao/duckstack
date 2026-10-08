@@ -2,7 +2,7 @@
 --   claude mcp add duckstack -- uvx --from duckdb-cli==1.5.5 duckdb -bail -c ".read server/portable/mcp.sql"
 -- stdout is the protocol channel, so the CLI's own result tables go to /dev/null; the server writes past it.
 .output /dev/null
-SET VARIABLE server_dir = coalesce(nullif(getenv('SERVER_DIR'), ''), '/Users/aloksubbarao/duckdb-skills');
+SET VARIABLE server_dir = coalesce(nullif(getenv('SERVER_DIR'), ''), '.');
 CREATE OR REPLACE TEMPORARY TABLE _portable_boot_files AS
 SELECT 1 AS ordinal, 'server/portable/setup.sql' AS relative_path;
 SET VARIABLE portable_boot_program = (

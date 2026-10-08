@@ -54,10 +54,10 @@ SELECT 'routes ok' AS routes
 $routes$, '@QUACK_URI', getvariable('quack_uri')), '@OTLP_DIR', getvariable('otlp_dir')),
   token := getenv('QUACK_TOKEN'));
 -- Agent inbox: POST /inbox with any JSON body; luna_ci_done.sql posts completion receipts here.
-FROM read_text('mkdir -p /Users/aloksubbarao/.duck/raw/inbox && touch /Users/aloksubbarao/.duck/raw/inbox/inbox.ndjson |');
+FROM read_text('mkdir -p ' || getenv('HOME') || '/.duck/raw/inbox && touch ' || getenv('HOME') || '/.duck/raw/inbox/inbox.ndjson |');
 CREATE OR REPLACE VIEW agent_inbox AS
 SELECT received_at, source, kind, payload, filename
-FROM read_json('/Users/aloksubbarao/.duck/raw/inbox/inbox.ndjson', format = 'newline_delimited', filename = true,
+FROM read_json(getenv('HOME') || '/.duck/raw/inbox/inbox.ndjson', format = 'newline_delimited', filename = true,
                columns = {received_at: 'TIMESTAMPTZ', source: 'VARCHAR', kind: 'VARCHAR', payload: 'JSON'});
 CREATE OR REPLACE TABLE _quackapi_serve AS
 SELECT now() AS started_at, * FROM quackapi_serve(getvariable('quackapi_port'), host := '127.0.0.1');
