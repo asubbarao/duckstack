@@ -2,11 +2,13 @@
 -- leading request comment carries no_limit=true (query_no_limit sets it, so its "no cap" is true).
 -- Only the MCP-generated leading request comment is retained as transport provenance.
 INSTALL quackapi FROM community; LOAD quackapi;
+INSTALL read_lines FROM community; LOAD read_lines;
 -- Opt-in incubator SQL executor and typed browser-capture handoff.
 .read /Users/aloksubbarao/incubator/relational-acquisition/sql/routes.sql
 .read /Users/aloksubbarao/incubator/relational-acquisition/tests/routes.sql
 -- Luna CI-fix webhook: POST /luna/ci-fix {repo, number[, source, jobs, task]}; handler in luna_ci/handler.sql.
 .read /Users/aloksubbarao/duckdb-skills/server/routes/luna_ci.sql
+.read /Users/aloksubbarao/duckdb-skills/server/routes/skills_check.sql
 CREATE SCHEMA IF NOT EXISTS agents;
 CREATE OR REPLACE VIEW agents.path_aliases AS
 SELECT 'asubbarao.github' AS alias, 'ASUBBARAO_GITHUB_ROOT' AS environment_variable,

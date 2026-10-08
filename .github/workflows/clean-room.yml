@@ -1,0 +1,43 @@
+name: Clean-room skill recipes
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/clean-room.yml'
+      - 'skills/**'
+  push:
+    paths:
+      - '.github/workflows/clean-room.yml'
+      - 'skills/**'
+
+permissions:
+  contents: read
+
+jobs:
+  macos:
+    runs-on: macos-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+      - name: Install stock DuckDB from Homebrew
+        run: brew install duckdb
+      - name: Run clean-room check
+        run: duckdb -c ".read ${GITHUB_WORKSPACE}/skills/clean-room/check.sql"
+
+  ubuntu:
+    runs-on: ubuntu-latest
+    env:
+      DUCKDB_VERSION: 1.5.5
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+      - name: Install DuckDB official CLI release
+        run: |
+          curl --fail --silent --show-error --location \
+            "https://github.com/duckdb/duckdb/releases/download/v${DUCKDB_VERSION}/duckdb_cli-linux-amd64.zip" \
+            --output duckdb.zip
+          unzip -q duckdb.zip
+          chmod +x duckdb
+          echo "$GITHUB_WORKSPACE" >> "$GITHUB_PATH"
+      - name: Run clean-room check
+        run: duckdb -c ".read ${GITHUB_WORKSPACE}/skills/clean-room/check.sql"
