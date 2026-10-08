@@ -10,7 +10,7 @@
 CREATE OR REPLACE TABLE _reload_startup_files AS
 WITH
     level0(path) AS (VALUES (coalesce(nullif(getenv('DUCKSTACK_RELOAD_SETUP'), ''),
-                                      '/Users/aloksubbarao/duckdb-skills/server/setup.sql'))),
+                                      getvariable('server_dir') || '/server/setup.sql'))),
     level1(path) AS (
         SELECT DISTINCT replace(trim(replace(replace(substr(line.content, 7), chr(10), ''), chr(13), '')),
                                 '/Users/aloksubbarao/duckdb-skills/server',
