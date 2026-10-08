@@ -32,8 +32,12 @@ UNION ALL SELECT 5, 3, 'server/duckdb_mcp.sql'
 UNION ALL SELECT 6, 1, 'server/observability.sql'
 UNION ALL SELECT 6, 2, 'server/query_history.sql'
 UNION ALL SELECT 6, 3, 'server/server_diagnostics.sql'
+-- CI verifies the boot graph without hydrating optional external catalogs; those crawls remain part
+-- of normal development startup and are scheduled separately after the instance is healthy.
 UNION ALL SELECT 6, 4, 'server/ext_catalog.sql'
+    WHERE nullif(getenv('DUCKSTACK_CI'), '') IS DISTINCT FROM '1'
 UNION ALL SELECT 6, 5, 'readthedocs_catalog.sql'
+    WHERE nullif(getenv('DUCKSTACK_CI'), '') IS DISTINCT FROM '1'
 UNION ALL SELECT 6, 6, 'server/open_prs.sql'
 UNION ALL SELECT 6, 7, 'server/agent_stream_schedule.sql'
 UNION ALL SELECT 6, 8, 'server/ext_catalog_schedule.sql'
