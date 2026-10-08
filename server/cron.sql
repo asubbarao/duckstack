@@ -124,6 +124,6 @@ $watcher$, '*/30 * * * * *') AS reload_watcher_job;
 SELECT cron('FROM post_file(' || chr(39) || getvariable('server_dir') || '/server/' || file || chr(39) || ')', schedule) AS job
 FROM (SELECT 'live.sql' AS file, '30 * * * * *' AS schedule
       UNION ALL SELECT 'open_prs.sql', '0 7 * * * *'
-      UNION ALL SELECT 'luna_ci.sql', '0 9 * * * *'
-      UNION ALL SELECT 'luna_ci_done.sql', '40 * * * * *'
       UNION ALL SELECT '../readthedocs_catalog.sql', '20 * * * * *');
+-- One Luna an hour, after open_prs.sql: its whole prompt is the query; it reads its row from agents.work (luna.sql).
+SELECT cron($$SELECT content FROM read_text('/Users/aloksubbarao/.local/bin/codex exec -s danger-full-access -c approval_policy="never" -m gpt-5.6-luna -c model_reasoning_effort="high" --color never "SELECT * FROM agents.work LIMIT 1" </dev/null >/dev/null 2>&1 & |')$$, '0 9 * * * *') AS luna_job;

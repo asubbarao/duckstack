@@ -24,7 +24,7 @@ SELECT 1 AS phase, 1 AS ordinal, 'server/api_secrets.sql' AS relative_path
 UNION ALL SELECT 2, 1, 'server/live.sql'
 UNION ALL SELECT 3, 1, 'server/server_instance.sql'
 UNION ALL SELECT 4, 1, 'server/quackapi.sql'
-UNION ALL SELECT 4, 2, 'server/routes/luna_ci.sql'
+UNION ALL SELECT 4, 2, 'server/luna.sql'
 UNION ALL SELECT 4, 3, 'server/telemetry.sql'
 UNION ALL SELECT 5, 1, 'server/agent_base.sql'
 UNION ALL SELECT 5, 2, 'server/agent_stream_tools.sql'
