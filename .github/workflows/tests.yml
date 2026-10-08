@@ -17,9 +17,34 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
       - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: false
+      - name: Reject shell and Python wrappers in the data path
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          forbidden_paths=()
+          while IFS= read -r path; do
+            case "$path" in
+              lib/*|tests/*)
+                ;;
+              server/*.sh|server/*.py|skills/*.sh|skills/*.py)
+                forbidden_paths+=("$path")
+                ;;
+            esac
+          done < <(git diff --name-only --diff-filter=ACMRT "$BASE_SHA" "$HEAD_SHA")
+
+          if [ "${#forbidden_paths[@]}" -gt 0 ]; then
+            echo "shell/python wrappers are not allowed in the data path; express it as SQL or a route."
+            printf ' - %s\n' "${forbidden_paths[@]}"
+            exit 1
+          fi
       - name: Run the full test suite
         run: >-
           uv run --no-project --with pytest --with mcp --with duckdb-cli==1.5.5
