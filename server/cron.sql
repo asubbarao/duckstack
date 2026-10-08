@@ -124,7 +124,7 @@ $watcher$, '*/30 * * * * *') AS reload_watcher_job;
 .read /Users/aloksubbarao/duckdb-skills/server/ext_catalog.sql
 .read /Users/aloksubbarao/duckdb-skills/readthedocs_catalog.sql
 .read /Users/aloksubbarao/duckdb-skills/server/open_prs.sql
-SELECT cron('FROM post_file(' || chr(39) || '/Users/aloksubbarao/duckdb-skills/server/' || file || chr(39) || ')', schedule) AS job
+SELECT cron('FROM post_file(' || chr(39) || getvariable('server_dir') || '/server/' || file || chr(39) || ')', schedule) AS job
 FROM (SELECT 'live.sql' AS file, '30 * * * * *' AS schedule
       UNION ALL SELECT 'open_prs.sql', '0 7 * * * *'
       UNION ALL SELECT 'luna_ci.sql', '0 9 * * * *'
