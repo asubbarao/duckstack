@@ -2,6 +2,7 @@ import os
 import subprocess
 import sys
 from dataclasses import replace
+from pathlib import Path
 from uuid import uuid4
 
 import duckdb
@@ -118,6 +119,89 @@ def test_connection_and_schema_validation(database):
         execute_operator(replace(daily(database), dialect="postgres"), "today")
     with pytest.raises(ValueError, match="requires a partition"):
         compile_operator(replace(daily(database), sql="SELECT '<DATEID>' AS id"))
+
+
+def test_catalog_keys_and_sql_preserve_existing_callers(database):
+    op = daily(database)
+    assert op.key == ("main", "daily")
+    assert PostgresCreateTableWithSchemaOperator(
+        create="daily", schema=op.schema, sql=op.sql
+    ).key == ("public", "daily")
+    qualified = replace(op, catalog='lake"quoted', namespace="analytics")
+    assert qualified.key == ('lake"quoted', "analytics", "daily")
+    sql = compile_operator(qualified, "today")
+    assert 'CREATE SCHEMA IF NOT EXISTS "lake""quoted"."analytics"' in sql
+    assert 'DELETE FROM "lake""quoted"."analytics"."daily"' in sql
+    assert 'INSERT INTO "lake""quoted"."analytics"."daily"' in sql
+    assert "CREATE TEMP TABLE" in sql
+    with pytest.raises(ValueError, match="catalog targets require"):
+        compile_operator(replace(qualified, dialect="postgres"), "today")
+    with pytest.raises(ValueError, match="identifier"):
+        compile_operator(replace(op, catalog=""), "today")
+
+
+@pytest.fixture
+def lake_database(database, tmp_path):
+    # Both metadata and Parquet files belong to this test's disposable directory.
+    database.execute("INSTALL ducklake; LOAD ducklake")
+    for catalog in ("lake_a", "lake_b"):
+        metadata = str(tmp_path / f"{catalog}.ducklake").replace("'", "''")
+        data = str(tmp_path / f"{catalog}_data").replace("'", "''")
+        database.execute(
+            f"ATTACH 'ducklake:{metadata}' AS {catalog} "
+            f"(DATA_PATH '{data}', DATA_INLINING_ROW_LIMIT 0)"
+        )
+    yield database
+
+
+def test_ducklake_checked_partition_publication_and_history(lake_database, tmp_path):
+    database = lake_database
+    op = replace(daily(database), catalog="lake_a", namespace="analytics").DQCheck(
+        type=col.NOTNULL, column="id"
+    )
+    execute_operator(op, "first")
+    version = database.execute("SELECT snapshot_id FROM lake_a.snapshots()")[-1][0]
+    execute_operator(op, "second")
+    execute_operator(replace(op, sql="SELECT '2' AS id, '99' AS amount"), "second")
+    expected = [("first", 1, 10), ("second", 2, 99)]
+    assert database.execute("SELECT * FROM lake_a.analytics.daily ORDER BY ds") == expected
+    assert database.execute(
+        f"SELECT * FROM lake_a.analytics.daily AT (VERSION => {version})"
+    ) == [("first", 1, 10)]
+    before_failure = database.execute("SELECT snapshot_id FROM lake_a.snapshots()")
+    for source, message in [
+        ("SELECT NULL::INTEGER AS id, 9 AS amount", "id_not_null"),
+        ("SELECT 1 AS id, 'bad' AS amount", "Could not convert"),
+    ]:
+        with pytest.raises(duckdb.Error, match=message):
+            execute_operator(replace(op, sql=source), "second")
+        assert database.execute("SELECT * FROM lake_a.analytics.daily ORDER BY ds") == expected
+        assert database.execute("SELECT snapshot_id FROM lake_a.snapshots()") == before_failure
+    execute_operator(replace(op, sql="SELECT 1 AS id, 10 AS amount WHERE false"), "second")
+    assert database.execute("SELECT * FROM lake_a.analytics.daily") == [("first", 1, 10)]
+    assert database.execute(
+        f"SELECT * FROM lake_a.analytics.daily AT (VERSION => {version})"
+    ) == [("first", 1, 10)]
+    assert list(Path(tmp_path / "lake_a_data").rglob("*.parquet"))
+    assert database.execute(
+        "SELECT table_catalog, table_schema, table_name FROM information_schema.tables "
+        "WHERE table_catalog IN (current_database(), 'temp')"
+    ) == []
+    assert database.execute(
+        "SELECT schema_name FROM information_schema.schemata "
+        "WHERE catalog_name = current_database() AND schema_name = 'analytics'"
+    ) == []
+
+
+def test_identical_tables_in_multiple_lake_catalogs(lake_database):
+    database = lake_database
+    first = replace(daily(database), catalog="lake_a", namespace="analytics")
+    second = replace(first, catalog="lake_b", sql="SELECT 8 AS id, 80 AS amount")
+    assert first.key != second.key
+    execute_operator(first, "today")
+    execute_operator(second, "today")
+    assert database.execute("SELECT * FROM lake_a.analytics.daily") == [("today", 1, 10)]
+    assert database.execute("SELECT * FROM lake_b.analytics.daily") == [("today", 8, 80)]
 
 
 @pytest.mark.skipif(

@@ -51,9 +51,12 @@ class TableOperator:
     partition: dict[str, Any] | None = None
     dialect: Literal["duckdb", "postgres"] = "duckdb"
     checks: tuple[Check, ...] = ()
+    catalog: str | None = None
 
     @property
-    def key(self) -> tuple[str, str]:
+    def key(self) -> tuple[str, ...]:
+        if self.catalog is not None:
+            return self.catalog, self.namespace, self.create
         return self.namespace, self.create
 
     def DQCheck(
@@ -87,8 +90,11 @@ def DuckDBCreateTableWithSchemaOperator(
     database: Executor | None = None,
     deps: tuple[TableOperator, ...] = (),
     partition: dict[str, Any] | None = None,
+    catalog: str | None = None,
 ) -> TableOperator:
-    return TableOperator(create, sql, schema, namespace, database, tuple(deps), partition)
+    return TableOperator(
+        create, sql, schema, namespace, database, tuple(deps), partition, catalog=catalog
+    )
 
 
 def PostgresCreateTableWithSchemaOperator(
@@ -133,7 +139,12 @@ def compile_operator(op: TableOperator, partition_key: str | None = None) -> str
     unknown = set(op.partition or {}) - set(op.schema)
     if unknown:
         raise ValueError(f"Partition columns missing from schema: {sorted(unknown)}")
-    target = f"{identifier(op.namespace)}.{identifier(op.create)}"
+    if op.catalog is not None and op.dialect != "duckdb":
+        raise ValueError("catalog targets require a DuckDB operator")
+    namespace = identifier(op.namespace)
+    if op.catalog is not None:
+        namespace = f"{identifier(op.catalog)}.{namespace}"
+    target = f"{namespace}.{identifier(op.create)}"
     stage = identifier("duckstack_stage_" + uuid4().hex)
     definitions = ", ".join(f"{identifier(k)} {v}" for k, v in op.schema.items())
     columns = ", ".join(identifier(k) for k in op.schema)
@@ -145,7 +156,7 @@ def compile_operator(op: TableOperator, partition_key: str | None = None) -> str
     )
     statements = [
         "BEGIN",
-        f"CREATE SCHEMA IF NOT EXISTS {identifier(op.namespace)}",
+        f"CREATE SCHEMA IF NOT EXISTS {namespace}",
         f"CREATE TEMP TABLE {stage} ({definitions})",
         f"INSERT INTO {stage} ({columns}) SELECT {projection} "
         f"FROM ({_date(op.sql, partition_key)}) AS input",

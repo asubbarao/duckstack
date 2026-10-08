@@ -16,6 +16,15 @@ are inserted into a typed temporary table before publication. Extra query column
 are ignored; declared columns are selected by name, not source position. Database
 casts apply: this is a typed output contract, not an exact input-type equality test.
 
+DuckDB declarations accept an optional `catalog` naming an already attached catalog,
+including DuckLake. With `catalog="lake"` and `namespace="analytics"`, the factory
+creates `"lake"."analytics"` and publishes to `"lake"."analytics"."<create>"`.
+All target writes are qualified; source SQL and the typed temporary candidate keep
+their existing resolution semantics. The caller attaches/configures the lake on
+the executor before execution. The factory does not attach catalogs or choose
+metadata/data paths. PostgreSQL declarations retain schema/table targets and do not
+accept cross-database catalog targeting.
+
 Without `partition`, each execution replaces all rows while retaining the table.
 With `partition`, only matching rows are replaced. Partition columns are declared in
 `schema` and their values are owned by the factory. `"<DATEID>"` receives the complete
@@ -58,7 +67,10 @@ scheduler. The adapter never calls the legacy recursive `run()`.
 
 The adapter's default in-memory DuckDB is for in-process execution. For multiprocess
 Dagster, configure a shared remote database. Each operator's fully qualified
-`(namespace, create)` is its asset key; give outputs unique keys within one graph.
+`(namespace, create)` is its asset key; supplying a DuckDB catalog adds it as the
+first component: `(catalog, namespace, create)`. Dependency and check keys use the
+same identity, so identically named tables in distinct catalogs remain distinct.
+Give outputs unique keys within one graph.
 The first version supports a single partition key passed intact. Mapping multiple
 partition dimensions into independent SQL columns is not yet provided.
 
@@ -82,7 +94,10 @@ not execute its schema resets, copy its full domain model or connect to its data
 Tests exercise changed/empty partition reruns, typed staging, name-based writes,
 NOT NULL and duplicate violations preserving old data, quotation, optional imports,
 actual Dagster checks/materialization/downstream blocking/retries/cycle validation,
-and complete hourly keys. PostgreSQL execution runs only when
+and complete hourly keys. Isolated temporary DuckLake catalogs exercise typed
+checks, partition overwrite, empty success, failed-check rollback, historical
+version reads, and qualified writes without default-database publication.
+PostgreSQL execution runs only when
 `DUCKSTACK_TEST_POSTGRES_DSN` identifies a disposable test database. CI provisions
 that database separately. Remote probes must use isolated names on the selected
 existing service; no new server is required.

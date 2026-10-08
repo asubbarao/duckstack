@@ -31,6 +31,18 @@ def test_generated_assets_checks_and_default_connection():
     assert len(result.get_asset_materialization_events()) == 2
 
 
+def test_catalog_asset_keys_dependencies_and_checks():
+    legacy = example()
+    first = replace(legacy, catalog="lake_a")
+    second = replace(legacy, catalog="lake_b", deps=(first,))
+    generated = assets([legacy, first, second])
+    keys = [dg.AssetKey(list(op.key)) for op in (legacy, first, second)]
+    assert [asset.key for asset in generated] == keys
+    assert generated[2].asset_deps[keys[2]] == {keys[1]}
+    assert [next(iter(asset.check_specs)).asset_key for asset in generated] == keys
+    dg.Definitions.validate_loadable(definitions([legacy, first, second]))
+
+
 def test_failed_check_blocks_downstream_without_publication():
     database = ConnectToDatabase()
     up = replace(example(database), sql="SELECT NULL::INTEGER AS id")
