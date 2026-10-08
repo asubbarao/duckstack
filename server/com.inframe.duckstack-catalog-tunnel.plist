@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.inframe.duckstack-catalog-tunnel</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/aws</string>
+    <string>ssm</string>
+    <string>start-session</string>
+    <string>--target</string>
+    <string>i-0014a50b64d066a61</string>
+    <string>--document-name</string>
+    <string>AWS-StartPortForwardingSessionToRemoteHost</string>
+    <string>--parameters</string>
+    <string>{"host":["inframe-staging-db.cpiqi0ey4fef.us-west-2.rds.amazonaws.com"],"portNumber":["5432"],"localPortNumber":["15439"]}</string>
+    <string>--region</string>
+    <string>us-west-2</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>AWS_PAGER</key>
+    <string></string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>60</integer>
+</dict>
+</plist>
