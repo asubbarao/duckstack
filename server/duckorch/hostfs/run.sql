@@ -5,8 +5,11 @@
 LOAD duckorch;
 LOAD hostfs;
 LOAD http_client;
+INSTALL curl_httpfs FROM community;
+LOAD curl_httpfs;
 LOAD quackapi;
 CREATE OR REPLACE ROUTE dispatch POST '/q' AS SELECT rows.* FROM query($q) rows;
+SET memory_limit = '4GiB'; SET threads = 4; SET httpfs_client_implementation = 'curl';
 FROM quackapi_serve(19504, host := '127.0.0.1');
 PRAGMA orch_init;
 PRAGMA orch_register('/Users/aloksubbarao/duckdb-skills/server/duckorch/hostfs/tasks/');

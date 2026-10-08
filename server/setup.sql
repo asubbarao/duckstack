@@ -30,7 +30,8 @@ SET GLOBAL memory_limit = '8GB'; SET GLOBAL threads = 10; SET GLOBAL scheduler_p
 SET GLOBAL allocator_background_threads = true; SET GLOBAL temp_directory = getenv('HOME') || '/.duck/tmp';
 SET GLOBAL max_temp_directory_size = '50GiB'; SET GLOBAL TimeZone = 'UTC'; SET GLOBAL checkpoint_threshold = '128MiB';
 SET GLOBAL http_timeout = 120; SET GLOBAL http_retries = 5; SET GLOBAL http_retry_wait_ms = 500;
-SET GLOBAL httpfs_connection_caching = true; SET enable_progress_bar = false; PRAGMA enable_checkpoint_on_shutdown;
+SET GLOBAL httpfs_connection_caching = true; SET GLOBAL httpfs_client_implementation = 'curl';
+SET enable_progress_bar = false; PRAGMA enable_checkpoint_on_shutdown;
 -- No query may trigger a silent download; profiling stays settable after the lock; no Hugging Face reads.
 SET GLOBAL autoinstall_known_extensions = false; SET GLOBAL allowed_configs = ['enable_profiling', 'profiling_coverage'];
 SET GLOBAL disabled_filesystems = 'HuggingFaceFileSystem';

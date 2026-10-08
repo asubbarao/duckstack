@@ -47,6 +47,8 @@ SELECT cron($$INSERT INTO agent.stream BY NAME ...$$, '0 */5 * * * *');
 -- 4. serve: one route that runs anything, looping back through quack
 FROM quack_serve('quack:localhost:' || getenv('PORT'), token := getenv('QUACK_TOKEN'));
 CREATE OR REPLACE ROUTE sql POST '/sql' AS SELECT * FROM quack_query('quack:localhost:...', $sql, token := getenv('QUACK_TOKEN'));
+INSTALL curl_httpfs FROM community; LOAD curl_httpfs;
+SET memory_limit = '4GiB'; SET threads = 4; SET httpfs_client_implementation = 'curl';
 FROM quackapi_serve(getenv('API_PORT')::INTEGER, host := '127.0.0.1');
 ```
 

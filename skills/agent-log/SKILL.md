@@ -203,6 +203,8 @@ hand-wrote `99` for `SELECT 6 * 7` was caught.
 
 ```sql
 CREATE OR REPLACE ROUTE run POST '/run' AS SELECT rows.* FROM query($q) rows;
+INSTALL curl_httpfs FROM community; LOAD curl_httpfs;
+SET memory_limit = '4GiB'; SET threads = 4; SET httpfs_client_implementation = 'curl';
 SELECT listen_url FROM quackapi_serve(19584, host := '127.0.0.1');
 -- array_agg(http_post(..., MAP{'Content-Type':'application/json'}, json_object('sql', ...))) is the barrier; compare the answer to the stored result
 SELECT status FROM quackapi_stop(19584);

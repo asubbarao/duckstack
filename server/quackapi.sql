@@ -62,5 +62,6 @@ CREATE OR REPLACE VIEW agent_inbox AS
 SELECT received_at, source, kind, payload, filename
 FROM read_json('/Users/aloksubbarao/.duck/raw/inbox/inbox.ndjson', format = 'newline_delimited', filename = true,
                columns = {received_at: 'TIMESTAMPTZ', source: 'VARCHAR', kind: 'VARCHAR', payload: 'JSON'});
+-- setup.sql applies the process settings before this call; do not pass the removed settings bundle parameters.
 CREATE OR REPLACE TABLE _quackapi_serve AS
 SELECT now() AS started_at, * FROM quackapi_serve(getvariable('quackapi_port'), host := '127.0.0.1');

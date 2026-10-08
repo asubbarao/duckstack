@@ -168,8 +168,10 @@ uvx --from duckdb duckdb -c ".read page.sql" && open page.html
 ```bash
 uvx --from duckdb duckdb -c ".read page.sql" \
   -c "INSTALL quackapi FROM community; LOAD quackapi" \
+  -c "INSTALL curl_httpfs FROM community; LOAD curl_httpfs" \
   -c "CREATE OR REPLACE ROUTE page GET '/' AS FROM page_html" \
   -c "CREATE OR REPLACE ROUTE section GET '/section/:id' AS SELECT css_select(html, '#' || \$id, 'html') AS html FROM page_html" \
+  -c "SET memory_limit='4GiB'; SET threads=4; SET httpfs_client_implementation='curl'" \
   -c "FROM quackapi_serve(8766, host := '127.0.0.1', query_timeout_ms := 120000, block := true)"
 # open http://127.0.0.1:8766/   (GET /health answers once it is up)
 # stop: Ctrl-C, or  kill $(lsof -ti tcp:8766 -sTCP:LISTEN)
