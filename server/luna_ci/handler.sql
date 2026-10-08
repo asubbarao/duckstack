@@ -81,7 +81,10 @@ FROM (
   FROM j LEFT JOIN running USING (rid) LEFT JOIN busy USING (repo, number) LEFT JOIN seen USING (repo, number, head_sha)
 ) AS d
 WHERE luna_ci_requests.rid = d.rid;
--- tera renders the brief and the run script (worktree prep + the codex command) from the request row.
+-- Render one SQL launch body per dispatch row.  The body creates its run
+-- directory, writes the brief with DuckDB COPY, and forks Codex detached.
+-- Inputs are data: effort and sandbox are allow-listed before they reach the
+-- shell, and all paths/brief text are quoted as SQL and POSIX literals.
 INSERT INTO luna_ci_dispatch BY NAME
 WITH r AS (
   SELECT rid, source, repo, number, head_sha, jobs, body ->> 'task' AS task,
@@ -105,29 +108,68 @@ WITH r AS (
 ), rendered AS (
   SELECT *,
     tera_render('brief.tera', context, autoescape := false, template_path := '__SERVER_DIR__/server/luna_ci/*.tera') AS brief,
-    tera_render('run.tera', context, autoescape := false, template_path := '__SERVER_DIR__/server/luna_ci/*.tera') AS run_script
+    '' AS run_script
   FROM ctx
 )
 SELECT rid, source, repo, number, head_owner, head_branch, head_sha, jobs AS failing_jobs, task, bare, worktree, run_dir,
        out_path, brief, run_script, now() AS started_at
 FROM rendered;
--- One launch.sh per request writes the run folder and starts run.sh in its own session (fork + setsid): launchd kills
--- the server's process group on every restart, nohup included. It prints "<run_dir> <pid>".
-COPY (SELECT tera_render('launch.tera',
-          json_object('runs', coalesce(list({run_dir: run_dir, brief: brief, run_script: run_script,
-                                             brief_eof: 'LUNA_BRIEF_' || md5(brief), run_eof: 'LUNA_RUN_' || md5(run_script)}),
-                                       [])),
-          autoescape := false, template_path := '__SERVER_DIR__/server/luna_ci/*.tera') AS script
-      FROM luna_ci_dispatch WHERE rid = '@RID')
-TO '/Users/aloksubbarao/.duck/raw/luna_ci/@RID/launch.sh' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '');
+-- Self-dispatch exactly one complete SQL body for each input row.  A JSON POST
+-- keeps the SQL body intact beyond cpp-httplib's form-body limit.
 INSERT INTO luna_ci_receipts BY NAME
-SELECT '@RID' AS rid, 'launch' AS step, now() AS recorded_at, content FROM read_text('bash /Users/aloksubbarao/.duck/raw/luna_ci/@RID/launch.sh 2>&1 |');
+WITH launch_rows AS (
+  SELECT d.rid, d.run_dir, d.worktree AS cwd, d.bare, d.brief,
+         CASE WHEN r.body ->> 'effort' IN ('low', 'medium', 'high')
+              THEN r.body ->> 'effort' ELSE 'high' END AS effort,
+         CASE WHEN r.body ->> 'sandbox' IN ('read-only', 'workspace-write', 'danger-full-access')
+              THEN r.body ->> 'sandbox' ELSE 'workspace-write' END AS sandbox
+  FROM luna_ci_dispatch d
+  JOIN luna_ci_requests r USING (rid)
+  WHERE d.rid = '@RID'
+), quoted AS (
+  SELECT *,
+         chr(39) || replace(brief, chr(39), chr(39) || chr(39)) || chr(39) AS brief_literal,
+         chr(39) || replace(run_dir || '/brief.md', chr(39), chr(39) || chr(39)) || chr(39) AS brief_path_literal,
+         chr(39) || replace('mkdir -p ' || run_dir, chr(39), chr(39) || chr(39)) || chr(39) AS mkdir_sql,
+         chr(39) || replace(
+             'perl -MPOSIX -e ' || chr(39) ||
+             'my $pid = fork(); die "fork: $!" unless defined $pid; if ($pid) { print $pid; exit 0 } POSIX::setsid(); exec @ARGV or die "exec: $!";' || chr(39) ||
+             ' sh -c ' || chr(39) ||
+             'echo $$ > ' || chr(39) || run_dir || '/pid' || chr(39) || '; ' ||
+             '/Users/aloksubbarao/.local/bin/codex exec -C ' || chr(39) || cwd || chr(39) ||
+             ' --add-dir ' || chr(39) || bare || chr(39) ||
+             ' -s ' || chr(39) || sandbox || chr(39) ||
+             ' -c sandbox_workspace_write.network_access=true -m gpt-5.6-luna' ||
+             ' -c model_reasoning_effort=' || chr(39) || effort || chr(39) ||
+             ' --color never --json -o ' || chr(39) || run_dir || '/out.md' || chr(39) ||
+             ' - < ' || chr(39) || run_dir || '/brief.md' || chr(39) ||
+             ' > ' || chr(39) || run_dir || '/events.jsonl' || chr(39) ||
+             ' 2> ' || chr(39) || run_dir || '/run.log' || chr(39) ||
+             '; status=$?; echo $status > ' || chr(39) || run_dir || '/exit' || chr(39) || '; exit $status' || chr(39),
+             chr(39), chr(39) || chr(39)) || chr(39) AS launch_sql
+  FROM launch_rows
+), rendered_launch AS (
+  SELECT *, tera_render('run.tera',
+      json_object('mkdir_sql', mkdir_sql, 'brief_literal', brief_literal,
+                  'brief_path_literal', brief_path_literal, 'launch_sql', launch_sql),
+      autoescape := false, template_path := '__SERVER_DIR__/server/luna_ci/*.tera') AS program
+  FROM quoted
+), posted AS (
+  SELECT *, http_post('http://127.0.0.1:9495/sql', MAP {'Content-Type': 'application/json'},
+             json_object('sql', program)) AS receipt
+  FROM rendered_launch
+)
+SELECT rid, 'launch' AS step, now() AS recorded_at,
+       json_object('status', receipt ->> '$.status', 'body', receipt ->> '$.body', 'statement', program)::VARCHAR AS content
+FROM posted;
 UPDATE luna_ci_dispatch SET pid = l.pid
-FROM (SELECT parts[1] AS run_dir, TRY_CAST(parts[2] AS BIGINT) AS pid
-      FROM (SELECT string_split(line, ' ') AS parts
-            FROM luna_ci_receipts CROSS JOIN UNNEST(string_split(content, chr(10))) AS u(line)
-            WHERE rid = '@RID' AND step = 'launch')) AS l
-WHERE luna_ci_dispatch.rid = '@RID' AND luna_ci_dispatch.run_dir = l.run_dir;
+FROM (
+    SELECT rid,
+           TRY_CAST(json_extract_string(json_extract_string(content, '$.body'), '$[0].content') AS BIGINT) AS pid
+    FROM luna_ci_receipts
+    WHERE rid = '@RID' AND step = 'launch'
+) l
+WHERE luna_ci_dispatch.rid = l.rid AND l.pid IS NOT NULL;
 SELECT r.rid, r.received_at, r.source, r.repo, r.number, r.head_sha, r.decision, d.run_dir, d.out_path, d.pid
 FROM luna_ci_requests AS r LEFT JOIN luna_ci_dispatch AS d USING (rid)
 WHERE r.rid = '@RID'

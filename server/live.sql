@@ -6,6 +6,12 @@
 CREATE SCHEMA IF NOT EXISTS agents;
 CREATE SCHEMA IF NOT EXISTS meta;
 
+-- The monitor views self-dispatch literal Duck Tails programs through the
+-- selected SQL door.  Keep the effective endpoint inspectable and overrideable
+-- for a scratch instance without creating any state.
+CREATE OR REPLACE VIEW agents.luna_sql_door AS
+SELECT coalesce(nullif(getenv('DUCKSTACK_SQL_URL'), ''), 'http://127.0.0.1:9495/sql') AS endpoint;
+
 -- post_file(path): post a .sql file's current text to this server's /sql; the receipt is the row. cron.sql uses it.
 -- http_post(url VARCHAR, headers MAP, body JSON [, params MAP]) -> JSON {status, reason, body}; read_text(path|glob)
 CREATE OR REPLACE MACRO post_file(p) AS TABLE
