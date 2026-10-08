@@ -1,5 +1,6 @@
 -- live.sql: idempotent definitions only (CREATE OR REPLACE VIEW / MACRO). setup.sql .reads it at start and a
--- one-minute cron posts its current text to /sql, so an edit here is live within a minute with no restart.
+-- one-minute cron posts its current text to /sql; the startup watcher also restarts for an edit here because
+-- it is part of the startup chain.
 -- Nothing here may serve a port, register a cron or publish an MCP tool; those stay in setup.sql.
 
 CREATE SCHEMA IF NOT EXISTS agents;
