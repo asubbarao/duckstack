@@ -1,0 +1,227 @@
+diff --git a/src/include/jev_client.hpp b/src/include/jev_client.hpp
+index 9a64f48..4cebde8 100644
+--- a/src/include/jev_client.hpp
++++ b/src/include/jev_client.hpp
+@@ -17,10 +17,11 @@ struct JevQuestion {
+ 	//! Levels for "score", options for "choice"; empty for "noul"
+ 	vector<string> options;
+ 
+-	//! Identifies this question for the answer cache. Two calls with the same
+-	//! (kind, query, options) share cached answers, so jev_choice() and
+-	//! jev_confidence() on the same arguments cost one request, not two.
+-	string CacheKey() const;
++	//! Identifies this question for the answer cache. Its cache namespace includes
++	//! the effective endpoint, model, and a SHA-256 API-key fingerprint, so
++	//! process-wide entries cannot cross configurations. Two calls with the same
++	//! configuration and (kind, query, options) still share cached answers.
++	string CacheKey(const JevConfig &config) const;
+ };
+ 
+ //! Judges one batch of rows: one request, one shared state, one question per row.
+diff --git a/src/jev_client.cpp b/src/jev_client.cpp
+index 293858f..ed848a5 100644
+--- a/src/jev_client.cpp
++++ b/src/jev_client.cpp
+@@ -3,6 +3,8 @@
+ #include "jev_json.hpp"
+ #include "jev_state.hpp"
+ 
++#include <openssl/evp.h>
++
+ #define CPPHTTPLIB_OPENSSL_SUPPORT
+ #include "jev_httplib.hpp"
+ #include "json.hpp"
+@@ -18,8 +20,39 @@ namespace http = duckdb_jev_httplib;
+ // ordered_json keeps the answer's key order, so a rubric's "10" does not sort before its "2".
+ using nlohmann::ordered_json;
+ 
+-string JevQuestion::CacheKey() const {
+-	string key = kind + "\x1f" + query;
++//! Cache identities stay in the process-wide cache, so hash configuration values
++//! instead of retaining an API key or URL verbatim.
++static string CacheFingerprint(const string &value) {
++	unsigned char digest[EVP_MAX_MD_SIZE];
++	unsigned int digest_length;
++	if (EVP_Digest(value.data(), value.size(), digest, &digest_length, EVP_sha256(), nullptr) != 1) {
++		throw IOException("jev: could not hash cache namespace");
++	}
++	static constexpr char HEX[] = "0123456789abcdef";
++	string fingerprint;
++	fingerprint.reserve(digest_length * 2);
++	for (idx_t i = 0; i < digest_length; i++) {
++		fingerprint += HEX[digest[i] >> 4];
++		fingerprint += HEX[digest[i] & 0x0f];
++	}
++	return fingerprint;
++}
++
++static string CacheNamespace(const JevConfig &config) {
++	string identity;
++	auto append = [&](const string &value) {
++		identity += to_string(value.size());
++		identity += ':';
++		identity += value;
++	};
++	append(config.api_url);
++	append(config.model);
++	append(config.api_key);
++	return CacheFingerprint(identity);
++}
++
++string JevQuestion::CacheKey(const JevConfig &config) const {
++	string key = CacheNamespace(config) + "\x1f" + kind + "\x1f" + query;
+ 	for (auto &option : options) {
+ 		key += "\x1f";
+ 		key += option;
+diff --git a/src/jev_functions.cpp b/src/jev_functions.cpp
+index 4c1f693..062ccef 100644
+--- a/src/jev_functions.cpp
++++ b/src/jev_functions.cpp
+@@ -102,7 +102,10 @@ struct JevBatch {
+ //! Keyed by content, not by row id: an UPDATE changes the payload and the row is
+ //! judged again, while two identical rows are judged once.
+ static string CacheEntryKey(const string &question_key, const string &row_json) {
+-	return to_string(Hash(question_key.c_str(), question_key.size())) + ":" +
++	auto namespace_end = question_key.find('\x1f');
++	auto question_start = namespace_end + 1;
++	return question_key.substr(0, namespace_end) + ":" +
++	       to_string(Hash(question_key.c_str() + question_start, question_key.size() - question_start)) + ":" +
+ 	       to_string(Hash(row_json.c_str(), row_json.size())) + ":" + to_string(row_json.size());
+ }
+ 
+@@ -339,7 +342,7 @@ static void JevExecute(DataChunk &args, ExpressionState &state, Vector &result)
+ 		level_counts[i] = MaxValue<idx_t>(question.options.size(), 1);
+ 
+ 		auto row_json = JevValueToJSON(row_value);
+-		auto question_key = question.CacheKey();
++		auto question_key = question.CacheKey(data.config);
+ 		auto entry_key = CacheEntryKey(question_key, row_json);
+ 
+ 		string cached;
+diff --git a/test/mock_api.py b/test/mock_api.py
+index 65192df..24cc797 100755
+--- a/test/mock_api.py
++++ b/test/mock_api.py
+@@ -18,7 +18,7 @@ import json
+ import sys
+ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+ 
+-API_KEY = "jev-test-key"
++API_KEYS = {"jev-test-key", "jev-test-key-alternate"}
+ 
+ 
+ class Handler(BaseHTTPRequestHandler):
+@@ -29,7 +29,7 @@ class Handler(BaseHTTPRequestHandler):
+ 
+     def do_POST(self):
+         body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+-        if self.headers.get("Authorization", "") != "Bearer " + API_KEY:
++        if self.headers.get("Authorization", "") not in {"Bearer " + key for key in API_KEYS}:
+             return self._send(401, {"error": "invalid api key"})
+         request = json.loads(body)
+         state, questions = request["state"], request["questions"]
+diff --git a/test/sql/jev_api.test b/test/sql/jev_api.test
+index 6fc928f..43b0908 100644
+--- a/test/sql/jev_api.test
++++ b/test/sql/jev_api.test
+@@ -146,6 +146,80 @@ FROM counters;
+ ----
+ 3
+ 
++# The process-wide cache is scoped to the effective request configuration.
++# Same configuration is a hit; a model, endpoint, or credential change must call the mock again.
++statement ok
++SELECT jev_cache_clear();
++
++statement ok
++CREATE TABLE cache_config_counters AS SELECT 0 AS phase, jev_stats() AS stats;
++
++statement ok
++SET jev_model = 'jev-mock-a';
++
++statement ok
++SELECT jev_prob(people, 'the person writes compilers') FROM people;
++
++statement ok
++INSERT INTO cache_config_counters BY NAME SELECT 1 AS phase, jev_stats() AS stats;
++
++statement ok
++SELECT jev_prob(people, 'the person writes compilers') FROM people;
++
++statement ok
++INSERT INTO cache_config_counters BY NAME SELECT 2 AS phase, jev_stats() AS stats;
++
++statement ok
++SET jev_model = 'jev-mock-b';
++
++statement ok
++SELECT jev_prob(people, 'the person writes compilers') FROM people;
++
++statement ok
++INSERT INTO cache_config_counters BY NAME SELECT 3 AS phase, jev_stats() AS stats;
++
++statement ok
++SET jev_api_url = '${JEV_MOCK_API_URL}?cache-namespace=alternate';
++
++statement ok
++SELECT jev_prob(people, 'the person writes compilers') FROM people;
++
++statement ok
++INSERT INTO cache_config_counters BY NAME SELECT 4 AS phase, jev_stats() AS stats;
++
++statement ok
++SET jev_api_key = 'jev-test-key-alternate';
++
++statement ok
++SELECT jev_prob(people, 'the person writes compilers') FROM people;
++
++statement ok
++INSERT INTO cache_config_counters BY NAME SELECT 5 AS phase, jev_stats() AS stats;
++
++query II
++WITH stats AS (
++    SELECT phase, from_json(stats, '{"rows_evaluated":"BIGINT"}').rows_evaluated AS evaluated
++    FROM cache_config_counters
++), deltas AS (
++    SELECT phase, evaluated - lag(evaluated) OVER (ORDER BY phase) AS fresh_rows
++    FROM stats
++)
++SELECT phase, fresh_rows FROM deltas WHERE phase IN (2, 3, 4, 5) ORDER BY phase;
++----
++2	0
++3	3
++4	3
++5	3
++
++statement ok
++SET jev_api_url = '${JEV_MOCK_API_URL}';
++
++statement ok
++RESET jev_model;
++
++statement ok
++SET jev_api_key = 'jev-test-key';
++
+ # jev_batch_size decides how many rows share a request
+ statement ok
+ SELECT jev_cache_clear();
+@@ -246,11 +320,17 @@ unreachable after
+ statement ok
+ RESET jev_max_retries;
+ 
+-# A wrong key is the endpoint's answer, not a wrong row. The cache has to go first,
+-# or the rows would be answered without anyone checking the key.
++# A wrong key is the endpoint's answer, not a wrong row. Warm these exact rows first,
++# then switch credentials without clearing the cache: the endpoint must still see them.
+ statement ok
+ SELECT jev_cache_clear();
+ 
++statement ok
++SET jev_api_key = 'jev-test-key';
++
++statement ok
++SELECT jev(people, 'the person writes compilers') FROM people;
++
+ statement ok
+ SET jev_api_key = 'not-the-key';
+ 

@@ -42,7 +42,7 @@ macro binds every branch's functions at creation time regardless of which `CASE`
 duckdb -unsigned -csv -c "
 LOAD markdown; LOAD yaml; LOAD webbed; LOAD pdf;
 CREATE OR REPLACE MACRO read_any(file_name) AS TABLE
-  WITH json_case AS (FROM read_json_auto(file_name))
+  WITH json_case AS (FROM read_json(file_name))
      , csv_case AS (FROM read_csv(file_name))
      , parquet_case AS (FROM read_parquet(file_name))
      , avro_case AS (FROM read_avro(file_name))
@@ -87,7 +87,7 @@ CREATE OR REPLACE MACRO read_any(file_name) AS TABLE
      --   layout := 'physical' yields 'PREFIX ALIASES   MON   TUE   WED ...'.
      , pdf_case AS (FROM read_pdf(file_name))
      , ipynb_case AS (
-         WITH nb AS (FROM read_json_auto(file_name))
+         WITH nb AS (FROM read_json(file_name))
          SELECT cell_idx, cell.cell_type,
                 array_to_string(cell.source, '') AS source,
                 cell.execution_count
@@ -119,6 +119,11 @@ SELECT count(*) AS row_count FROM read_any('RESOLVED_PATH');
 FROM read_any('RESOLVED_PATH') LIMIT 20;
 "
 ```
+
+`read_json` and `read_csv` already auto-detect by default; do not add the legacy
+`_auto` spelling. For their complete installed named-parameter lists, defaults
+worth remembering, ShellFS examples, and `encodings` versus ICU guidance, read
+`~/duckdb-skills/skills/tera/references/shell_readers.sql`.
 
 **If this fails:**
 - **`duckdb: command not found`** → invoke `/duckstack:install-duckdb` and retry.

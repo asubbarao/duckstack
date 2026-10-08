@@ -1,58 +1,30 @@
--- ============================================================================
--- setup.sql — the one persistent dev DuckDB on this machine, served over quack.
---
--- Runs under launchd (com.inframe.quack) as:
---   tail -f /dev/null | duckdb ~/.duck/dev.duckdb -init ~/.duck/setup.sql
--- The file is held locked by this process for as long as the Mac is on. Nobody
--- opens it directly (even -readonly is refused). Every agent and every human reaches it
--- through one of the listeners section 5 starts, all in this process:
---   the `dev` MCP (query / sql tools), POST <quackapi>/sql, or from a :memory: client
---   LOAD quack; FROM quack_query('quack:localhost:<port>', $$…$$, token := getenv('QUACK_TOKEN'));
--- The ports are in _ports (defaults below, DEV_<SERVICE>_PORT overrides).
---
--- Verified on DuckDB v1.5.5 (d8cdaa33fd) osx_arm64; quack c154811 (beta — re-verify
--- on upgrade). An error anywhere in this file makes the CLI exit and launchd
--- restart it, so every statement here has been run clean on a fresh and on an
--- existing database. Statement ORDER is load-bearing; each section says why.
---
--- Scope rule behind every SET: GLOBAL settings live on the instance and reach the
--- connections quack opens per client; LOCAL ones reach only this init connection
--- and are therefore (almost) not set here. The engine rejects a cross-scope SET
--- loudly ("cannot be set globally"), so a scope mistake fails at start, not silently.
--- ============================================================================
-
--- ---------------------------------------------------------------------------
--- 0. Paths. launchd starts with a minimal environment; pin the home first.
--- ---------------------------------------------------------------------------
--- home_directory        default '' (GLOBAL): `~` expansion needs it.
--- getenv(name) -- only parameter, no defaults. Works in a SET value position.
+-- setup.sql: the dev DuckDB. launchd runs `duckdb ~/.duck/dev.duckdb -init setup.sql`; a second instance is the same
+-- file with DEV_QUACK_PORT / DEV_QUACKAPI_PORT / DEV_MCP_PORT set. Idempotent definitions live in live.sql,
+-- schedules in cron.sql. Order matters: secrets settings precede every LOAD; the lock is last.
 SET GLOBAL home_directory = getenv('HOME');
-
--- extension_directory   default '' -> ~/.duckdb/extensions (GLOBAL). The server gets
--- its own directory so an ad-hoc `duckdb` in a terminal can never swap a binary
--- underneath a running process. Must precede every INSTALL below.
 SET GLOBAL extension_directory = getenv('HOME') || '/.duck/extensions';
-
--- Secret storage must be decided before ANY extension loads: LOAD httpfs/aws initialises the
--- secret manager, after which 1.5.5 refuses these with "Changing Secret Manager settings
--- after the secret manager is used is not allowed!" (verified -- it aborted this file).
--- allow_persistent_secrets   default true. Credentials are CREATE PERSISTENT SECRET, never in
---                            this file; they reload from secret_directory on every start.
 SET GLOBAL allow_persistent_secrets = true;
--- secret_directory           default ~/.duckdb/stored_secrets. Files are 0600; the directory is
---                            made 0700 by the launchd wrapper.
 SET GLOBAL secret_directory = getenv('HOME') || '/.duck/secrets';
 
--- ---------------------------------------------------------------------------
--- 1. Extensions. INSTALL is idempotent (no download once present). Nothing is
---    ever auto-installed (see 3), so everything the server may need is named here.
--- ---------------------------------------------------------------------------
-INSTALL quack;       LOAD quack;       -- the door in; Quack log type registers on LOAD
-INSTALL httpfs;      LOAD httpfs;      -- http(s):// + s3://; owns the http_* settings
-INSTALL aws;         LOAD aws;         -- credential chain for s3 secrets
-INSTALL encodings;                     -- non-UTF8 CSV; loads on demand
-INSTALL ducklake;                      -- lakehouse catalog; ATTACH on demand
-LOAD json; LOAD icu; LOAD parquet;     -- built in; stated
+INSTALL quack; LOAD quack; INSTALL httpfs; LOAD httpfs; INSTALL aws; LOAD aws; INSTALL encodings; INSTALL ducklake;
+.read /Users/aloksubbarao/duckdb-skills/server/api_secrets.sql
+LOAD json; LOAD icu; LOAD parquet; INSTALL fts; LOAD fts; INSTALL postgres; LOAD postgres; INSTALL sqlite; LOAD sqlite;
+INSTALL webbed FROM community; LOAD webbed; INSTALL markdown FROM community; LOAD markdown;
+INSTALL crawler FROM community; LOAD crawler; INSTALL cronjob FROM community; LOAD cronjob;
+INSTALL splink_udfs FROM community; LOAD splink_udfs; INSTALL urlpattern FROM community; LOAD urlpattern;
+INSTALL netquack FROM community; LOAD netquack; INSTALL shellfs FROM community; LOAD shellfs;
+INSTALL tera FROM community; LOAD tera; INSTALL scalarfs FROM community; LOAD scalarfs;
+INSTALL http_client FROM community; LOAD http_client; INSTALL otlp FROM community; LOAD otlp;
+INSTALL prometheus FROM community; LOAD prometheus; INSTALL cloudwatch FROM community; LOAD cloudwatch;
+INSTALL quack_flamegraph FROM community; LOAD quack_flamegraph; INSTALL observefs FROM community; LOAD observefs;
+INSTALL agent_data FROM community; LOAD agent_data; INSTALL duck_tails FROM community; LOAD duck_tails;
+INSTALL duck_hunt FROM community; LOAD duck_hunt; INSTALL zipfs FROM community; LOAD zipfs;
+INSTALL quickjs FROM community; LOAD quickjs; INSTALL miniplot FROM community; LOAD miniplot;
+INSTALL minijinja FROM community; LOAD minijinja; INSTALL gh FROM community; LOAD gh;
+INSTALL hostfs FROM community; LOAD hostfs; INSTALL pdf FROM community; LOAD pdf;
+INSTALL parser_tools FROM community; LOAD parser_tools; INSTALL yaml FROM community; LOAD yaml;
+INSTALL jsonata FROM community; LOAD jsonata; INSTALL sitting_duck FROM community; LOAD sitting_duck; INSTALL curl_httpfs FROM community; LOAD curl_httpfs;
+.read /Users/aloksubbarao/duckdb-skills/server/live.sql
 
 INSTALL webbed     FROM community; LOAD webbed;     -- HTML type + html_* on columns
 INSTALL markdown   FROM community; LOAD markdown;   -- MARKDOWN type + md_*
@@ -185,6 +157,7 @@ SET GLOBAL allow_extensions_metadata_mismatch = false;
 -- autoinstall_known_extensions       default true -> false: no query may trigger a silent
 --                                    download. Everything needed is INSTALLed in 1.
 SET GLOBAL autoinstall_known_extensions = false;
+SET GLOBAL allowed_configs = ['enable_profiling', 'profiling_coverage'];
 -- autoload_known_extensions          default true, kept: a bare https:// read autoloads the
 --                                    already-installed httpfs. Loading is local; the download
 --                                    path is closed above.
@@ -198,85 +171,42 @@ SET GLOBAL allow_unredacted_secrets = false;
 --                                    silently and the value is NOT reflected back in
 --                                    duckdb_settings() — audit by probing hf://.
 SET GLOBAL disabled_filesystems = 'HuggingFaceFileSystem';
--- Not hardening, by design: once shellfs is loaded, any quack client can run shell via
--- read_csv('cmd |'). No setting compatible with crawling prevents it; the only control is
--- quack_authorization_function (see 5). max_expression_depth is per-connection in practice
--- despite being labelled GLOBAL — setting it here would protect nobody.
 
--- ---------------------------------------------------------------------------
--- 4. Logging — "we should know every query that runs through it."
---    ONE enable_logging call. It is instance-wide (proven to capture other connections
---    of the same process, i.e. every quack client), it appends across restarts, and
---    with buffer 0 each entry is on disk before the next statement. A second call
---    would replace the first, so every type goes in this list.
--- ---------------------------------------------------------------------------
--- Metrics rows are written only by a connection that has profiling on, and every profiling
--- setting (enable_profiling, profiling_mode, custom_profiling_settings) is LOCAL on 1.5.5:
--- "cannot be set globally". Quack opens a fresh connection per client, so this file cannot
--- turn it on for them; a session that wants metrics runs SET enable_profiling = 'no_output'.
--- enable_logging(types, level, storage, storage_config, storage_path, storage_normalize,
---                storage_buffer_size)
---   types               ['QueryLog','HTTP','Quack','Metrics'] -- registered types: QueryLog,
---                         FileSystem, HTTP, PhysicalOperator, Metrics, Quack. FileSystem and
---                         PhysicalOperator stay off: the 10-minute agent-stream rebuild alone
---                         reads every transcript file, which would flood the log.
---   level               unset -> derived (DEBUG) from the types; a manual
---                         SET logging_level='DEBUG' also floods the file with Transaction rows.
---   storage             'file'  (default 'memory'; CLI default 'shell_log_storage' — moving off
---                         it makes DuckDB print one warning that console warnings go to the file)
---   storage_path        a path ENDING in .csv = ONE denormalized file (every row carries its own
---                         context columns); no suffix = a directory with a two-file normalized
---                         pair — rejected because context_id is reissued after a restart. The
---                         docs page states the opposite; the binary does this.
---   storage_config      unset (same thing as storage_path, as a struct)
---   storage_normalize   unset (passing it alongside storage_path errors on 1.5.5)
---   storage_buffer_size 0 (default 2048): every entry on disk before the next statement.
-CALL enable_logging(['QueryLog', 'HTTP', 'Quack', 'Metrics'],
-                    storage := 'file',
-                    storage_path := getenv('HOME') || '/.duck/logs/duckdb_log.csv',
-                    storage_buffer_size := 0);
+-- Every query on this instance, to one CSV. quackapi_serve switches logging off, so it is applied again after serving.
+-- enable_logging(types, level, storage, storage_config, storage_path, storage_normalize, storage_buffer_size)
+.read /Users/aloksubbarao/duckdb-skills/server/server_instance.sql
+SET VARIABLE log_path = coalesce(nullif(getenv('QUACK_NATIVE_LOG'), ''), getenv('HOME') || '/.duck/logs/duckdb_log.csv');
+CALL enable_logging(['QueryLog', 'HTTP', 'Quack', 'Metrics'], storage := 'file', storage_path := getvariable('log_path'), storage_buffer_size := 0);
+CREATE OR REPLACE VIEW query_log AS SELECT * EXCLUDE (type, message), message AS query FROM duckdb_logs WHERE type = 'QueryLog';
+CREATE OR REPLACE VIEW http_log AS FROM duckdb_logs_parsed('HTTP');
+CREATE OR REPLACE VIEW quack_log AS FROM duckdb_logs_parsed('Quack');
+CREATE OR REPLACE VIEW metrics_log AS FROM duckdb_logs_parsed('Metrics');
 
--- Read-back through DuckDB's own log views: duckdb_logs follows the active storage, so it reads
--- the file (verified 2026-09-22: 1.1M rows), and duckdb_logs_parsed(type) returns each
--- structured type's declared columns. These views are names for those, nothing more.
-DROP VIEW IF EXISTS duck_log;
-CREATE OR REPLACE VIEW query_log AS      -- every SQL statement executed on this instance
-SELECT * EXCLUDE (type, message), message AS query FROM duckdb_logs WHERE type = 'QueryLog';
-CREATE OR REPLACE VIEW http_log AS       -- outbound HTTP, request/response structs
-FROM duckdb_logs_parsed('HTTP');
-CREATE OR REPLACE VIEW quack_log AS      -- every message over the wire; PREPARE_REQUEST rows carry the client's SQL
-FROM duckdb_logs_parsed('Quack');
-CREATE OR REPLACE VIEW metrics_log AS    -- per-query profiling metrics
-FROM duckdb_logs_parsed('Metrics');
+-- Serve: quack (token from the environment; unset fails closed), quackapi /sql + OTLP routes, the dev MCP.
+SET VARIABLE quack_uri = 'quack:localhost:' || coalesce(nullif(getenv('DEV_QUACK_PORT'), ''), '9494');
+SET VARIABLE quackapi_port = coalesce(nullif(getenv('DEV_QUACKAPI_PORT'), ''), '9495')::INTEGER;
+SET VARIABLE mcp_port = coalesce(nullif(getenv('DEV_MCP_PORT'), ''), '9496')::INTEGER;
+SET VARIABLE otlp_dir = getenv('HOME') || '/.duck/otlp';
+CALL quack_identify(name := 'dev', hostname := 'localhost', region := 'local', provider := 'local', meta := '{"role": "dev-duckdb"}');
+CREATE OR REPLACE TABLE _quack_serve AS SELECT now() AS started_at, listen_uri, listen_url FROM quack_serve(getvariable('quack_uri'), token := getenv('QUACK_TOKEN'));
+.read /Users/aloksubbarao/duckdb-skills/server/quackapi.sql
+.read /Users/aloksubbarao/duckdb-skills/server/telemetry.sql
+CREATE OR REPLACE TABLE _listeners AS SELECT now() AS at, 'quack' AS service, listen_uri AS address FROM quack_server_list()
+    UNION ALL SELECT now(), 'quackapi', listen_url FROM quackapi_servers()
+    UNION ALL SELECT now(), 'mcp', 'http://localhost:' || getvariable('mcp_port') || '/mcp';
+INSERT OR REPLACE INTO meta.runtime_endpoints (service, address, recorded_at)
+SELECT service, address, "at" FROM _listeners;
+.read /Users/aloksubbarao/duckdb-skills/server/duckdb_mcp.sql
+CALL enable_logging(['QueryLog', 'HTTP', 'Quack', 'Metrics'], storage := 'file', storage_path := getvariable('log_path'), storage_buffer_size := 0);
 
--- Keep historical enforcement records; this table does not impose an execution policy.
-CREATE TABLE IF NOT EXISTS query_enforcement_events (
-    event_id UUID PRIMARY KEY,
-    detected_at TIMESTAMP WITH TIME ZONE NOT NULL,
-    server_id VARCHAR NOT NULL,
-    connection_id VARCHAR,
-    query_started_at TIMESTAMP,
-    query VARCHAR NOT NULL,
-    action VARCHAR NOT NULL,
-    reason VARCHAR NOT NULL,
-    UNIQUE (connection_id, action)
-);
+.read /Users/aloksubbarao/duckdb-skills/server/observability.sql
+.read /Users/aloksubbarao/duckdb-skills/server/query_history.sql
+.read /Users/aloksubbarao/duckdb-skills/server/server_diagnostics.sql
+.read /Users/aloksubbarao/duckdb-skills/server/cron.sql
 
--- ---------------------------------------------------------------------------
--- 5. Serve. Every listener's port comes from _ports: the defaults are inline (scalarfs
---    data+varchar:), DEV_<SERVICE>_PORT in the environment overrides one, and the serve calls
---    read the chosen value through getvariable(). A second instance is the same file with
---    different DEV_*_PORT values — no edit, no conflict.
--- ---------------------------------------------------------------------------
-CREATE OR REPLACE TABLE _ports AS
-SELECT service,
-       coalesce(nullif(getenv('DEV_' || upper(service) || '_PORT'), ''), default_port) AS port,
-       CASE WHEN nullif(getenv('DEV_' || upper(service) || '_PORT'), '') IS NOT NULL
-            THEN 'env' ELSE 'default' END AS source
-FROM read_csv('data+varchar:service,default_port
-quack,9494
-quackapi,9495
-mcp,9496', header := true, columns := {'service': 'VARCHAR', 'default_port': 'VARCHAR'});
+-- Subagents (Lunas, spawned agents) read anything here but write only into agent_scratch; every other
+-- schema is changed by direct sessions. Convention, not enforcement: DuckDB has no per-user grants.
+CREATE SCHEMA IF NOT EXISTS agent_scratch;
 
 SELECT CASE WHEN len(list_filter(array_agg(try_cast(port AS INTEGER)), p -> p IS NULL)) > 0
             THEN error('_ports: a DEV_*_PORT is not an integer') ELSE 'ports ok' END AS ports_gate
@@ -611,14 +541,3 @@ TO 'variable:lake_restore' (FORMAT variable, LIST none);
 FROM quack_query('quack:localhost:9494', getvariable('lake_restore'), token:=getenv('QUACK_TOKEN'));
 
 SET GLOBAL lock_configuration = true;
-
--- ============================================================================
--- STRICTER BLOCK — commented out. Each line says what it breaks. Must precede the
--- lock; none can be applied to a running server; enable_external_access is one-way.
--- ============================================================================
--- SET GLOBAL allowed_directories = [getenv('HOME') || '/.duck', getenv('HOME') || '/inframe', '/tmp'];
--- SET GLOBAL enable_external_access = false;   -- breaks HTTP reads, INSTALL/LOAD, getenv(); the
---                                              -- allowlist above only means anything under this
--- SET GLOBAL disabled_filesystems = 'HuggingFaceFileSystem,S3FileSystem';  -- breaks s3/gs/r2
--- SET GLOBAL autoload_known_extensions = false; -- every extension must be LOADed by name above
--- SET GLOBAL enable_external_file_cache = false; -- only if clients stop being one trust domain

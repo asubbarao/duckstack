@@ -1,0 +1,5 @@
+{% if valid -%}
+GH_TOKEN=$(gh auth token --user asubbarao) gh pr view {{ number }} -R {{ repo }} --json url,state,title,author,baseRefName,headRefName,headRefOid,headRepositoryOwner,headRepository,statusCheckRollup,files | tee {{ dir }}/pr.json
+{%- else -%}
+true
+{%- endif %}

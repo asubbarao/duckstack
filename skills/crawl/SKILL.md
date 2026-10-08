@@ -5,7 +5,7 @@ description: >
   the logged-in Chrome (duckdb-chrome-bridge) for SPAs and authenticated pages. Use when the
   user says crawl, scrape, fetch these URLs, hit these links, get the page, read the docs at,
   or gives URLs to read. States every crawl() parameter, lands the raw response first, parses
-  by the capability ladder — never regex, never uncorrelated laterals, never an error page as
+  by the capability ladder — never regex, never a column-bound crawl_url, never an error page as
   a seed, never chrome_open to read.
 argument-hint: "<url> [url ...] [--name raw_table] [--shape map|rounds|walk|crossjoin|staged] [--chrome]"
 allowed-tools: Bash
@@ -49,8 +49,10 @@ topology is known; `--chrome` when the page needs the user's session or a render
 ## Where it runs
 
 Use the explicitly selected existing service; do not infer a port from this guide. Install and
-load needed community extensions there. On the MCP/9495 path, use `agent_crawl(urls)` for seeds
-as required by the workspace instructions. The older direct-Quack example below applies only
+load needed community extensions there. On the MCP/9495 path, seed URLs go through raw `crawl()`
+with every parameter stated: a
+literal list for a fixed seed set, and for URLs held in a column one self-dispatched `crawl('<url>', …)`
+per row (`references/crawl_rows.sql`). The older direct-Quack example below applies only
 when that endpoint has been explicitly selected; replace its address with the selected address.
 Keep persistent tables on that service, with `:memory:` acting as a client/orchestrator.
 
@@ -87,7 +89,8 @@ link-following, depth, cache and result limit did not happen.
 
 | function | parameters | note |
 |---|---|---|
-| `crawl_url(url, extract := [], cache_ttl, max_results, cache, timeout, user_agent)` | lateral form — **only** `FROM rel CROSS JOIN LATERAL crawl_url(rel.url, …)` |
+| `crawl(url VARCHAR, …same 13…)` | single-URL overload of `crawl`; the literal url is what a self-dispatched per-row statement renders |
+| `crawl_url(url, extract := [], cache_ttl, max_results, cache, timeout, user_agent)` | allowed with a literal URL, including a literal rendered per row and self-dispatched. Never pass `rel.url` directly: the lateral binder drops `:=` names. A binding complaint means self-dispatch was skipped, not that `crawl_url` is unusable. Bound the dispatched SELECT to at most 10 rows while testing. |
 | `crawl_stream(urls, user_agent, crawl_delay, timeout, respect_robots_txt)` | streaming variant |
 | `sitemap(url, filter, timeout, user_agent, discover, max_depth, recursive)` | XML sitemap → rows; often an empty `<urlset/>` — check |
 | `read_html(...)` | registered by **both** crawler and webbed, resolves by arity: named parameters only |
@@ -97,6 +100,68 @@ link-following, depth, cache and result limit did not happen.
 `CRAWL … INTO` statement syntax is **not** registered in this build (syntax error, server and
 CLI alike). This is a version-specific observation. Start with the extension catalog, then
 check the selected service's actual signatures and execute a small proof when docs disagree.
+
+## A page body, bounded inspection, and links
+
+Keep each fetch path as a relation. Do not return a page body to the agent: inspect `len(body)`
+and `left(body, 50)` while retaining the full value inside DuckDB for webbed. `html_extract_links`
+is a **scalar** returning a list of `STRUCT(text, href, title, line_number)`; expand it once with
+`CROSS JOIN UNNEST(... ) AS links(link)` and use `link.href` / `link.text`.
+
+Choose the transport by the job, then normalize to `{source, url, status, document HTML, error}`:
+
+| Need | Transport | Returned structure and gotcha |
+|---|---|---|
+| one known ordinary page | `http_client` | `http_get` returns a response struct with status/body/headers. In this build body is a JSON string; use `json_extract_string(response.body, '$')::HTML`. |
+| crawling, link rounds, robots/depth/cache controls | `crawler` | `crawl` returns one row per page with URL, status, an HTML struct, error, timing, and depth. State every bound. |
+| exact CLI request, proxy/TLS/cookie flags | ShellFS `curl` | the reader returns the stdout schema you declare. Base64 can keep arbitrary HTML in one VARCHAR, but status/headers/errors must be emitted separately. |
+
+No transport intrinsically saves agent tokens. Raw documents remain inside DuckDB; the final
+projection controls context size by returning only lengths, short previews, bounded link/block
+rows, status, and error. When the URL is a column, any chosen table-function transport is rendered
+with literal arguments and self-dispatched per row.
+
+```sql
+WITH raw AS (
+    SELECT url, status, html.document::HTML AS document
+    FROM crawl(
+        ['https://example.com'],
+        cache_ttl := 24, cache := false, follow := '', "extract" := []::VARCHAR[],
+        max_depth := 1, respect_robots := true, workers := 1, batch_size := 1,
+        max_results := 1, user_agent := 'InFrame web reader/1.0', timeout := 30,
+        state_table := '', delay := 0
+    )
+)
+SELECT raw.url, raw.status, len(raw.document) AS chars, left(raw.document::VARCHAR, 50) AS preview,
+       link.text, link.href
+FROM raw
+CROSS JOIN UNNEST(html_extract_links(raw.document)) AS links(link);
+```
+
+The crawler parser accepts named arguments, but `extract` is a keyword: write it as
+`"extract" := []::VARCHAR[]`. For a ShellFS curl path, command readers end their command with
+the pipe inside `$cmd$` (`$cmd$curl ... |$cmd$`). Convert a base64 transport body back through
+`decode(from_base64(body_base64))::HTML`, then use the same `html_extract_links` expression.
+That puts crawler and curl/http-client pages through one HTML/link stage without hand-parsing.
+
+### Webbed parser map
+
+Webbed's core parsing surface works on a string or its `::HTML` cast. Use the smallest result
+that answers the question and retain the original document for later stages:
+
+| Need | Function | Result shape |
+|---|---|---|
+| bounded structural overview | `html_to_duck_blocks(document)` | list of duck-block structures; inspect its `len` first |
+| one XPath-bounded text region | `html_extract_text(document, xpath)` | scalar text result |
+| page links | `html_extract_links(document)` | list of `STRUCT(text, href, title, line_number)` |
+| page images | `html_extract_images(document)` | list of image metadata structures |
+| real HTML tables | `html_extract_tables(document)` | table function — use directly in `FROM` |
+| file to typed table | `read_html(path)` | table function with schema inference |
+| XML / XPath | `xml_extract_text(xml, xpath)` | scalar text result |
+
+`HTML` and `XML` are semantic string types. Construct a small fixture with
+`'<h1>Title</h1>'::HTML` to learn a function's shape, then apply the same function to the
+fetched document. Expand scalar lists with `CROSS JOIN UNNEST`; do not manually split markup.
 
 ## The capability ladder — the first "yes" decides (conduit `parsing-with-crawler-and-webbed.md`)
 
@@ -229,19 +294,13 @@ is the conduit idiom). Assembly is `array_agg(… ORDER BY …)` → `array_to_s
 
 ## Step 4 — The next round, incremental
 
-The next hop's URLs are a column of the previous table; the fetch is correlated or fed by a
-variable; 3–5 first:
+The next hop's URLs are a column of the previous table; the fetch is self-dispatched per row
+or (staged) fed by a variable; 3–5 first:
 
 ```sql
--- correlated lateral (per-row fetch): the ONLY shape for crawl_url
-FROM dev.query($$
-CREATE OR REPLACE TABLE raw_<name>_r2 AS
--- crawl_url(url, extract := [], cache_ttl := 24, max_results := -1, cache := true, timeout := 30, user_agent := ...)
-SELECT now() AS fetched_at, l.url AS parent, c.*
-FROM (SELECT url, href FROM <name>_links WHERE starts_with(href, 'https://') ORDER BY href LIMIT 5) l
-CROSS JOIN LATERAL crawl_url(l.href, "extract" := []::VARCHAR[], cache := false, cache_ttl := 24,
-                             max_results := 1, timeout := 30, user_agent := 'InFrame <purpose>/1.0') AS c
-$$);
+-- per-row fetch: self-dispatch. One crawl('<literal url>', …13 named…, max_results := 1) statement per row,
+-- posted to the selected /sql, receipts UNNESTed. references/crawl_rows.sql is the verified molecule; the
+-- seeds CTE there becomes (SELECT href AS url FROM <name>_links WHERE starts_with(href, 'https://') ORDER BY href LIMIT 5).
 
 -- or the list rides in a variable and crawl() runs once with state_table (the staged shape)
 FROM dev.query($$
@@ -252,8 +311,20 @@ SELECT now() AS fetched_at, * FROM crawl(getvariable('urls'), ... all 13 ..., st
 $$);
 ```
 
-`crawl_url` without the `CROSS JOIN LATERAL … (rel.col)` correlation is the exact shape that
-caused the incident behind this rule. Do not write it.
+`crawl_url` is allowed here only after the URL column has been rendered as a literal inside the
+self-dispatched statement. Direct correlation is not the composition mechanism; a binder error
+means the agent did not self-dispatch. Prefer `crawl()` with `max_results := 1` when its richer
+receipt is useful. When choosing `crawl_url`, retain the generated SQL and receipt and use an
+outer `LIMIT <= 10` while testing. A 404 is a row with `status = 404` and `error` NULL, so gate
+downstream on `status = 200 AND error IS NULL`.
+
+Measured 2026-09-29 on the DuckPGQ page, five statements self-dispatched to dev `/sql` and logged
+as `crawl-fix` rows (the statement is the stored and the executed text; the receipt is the result):
+`crawl('<url>', …13 named…)` 200, one row; `crawl_url('<url>', "extract" := []::VARCHAR[], cache_ttl := 24,
+max_results := 1, cache := false, timeout := 30, user_agent := '…') LIMIT 5` 200, exactly one row (it did not
+repeat); `crawl_url('<url>')` with no options `[]`, zero rows; the same two written as
+`rel CROSS JOIN LATERAL crawl_url(rel.url, …)` a 422 receipt with options and `[]` without. The empty
+result is the no-options form, not a binder failure; pass `max_results := 1` and the options.
 
 ## `--chrome` — the page needs the user's session or a rendered DOM
 

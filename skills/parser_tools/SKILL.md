@@ -50,14 +50,40 @@ Call position chooses the overload: `SELECT parse_tables(sql)` returns a list-va
 `FROM parse_tables('<literal>')` returns one row per reference. The same distinction applies to
 `parse_functions`, `parse_statements`, and `parse_where`.
 
+## Generated SQL — validate before dispatch or execution
+
+Use this as a general gate for Tera output, generated migration candidates, or
+SQL extracted from an HTML code block. Keep the generated string beside the
+parser facts. `is_parsable` is cheap and scalar, so it works directly over a
+relation of generated programs:
+
+```sql
+WITH generated AS (
+    SELECT 'crawler-page-reader' AS program_name, generated_sql
+    FROM rendered_templates
+)
+SELECT
+    program_name,
+    is_parsable(generated_sql) AS parsable,
+    num_statements(generated_sql) AS statement_count,
+    parse_function_names(generated_sql) AS function_names,
+    left(generated_sql, 100) AS preview
+FROM generated;
+```
+
+Only execute or self-dispatch a program after the parser gate is true and its
+statement/function facts match intent. This checks grammar; it does not prove
+extension loading, object existence, permissions, or runtime success.
+
 ## Worked example — validate, then inspect
 
 All three statements below were run through `quack_query`.
 
 ```sql
-WITH code_blocks(label, sql) AS (VALUES
-  ('valid',   'SELECT upper(u.name) FROM users u JOIN teams t ON u.team_id = t.id'),
-  ('invalid', 'SELECT FROM')
+WITH code_blocks AS (
+    SELECT 'valid' AS label, 'SELECT upper(u.name) FROM users u JOIN teams t ON u.team_id = t.id' AS sql
+    UNION ALL
+    SELECT 'invalid', 'SELECT FROM'
 )
 -- is_parsable(col0 VARCHAR): no optional parameters or defaults.
 SELECT label, is_parsable(sql) AS valid
@@ -116,6 +142,13 @@ The starting claims are correct: `is_parsable(text)` distinguishes the two SQL b
   required per row.
 - `is_parsable` answers syntax, not bindability, permissions, or whether referenced tables and
   functions exist. It is a parser gate, not an execution guarantee.
+- Verified 2026-09-29: **table functions are invisible to the parser facts.** For a query with
+  `FROM read_duck_hunt_log('x', 'gcc_text')`, `parse_function_names`, `parse_functions` and `parse_tables`
+  (scalar and table form) return only the scalar functions (`left`, `starts_with`) and no table at all. To
+  know which extension a query calls, read a tag or the text; the parser will not tell you.
+- Verified 2026-09-29: `parse_statements(text)` returns `VARCHAR[]` (not structs) of re-serialized SQL:
+  normalized (`CAST('t' AS BOOLEAN)`, quoted identifiers, added parentheses) with every comment removed.
+  Use it to split and validate; to keep comments, split the file text yourself and hand each piece to the
+  scalars. `is_parsable` on a piece that starts with bare prose returns false, so pass SQL (comments are fine).
 - Parse the text inside a fenced code block, not the backticks and language tag. Preserve the
   original block beside the parsed result as evidence.
-

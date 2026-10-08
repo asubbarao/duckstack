@@ -1,0 +1,6 @@
+{# SQL prepares reader={name, parameters=[{name,value}]}, stages, sql_tag, row_limit. #}
+SELECT *
+FROM {{ reader.name }}(
+  ${{ sql_tag }}${% include "bash_pipeline.tera" %}|${{ sql_tag }}${% for parameter in reader.parameters %}, {{ parameter.name }} := {{ parameter.value }}{% endfor %}
+){% if row_limit %}
+LIMIT {{ row_limit }}{% endif %};

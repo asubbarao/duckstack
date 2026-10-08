@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- The staging replica DuckDB. Start: launchctl bootstrap gui/$(id -u) <this file>; stop: launchctl bootout gui/$(id -u)/com.inframe.replica.
+     setup.sql is the whole system; this only supplies the token and an stdin that never closes (a FIFO opened
+     read-write has a writer for as long as the reader lives, so the CLI keeps serving with no feeder process). -->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.inframe.replica</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/bin/bash</string>
+		<string>-c</string>
+		<string>R="$HOME/.duck/replica"; mkdir -p "$R/tmp"
+export QUACK_TOKEN="$(cat "$HOME/.duck/token")"
+rm -f "$R/stdin.fifo"; mkfifo "$R/stdin.fifo"
+exec /opt/homebrew/bin/duckdb "$R/staging_replica.duckdb" -cmd ".read /Users/aloksubbarao/duckdb-skills/server/replica/setup.sql" &lt;&gt; "$R/stdin.fifo"</string>
+	</array>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>/opt/homebrew/bin:/usr/bin:/bin</string>
+	</dict>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>ThrottleInterval</key>
+	<integer>10</integer>
+	<key>WorkingDirectory</key>
+	<string>/Users/aloksubbarao/.duck/replica</string>
+	<key>StandardOutPath</key>
+	<string>/Users/aloksubbarao/.duck/replica/server.out</string>
+	<key>StandardErrorPath</key>
+	<string>/Users/aloksubbarao/.duck/replica/server.err</string>
+</dict>
+</plist>

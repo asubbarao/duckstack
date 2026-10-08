@@ -1,0 +1,5 @@
+{# Limited trusted grammar: each stage emits command, then args, then flags. Position-sensitive CLIs need a specific template. No pipefail. #}
+{%- macro render_stage(stage) -%}
+{{ stage.command }}{% for arg in stage.args %} {{ arg }}{% endfor %}{% for flag in stage.flags %} {{ flag.name }}{% if flag.value != "" %} {{ flag.value }}{% endif %}{% endfor %}
+{%- endmacro render_stage -%}
+{%- for stage in stages %}{{ self::render_stage(stage=stage) }}{% if not loop.last %} | {% endif %}{% endfor -%}

@@ -12,7 +12,7 @@ description: >
   CI finding, or any timing evidence a teammate may see. Never use local logs. Worked examples:
   ~/inframe/internal/ci/duckdb/ (review.sql, slow.sql) and the INF-1390 shard brief (§5).
 argument-hint: "<owner/repo> [workflow] [question]"
-allowed-tools: Bash, mcp__dev__ci_hunt, mcp__dev__query
+allowed-tools: Bash, mcp__dev__ci_hunt, mcp__dev__query_with_limit
 ---
 
 Read `/duckstack:duck` first; its process rules apply. This skill is the GitHub half of a CI/CD
@@ -178,3 +178,8 @@ The shape for one finding, such as "every PR waits on Backend Tests Shard 1":
 What it found: shard 1 had a median of 9m 43s against 5m 45s–7m 04s for the other shards.
 `.test_durations` was last written 2026-06-12 and covered 28% of 19,248 tests. 69% of shard 1's
 worker time was in tests it had no entry for.
+
+## Portable readers
+
+`references/github_run.sql` (one run, every API field) and `references/github_jobs.sql` (every
+jobs page, steps nested) run with only `gh` and the pinned CLI; see `docs/portable-readers.md`.

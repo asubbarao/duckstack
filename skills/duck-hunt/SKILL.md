@@ -16,12 +16,20 @@ argument-hint: "<run id | log path | 'this PR'> [question]"
 allowed-tools: Bash, mcp__dev__ci_hunt
 ---
 
+## Upstream documentation
+
+Read the [Duck Hunt schema](https://duck-hunt.readthedocs.io/en/latest/schema/)
+when interpreting event columns, status/severity, test durations, hierarchy or
+fingerprints. Use the [Duck Hunt documentation](https://duck-hunt.readthedocs.io/en/latest/)
+for supported formats and reader examples. Confirm the installed result schema with
+`DESCRIBE`; local observed behavior below supplements, rather than replaces, upstream docs.
+
 **After every CI/CD analysis, add each new log reading to `recipes.sql` as a view, with the
 question it answers and one verified line. Add each new gotcha to §Learned as a dated one-liner.
 Don't inline one-offs.** The library only improves if every analysis leaves something in it.
 
 Where it runs: this doc and `recipes.sql` (next to it), in your own `duckdb :memory:` or through
-`uvx --from duckdb duckdb`. The `dev` MCP tool `ci_hunt(zip, glob, format)` is a shortcut for one
+`uvx --from duckdb-cli duckdb`. The `dev` MCP tool `ci_hunt(zip, glob, format)` is a shortcut for one
 read over an Actions log zip. Recipes are views, never macros. A page built from them is
 `/duckstack:live-page`.
 
@@ -41,6 +49,8 @@ parsed from the file name, so you can join it back to the jobs API.
 | `pytest_xdist_tests` | how long did each backend test take? Measured as the gap to the previous line on its xdist worker | 19,187 tests over 3 shards |
 | `vitest_files` | which vitest files are slow? | 545 files; RequestPicker.test.tsx 14.8 s |
 | `vitest_phases` | where does a vitest shard's wall time go (import, environment, tests)? | phases = 95% of wall: files run one at a time |
+| `backend_shard_balance` | did pytest-split balance measured worker cost and wall time? | 350.0-468.7 s across 3 shards |
+| `frontend_shard_balance` | did Vitest's equal-file shards balance measured cost? | 208-211 files but 340.9-431.4 s walls |
 | `gha_steps` | when did each step start and how long did it run, from the log alone? | pytest step 566.6 s, API 566 s |
 | `gha_errors` | which `##[error]` annotations did each job raise? | 5 failed jobs |
 | `biome_diagnostics` | which lint rule fired where, and which one failed the job? Uses `context := 3` | the one `×` error found |
@@ -53,6 +63,11 @@ that reads a view more than once lands it first: `CREATE OR REPLACE TABLE x AS F
 ## Learned
 
 Dated one-liners. Add to this list; don't rewrite it.
+
+- 2026-09-30: equal shard counts are not balance. On inframe staging run 36274924301, Vitest put
+  208-211 files in each shard but walls ranged 340.9-431.4 s; pytest-split's current durations
+  artifact produced 350.0-468.7 s observed test walls. Gate on measured slowest/fastest wall ratio
+  and record artifact age/coverage, rather than treating equal file or test counts as success.
 
 - 2026-09-23: fetching per-job logs.
   - Save the per-job log to a file first with `gh api --allow-escape-sequences …/jobs/<id>/logs > f`,
@@ -82,6 +97,34 @@ Dated one-liners. Add to this list; don't rewrite it.
   `duck_hunt_match_command_patterns` errors because RE2 does not support lookaheads.
 - 2026-09-23: duck_tails. A relative `git://path@ref` resolves only when the working directory is
   the repo root. From a subfolder it returns 0 rows with no error, so use `git:///<abs repo root>/path@ref`.
+- 2026-09-26: speed. The `regexp:` reader over a glob is single-threaded at ~2 MB/s (45 s for 80 MB of
+  logs). Keep only the lines with the view's own literal marker through `read_lines` (0.2 s), then
+  `LATERAL parse_duck_hunt_log(text, 'regexp:…')` on those. Same rows, 0.19 s. The marker must be
+  narrow: `'error'` matched 714k of 926k lines, `': error'` about 100.
+- 2026-09-26: coverage. `gh run list --user <login>` drops re-runs and runs another account
+  triggered; quackapi PR #25's failing attempt 3 was missing. List own repos unfiltered.
+- 2026-09-26: GitHub answers HTTP 410 (a ~150-byte JSON body) for a job log it has expired. On
+  upstream repos this hit logs about 3 months old. Treat a sub-1 KB log file as expired, not parsed.
+- 2026-09-29: read each stage of a local build with its own parser: `black_text`/`auto` for the formatter
+  (a clean run is silent: 0 rows), `cmake_build` for the build (warnings only on success), `duckdb_test` for
+  the suite. On a passing suite `duckdb_test` returns one INFO row ("no specific test results found") and no
+  counts; the `All tests passed (N assertions in M test cases)` line is a `read_lines` filter. duck_hunt is
+  the failure reader; success is the absence of FAIL/ERROR rows plus that summary line.
+- 2026-09-29: `gcc_text` on a GitHub Actions job log reads the leading timestamp as the file
+  (`ref_file = '2026-09-29T22'`, `ref_line = 48`). The `message` column is right: on a red Linux build it named
+  the cause (`use of 'auto' in lambda parameter declaration only available with -std=c++14`) that a grep for
+  `error` buried under template instantiation noise. Filter `severity = 'error'`, use `message`.
+- 2026-09-29: a job log can be read straight from the API, no zip, as a shellfs source:
+  `read_duck_hunt_log('GH_TOKEN=… gh api --allow-escape-sequences repos/<o>/<r>/actions/jobs/<job_id>/logs |', 'duckdb_test')`.
+  Without `--allow-escape-sequences` gh refuses ("the response contains terminal escape sequences")
+  and the pipe exits 1 with no output. `gh run view --log-failed` only works once the whole run has
+  finished; the per-job endpoint works as soon as that job has.
+- 2026-09-29: `duckdb_test` returned 1 FAIL row for a job whose summary said `2 failed`: it caught
+  `read_pdf_columns.test:154` and missed `read_pdf_url.test:84` (same "Wrong result" block shape).
+  Check the FAIL rows against the `test cases: N | P passed | F failed` summary line before trusting
+  the list. `context := N` came back NULL on this parser.
+- 2026-09-26: sqllogictest prints "FAILED: explicitly with message: 0". The `0` is the runner's
+  `FAIL_LINE` marker; the reason is a separate stderr block ("1. test/sql/x.test:72 / Wrong result…").
 - 2026-09-23: `status_badge(status)` and `status_badge(errors, warnings[, running])` return `[FAIL]`,
   `[WARN]`, `[ OK ]`, `[ .. ]` or `[ ?? ]`. Useful as a page's status column.
 
