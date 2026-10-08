@@ -6,10 +6,19 @@ SET GLOBAL home_directory = getenv('HOME');
 SET GLOBAL extension_directory = getenv('HOME') || '/.duck/extensions';
 SET GLOBAL secret_directory = getenv('HOME') || '/.duck/secrets';
 
--- The CLI .read command accepts only a literal path. Before QuackAPI exists, use
--- the dataswarm self-dispatch shape locally: ordered rows -> literal read_text
--- statements rooted at server_dir -> one rendered SQL program -> literal .read.
--- /tmp is a startup rendezvous; no user-specific source path is embedded here.
+-- Start this instance's Quack door before the ordered source phases. Each phase is then sent as
+-- one complete body to this instance, so the CLI never needs a shared bootstrap rendezvous file.
+INSTALL quack; LOAD quack;
+SET VARIABLE quack_uri = 'quack:localhost:' || coalesce(nullif(getenv('DEV_QUACK_PORT'), ''), '9494');
+SET VARIABLE quackapi_port = coalesce(nullif(getenv('DEV_QUACKAPI_PORT'), ''), '9495')::INTEGER;
+SET VARIABLE mcp_port = coalesce(nullif(getenv('DEV_MCP_PORT'), ''), '9496')::INTEGER;
+SET VARIABLE otlp_dir = getenv('HOME') || '/.duck/otlp';
+CALL quack_identify(name := 'dev', hostname := 'localhost', region := 'local', provider := 'local', meta := '{"role": "dev-duckdb"}');
+CREATE OR REPLACE TABLE _quack_serve AS SELECT now() AS started_at, listen_uri, listen_url
+FROM quack_serve(getvariable('quack_uri'), token := getenv('QUACK_TOKEN'));
+
+-- The source rows are rendered into complete programs and sent through the instance's Quack door.
+-- Keep each phase in its own statement: later phases depend on the objects created earlier.
 CREATE OR REPLACE TEMPORARY TABLE _setup_boot_files AS
 SELECT 1 AS phase, 1 AS ordinal, 'server/api_secrets.sql' AS relative_path
 UNION ALL SELECT 2, 1, 'server/live.sql'
@@ -30,24 +39,15 @@ UNION ALL SELECT 6, 7, 'server/agent_stream_schedule.sql'
 UNION ALL SELECT 6, 8, 'server/ext_catalog_schedule.sql'
 UNION ALL SELECT 6, 9, 'server/cron.sql';
 
-SET VARIABLE setup_boot_program = (
-    WITH statements AS (
-        SELECT ordinal,
-               'SELECT ' || ordinal || ' AS ordinal, content FROM read_text(' ||
-               chr(39) || replace(getvariable('server_dir') || '/' || relative_path,
-                                    chr(39), chr(39) || chr(39)) || chr(39) || ')' AS statement
-        FROM _setup_boot_files
-        WHERE phase = 1
-    )
-    SELECT 'SELECT string_agg(replace(content, chr(36) || ' || chr(39) || 'SERVER_DIR' || chr(39) || ' || chr(36), ' ||
-           chr(39) || replace(getvariable('server_dir'), chr(39), chr(39) || chr(39)) || chr(39) ||
-           ') || chr(10) || chr(59), chr(10) ORDER BY ordinal) AS program FROM (' ||
-           array_to_string(list(statement ORDER BY ordinal), ' UNION ALL ') || ')'
-    FROM statements
+SET VARIABLE setup_boot_secrets = (
+    SELECT content FROM read_text(getvariable('server_dir') || '/server/api_secrets.sql')
 );
-COPY (SELECT program FROM query(getvariable('setup_boot_program')))
-TO '/tmp/duckstack-setup-bootstrap.sql' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '');
-.read /tmp/duckstack-setup-bootstrap.sql
+SET VARIABLE setup_boot_context =
+    'SET VARIABLE server_dir = ' || chr(39) || replace(getvariable('server_dir'), chr(39), chr(39) || chr(39)) || chr(39) || ';' || chr(10) ||
+    'SET VARIABLE quack_uri = ' || chr(39) || replace(getvariable('quack_uri'), chr(39), chr(39) || chr(39)) || chr(39) || ';' || chr(10) ||
+    'SET VARIABLE quackapi_port = ' || getvariable('quackapi_port')::VARCHAR || ';' || chr(10) ||
+    'SET VARIABLE mcp_port = ' || getvariable('mcp_port')::VARCHAR || ';' || chr(10) ||
+    'SET VARIABLE otlp_dir = ' || chr(39) || replace(getvariable('otlp_dir'), chr(39), chr(39) || chr(39)) || chr(39) || ';';
 
 INSTALL quack; LOAD quack; INSTALL httpfs; LOAD httpfs; INSTALL aws; LOAD aws; INSTALL encodings; INSTALL ducklake;
 LOAD json; LOAD icu; LOAD parquet; INSTALL fts; LOAD fts; INSTALL postgres; LOAD postgres; INSTALL sqlite; LOAD sqlite;
@@ -82,9 +82,11 @@ SET VARIABLE setup_boot_program = (
            array_to_string(list(statement ORDER BY ordinal), ' UNION ALL ') || ')'
     FROM statements
 );
-COPY (SELECT program FROM query(getvariable('setup_boot_program')))
-TO '/tmp/duckstack-setup-bootstrap.sql' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '');
-.read /tmp/duckstack-setup-bootstrap.sql
+SET VARIABLE setup_boot_program = (
+    SELECT getvariable('setup_boot_secrets') || chr(10) || getvariable('setup_boot_context') || chr(10) || program
+    FROM query(getvariable('setup_boot_program'))
+);
+SELECT * FROM quack_query(getvariable('quack_uri'), getvariable('setup_boot_program'), token := getenv('QUACK_TOKEN'));
 
 -- A laptop tenant: leave memory and cores for the desktop; bounded temp; UTC; patient HTTP; fewer checkpoint pauses.
 SET GLOBAL memory_limit = '8GB'; SET GLOBAL threads = 10; SET GLOBAL scheduler_process_partial = true;
@@ -113,9 +115,11 @@ SET VARIABLE setup_boot_program = (
            array_to_string(list(statement ORDER BY ordinal), ' UNION ALL ') || ')'
     FROM statements
 );
-COPY (SELECT program FROM query(getvariable('setup_boot_program')))
-TO '/tmp/duckstack-setup-bootstrap.sql' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '');
-.read /tmp/duckstack-setup-bootstrap.sql
+SET VARIABLE setup_boot_program = (
+    SELECT getvariable('setup_boot_context') || chr(10) || program
+    FROM query(getvariable('setup_boot_program'))
+);
+SELECT * FROM quack_query(getvariable('quack_uri'), getvariable('setup_boot_program'), token := getenv('QUACK_TOKEN'));
 
 SET VARIABLE log_path = coalesce(nullif(getenv('QUACK_NATIVE_LOG'), ''), getenv('HOME') || '/.duck/logs/duckdb_log.csv');
 CALL enable_logging(['QueryLog', 'HTTP', 'Quack', 'Metrics'], storage := 'file', storage_path := getvariable('log_path'), storage_buffer_size := 0);
@@ -124,13 +128,6 @@ CREATE OR REPLACE VIEW http_log AS FROM duckdb_logs_parsed('HTTP');
 CREATE OR REPLACE VIEW quack_log AS FROM duckdb_logs_parsed('Quack');
 CREATE OR REPLACE VIEW metrics_log AS FROM duckdb_logs_parsed('Metrics');
 
--- Serve: quack (token from the environment; unset fails closed), quackapi /sql + OTLP routes, the dev MCP.
-SET VARIABLE quack_uri = 'quack:localhost:' || coalesce(nullif(getenv('DEV_QUACK_PORT'), ''), '9494');
-SET VARIABLE quackapi_port = coalesce(nullif(getenv('DEV_QUACKAPI_PORT'), ''), '9495')::INTEGER;
-SET VARIABLE mcp_port = coalesce(nullif(getenv('DEV_MCP_PORT'), ''), '9496')::INTEGER;
-SET VARIABLE otlp_dir = getenv('HOME') || '/.duck/otlp';
-CALL quack_identify(name := 'dev', hostname := 'localhost', region := 'local', provider := 'local', meta := '{"role": "dev-duckdb"}');
-CREATE OR REPLACE TABLE _quack_serve AS SELECT now() AS started_at, listen_uri, listen_url FROM quack_serve(getvariable('quack_uri'), token := getenv('QUACK_TOKEN'));
 SET VARIABLE setup_boot_program = (
     WITH statements AS (
         SELECT ordinal,
@@ -138,7 +135,7 @@ SET VARIABLE setup_boot_program = (
                chr(39) || replace(getvariable('server_dir') || '/' || relative_path,
                                     chr(39), chr(39) || chr(39)) || chr(39) || ')' AS statement
         FROM _setup_boot_files
-        WHERE phase = 4
+        WHERE phase = 4 AND ordinal = 1
     )
     SELECT 'SELECT string_agg(replace(replace(content, chr(36) || ' || chr(39) || 'SERVER_DIR' || chr(39) || ' || chr(36), ' ||
            chr(39) || replace(getvariable('server_dir'), chr(39), chr(39) || chr(39)) || chr(39) ||
@@ -148,9 +145,39 @@ SET VARIABLE setup_boot_program = (
            array_to_string(list(statement ORDER BY ordinal), ' UNION ALL ') || ')'
     FROM statements
 );
-COPY (SELECT program FROM query(getvariable('setup_boot_program')))
-TO '/tmp/duckstack-setup-bootstrap.sql' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '');
-.read /tmp/duckstack-setup-bootstrap.sql
+SET VARIABLE setup_boot_program = (
+    SELECT getvariable('setup_boot_context') || chr(10) || program
+    FROM query(getvariable('setup_boot_program'))
+);
+SELECT * FROM quack_query(getvariable('quack_uri'), getvariable('setup_boot_program'), token := getenv('QUACK_TOKEN'));
+
+-- The remaining phase-4 source contains raw CREATE ROUTE statements. QuackAPI parses those
+-- after its own route is live, so post that small dependent tail through the selected /sql door.
+SET VARIABLE setup_boot_program = (
+    WITH statements AS (
+        SELECT ordinal,
+               'SELECT ' || ordinal || ' AS ordinal, content FROM read_text(' ||
+               chr(39) || replace(getvariable('server_dir') || '/' || relative_path,
+                                    chr(39), chr(39) || chr(39)) || chr(39) || ')' AS statement
+        FROM _setup_boot_files
+        WHERE phase = 4 AND ordinal > 1
+    )
+    SELECT 'SELECT string_agg(replace(replace(content, chr(36) || ' || chr(39) || 'SERVER_DIR' || chr(39) || ' || chr(36), ' ||
+           chr(39) || replace(getvariable('server_dir'), chr(39), chr(39) || chr(39)) || chr(39) ||
+           '), chr(36) || ' || chr(39) || 'QUACKAPI_PORT' || chr(39) || ' || chr(36), ' ||
+           chr(39) || coalesce(nullif(getenv('DEV_QUACKAPI_PORT'), ''), '9495')::VARCHAR || chr(39) ||
+           ') || chr(10) || chr(59), chr(10) ORDER BY ordinal) AS program FROM (' ||
+           array_to_string(list(statement ORDER BY ordinal), ' UNION ALL ') || ')'
+    FROM statements
+);
+SET VARIABLE setup_boot_program = (
+    SELECT getvariable('setup_boot_context') || chr(10) || program
+    FROM query(getvariable('setup_boot_program'))
+);
+SELECT CASE WHEN receipt.status = 200 THEN receipt.body ELSE error('setup.sql phase 4 tail failed: ' || receipt.body) END AS body
+FROM (SELECT http_post('http://127.0.0.1:' || getvariable('quackapi_port')::VARCHAR || '/sql',
+             MAP {'Content-Type': 'application/json'},
+             json_object('sql', getvariable('setup_boot_program'))) AS receipt);
 
 CREATE OR REPLACE TABLE _listeners AS SELECT now() AS at, 'quack' AS service, listen_uri AS address FROM quack_server_list()
     UNION ALL SELECT now(), 'quackapi', listen_url FROM quackapi_servers()
@@ -174,9 +201,11 @@ SET VARIABLE setup_boot_program = (
            array_to_string(list(statement ORDER BY ordinal), ' UNION ALL ') || ')'
     FROM statements
 );
-COPY (SELECT program FROM query(getvariable('setup_boot_program')))
-TO '/tmp/duckstack-setup-bootstrap.sql' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '');
-.read /tmp/duckstack-setup-bootstrap.sql
+SET VARIABLE setup_boot_program = (
+    SELECT getvariable('setup_boot_context') || chr(10) || program
+    FROM query(getvariable('setup_boot_program'))
+);
+SELECT * FROM quack_query(getvariable('quack_uri'), getvariable('setup_boot_program'), token := getenv('QUACK_TOKEN'));
 
 CALL enable_logging(['QueryLog', 'HTTP', 'Quack', 'Metrics'], storage := 'file', storage_path := getvariable('log_path'), storage_buffer_size := 0);
 
@@ -195,9 +224,11 @@ SET VARIABLE setup_boot_program = (
            array_to_string(list(statement ORDER BY ordinal), ' UNION ALL ') || ')'
     FROM statements
 );
-COPY (SELECT program FROM query(getvariable('setup_boot_program')))
-TO '/tmp/duckstack-setup-bootstrap.sql' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '');
-.read /tmp/duckstack-setup-bootstrap.sql
+SET VARIABLE setup_boot_program = (
+    SELECT getvariable('setup_boot_context') || chr(10) || program
+    FROM query(getvariable('setup_boot_program'))
+);
+SELECT * FROM quack_query(getvariable('quack_uri'), getvariable('setup_boot_program'), token := getenv('QUACK_TOKEN'));
 
 -- Subagents (Lunas, spawned agents) read anything here but write only into agent_scratch; every other
 -- schema is changed by direct sessions. Convention, not enforcement: DuckDB has no per-user grants.

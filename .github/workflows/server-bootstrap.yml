@@ -62,7 +62,7 @@ jobs:
               break
             fi
             ready="$(curl -sS --max-time 2 -H 'Content-Type: application/json' \
-              --data-raw '{"sql":"SELECT table_name FROM duckdb_tables()"}' \
+            --data-raw '{"sql":"SELECT table_name FROM duckdb_tables() WHERE table_name = chr(95) || chr(115) || chr(101) || chr(116) || chr(117) || chr(112) || chr(95) || chr(99) || chr(111) || chr(109) || chr(112) || chr(108) || chr(101) || chr(116) || chr(101)"}' \
               "http://127.0.0.1:${DEV_QUACKAPI_PORT}/sql" 2>/dev/null || true)"
             case "$ready" in
               *setup_complete*) break ;;
