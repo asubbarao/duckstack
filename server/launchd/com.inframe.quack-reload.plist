@@ -1,0 +1,84 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.inframe.quack-reload</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/bin/bash</string>
+		<string>-c</string>
+		<string><![CDATA[
+set -euo pipefail
+
+home="${HOME:-/Users/aloksubbarao}"
+server_dir="${RELOAD_SERVER_DIR:-$home/duckdb-skills/server}"
+state_dir="${RELOAD_STATE_DIR:-$home/.duck/local}"
+snapshot_file="$state_dir/reload-source.snapshot"
+log_file="${RELOAD_LOG:-$home/.duck/logs/reload-events.log}"
+target="${RELOAD_TARGET:-gui/$(id -u)/com.inframe.quack}"
+
+mkdir -p "$state_dir" "$(dirname "$log_file")"
+current_snapshot="$(mktemp "$state_dir/.reload-current.XXXXXX")"
+raw_changes="$(mktemp "$state_dir/.reload-changes.XXXXXX")"
+changed_paths="$(mktemp "$state_dir/.reload-paths.XXXXXX")"
+loadable_paths="$(mktemp "$state_dir/.reload-loadable.XXXXXX")"
+skipped_paths="$(mktemp "$state_dir/.reload-skipped.XXXXXX")"
+trap 'rm -f "$current_snapshot" "$raw_changes" "$changed_paths" "$loadable_paths" "$skipped_paths"' EXIT
+
+# WatchPaths only tells launchd that something changed. The snapshot lets this
+# invocation classify the changed paths without restarting for every file type.
+find "$server_dir" -type f -exec stat -f '%m %z %N' {} + 2>/dev/null | sort > "$current_snapshot"
+if [ -f "$snapshot_file" ]; then
+	comm -3 "$snapshot_file" "$current_snapshot" > "$raw_changes"
+else
+	comm -3 /dev/null "$current_snapshot" > "$raw_changes"
+fi
+
+while IFS= read -r entry; do
+	entry="${entry#	}"
+	path="${entry#* }"
+	path="${path#* }"
+	if [ -n "$path" ]; then
+		printf '%s\n' "$path" >> "$changed_paths"
+	fi
+done < "$raw_changes"
+sort -u "$changed_paths" -o "$changed_paths"
+
+while IFS= read -r path; do
+	case "$path" in
+		*.sql|*.tera) printf '%s\n' "$path" >> "$loadable_paths" ;;
+		*) printf '%s\n' "$path" >> "$skipped_paths" ;;
+	esac
+done < "$changed_paths"
+
+mv "$current_snapshot" "$snapshot_file"
+timestamp="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+
+while IFS= read -r path; do
+	printf 'timestamp=%s event=skipped file=%s reason=not-loaded target=%s\n' "$timestamp" "$path" "$target" >> "$log_file"
+done < "$skipped_paths"
+
+if [ -s "$loadable_paths" ]; then
+	loadable_files="$(paste -sd, "$loadable_paths")"
+	if [ "${RELOAD_DRY_RUN:-0}" = "1" ]; then
+		printf 'timestamp=%s event=triggered files=%s target=%s action=dry-run\n' "$timestamp" "$loadable_files" "$target" >> "$log_file"
+	else
+		printf 'timestamp=%s event=triggered files=%s target=%s action=kickstart\n' "$timestamp" "$loadable_files" "$target" >> "$log_file"
+		exec /bin/launchctl kickstart -k "$target"
+	fi
+fi
+]]></string>
+	</array>
+	<key>StandardErrorPath</key>
+	<string>/Users/aloksubbarao/.duck/logs/reload.err</string>
+	<key>ThrottleInterval</key>
+	<integer>10</integer>
+	<key>WatchPaths</key>
+	<array>
+		<string>/Users/aloksubbarao/duckdb-skills/server</string>
+		<string>/Users/aloksubbarao/duckdb-skills/server/setup.sql</string>
+		<string>/Users/aloksubbarao/duckdb-skills/server/duckdb_mcp.sql</string>
+	</array>
+</dict>
+</plist>
