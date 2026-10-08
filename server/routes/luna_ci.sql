@@ -7,6 +7,6 @@
 CREATE OR REPLACE ROUTE luna_ci_fix POST '/luna/ci-fix' AS
 SELECT rid, (receipt ->> '$.status')::INTEGER AS status, receipt ->> '$.body' AS result
 FROM (SELECT strftime(now(), '%Y%m%dT%H%M%S') || '-' || left(md5($body::VARCHAR || epoch_us(now())::VARCHAR), 8) AS rid,
-             http_post('http://127.0.0.1:9495/sql', MAP {'Content-Type': 'application/json'},
-                 json_object('sql', replace(replace(content, '@RID', rid), '@BODY64', to_base64(encode($body::VARCHAR))))) AS receipt
-      FROM read_text('/Users/aloksubbarao/duckdb-skills/server/luna_ci/handler.sql'));
+             http_post('http://127.0.0.1:$QUACKAPI_PORT$/sql', MAP {'Content-Type': 'application/json'},
+                  json_object('sql', replace(replace(replace(content, '__SERVER_DIR__', '$SERVER_DIR$'), '@RID', rid), '@BODY64', to_base64(encode($body::VARCHAR))))) AS receipt
+      FROM read_text('$SERVER_DIR$/server/luna_ci/handler.sql'));

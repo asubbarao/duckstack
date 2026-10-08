@@ -21,7 +21,7 @@ FROM examples;
 WITH program AS (
  SELECT replace(substring(content, strpos(content, 'CREATE OR REPLACE TABLE agent.stream')),
                 'agent.', 'agent_stream_test.') AS statement
- FROM read_text('/Users/aloksubbarao/duckdb-skills/server/agent_stream.sql')
+ FROM read_text(getvariable('server_dir') || '/server/agent_stream.sql')
 ), executed AS (
  SELECT statement, http_post_form('http://localhost:9495/sql', MAP{}, MAP{'sql': statement}) AS receipt
  FROM program
@@ -52,7 +52,7 @@ WHERE f.line_number=2;
 WITH program AS (
  SELECT replace(substring(content, strpos(content, 'CREATE OR REPLACE TABLE agent.stream')),
                 'agent.', 'agent_stream_test.') AS statement
- FROM read_text('/Users/aloksubbarao/duckdb-skills/server/agent_stream.sql')
+ FROM read_text(getvariable('server_dir') || '/server/agent_stream.sql')
 )
 SELECT http_post_form('http://localhost:9495/sql', MAP{}, MAP{'sql': statement}) AS receipt FROM program;
 SELECT CASE WHEN sum(message_count)=113 AND sum(len(samples))=20

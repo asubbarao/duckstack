@@ -21,9 +21,9 @@ SELECT '-- Refresh agent.stream raw.' || chr(10) ||
     string_agg(content, chr(10) ORDER BY filename) AS query,
     '0 * * * * *' AS schedule
 FROM read_text([
-    '/Users/aloksubbarao/duckdb-skills/server/agent_base.sql',
-    '/Users/aloksubbarao/duckdb-skills/server/agent_stream_incremental.sql',
-    '/Users/aloksubbarao/duckdb-skills/server/agent_stream_views.sql'
+    getvariable('server_dir') || '/server/agent_base.sql',
+    getvariable('server_dir') || '/server/agent_stream_incremental.sql',
+    getvariable('server_dir') || '/server/agent_stream_views.sql'
 ])
 UNION ALL
 -- Hour search rows, then BM25 (only when changed) and up to 128 embeddings: about 3-8 s per tick.
@@ -31,8 +31,8 @@ SELECT '-- Refresh agent.stream hour search.' || chr(10) ||
     string_agg(content, chr(10) ORDER BY filename) AS query,
     '15 */5 * * * *' AS schedule
 FROM read_text([
-    '/Users/aloksubbarao/duckdb-skills/server/agent_stream_hour.sql',
-    '/Users/aloksubbarao/duckdb-skills/server/agent_stream_hour_index.sql'
+    getvariable('server_dir') || '/server/agent_stream_hour.sql',
+    getvariable('server_dir') || '/server/agent_stream_hour_index.sql'
 ]);
 
 SELECT cron_delete(job_id)
@@ -56,12 +56,14 @@ WHERE starts_with(query, '-- Refresh agent.stream hour search.');
 SELECT cron(s.query, s.schedule)
 FROM stream_jobs AS s
 ANTI JOIN cron_jobs() AS j ON trim(j.query) = trim(s.query) AND j.schedule = s.schedule
-WHERE starts_with(s.query, '-- Refresh agent.stream raw.');
+WHERE starts_with(s.query, '-- Refresh agent.stream raw.')
+  AND nullif(getenv('DUCKSTACK_CI'), '') IS DISTINCT FROM '1';
 
 SELECT cron(s.query, s.schedule)
 FROM stream_jobs AS s
 ANTI JOIN cron_jobs() AS j ON trim(j.query) = trim(s.query) AND j.schedule = s.schedule
-WHERE starts_with(s.query, '-- Refresh agent.stream hour search.');
+WHERE starts_with(s.query, '-- Refresh agent.stream hour search.')
+  AND nullif(getenv('DUCKSTACK_CI'), '') IS DISTINCT FROM '1';
 
 -- The first one-minute cron tick catches up after restart. A separate bootstrap
 -- races that tick during a full snapshot and can leave both refreshes unfinished.
