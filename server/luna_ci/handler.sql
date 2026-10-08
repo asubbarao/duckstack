@@ -29,7 +29,7 @@ FROM f;
 COPY (SELECT tera_render('lookup.tera',
           json_object('repo', repo, 'number', number, 'dir', '/Users/aloksubbarao/.duck/raw/luna_ci/@RID',
                       'valid', repo_ok AND NOT starts_with(lower(repo), 'inframe-risk/')),
-          autoescape := false, template_path := '/Users/aloksubbarao/duckdb-skills/server/luna_ci/*.tera') AS script
+          autoescape := false, template_path := '__SERVER_DIR__/server/luna_ci/*.tera') AS script
       FROM luna_ci_requests WHERE rid = '@RID')
 TO '/Users/aloksubbarao/.duck/raw/luna_ci/@RID/lookup.sh' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '');
 UPDATE luna_ci_requests SET pr = d.pr, head_sha = d.head_sha, jobs = d.jobs, decision = d.decision
@@ -104,8 +104,8 @@ WITH r AS (
   FROM paths
 ), rendered AS (
   SELECT *,
-    tera_render('brief.tera', context, autoescape := false, template_path := '/Users/aloksubbarao/duckdb-skills/server/luna_ci/*.tera') AS brief,
-    tera_render('run.tera', context, autoescape := false, template_path := '/Users/aloksubbarao/duckdb-skills/server/luna_ci/*.tera') AS run_script
+    tera_render('brief.tera', context, autoescape := false, template_path := '__SERVER_DIR__/server/luna_ci/*.tera') AS brief,
+    tera_render('run.tera', context, autoescape := false, template_path := '__SERVER_DIR__/server/luna_ci/*.tera') AS run_script
   FROM ctx
 )
 SELECT rid, source, repo, number, head_owner, head_branch, head_sha, jobs AS failing_jobs, task, bare, worktree, run_dir,
@@ -117,7 +117,7 @@ COPY (SELECT tera_render('launch.tera',
           json_object('runs', coalesce(list({run_dir: run_dir, brief: brief, run_script: run_script,
                                              brief_eof: 'LUNA_BRIEF_' || md5(brief), run_eof: 'LUNA_RUN_' || md5(run_script)}),
                                        [])),
-          autoescape := false, template_path := '/Users/aloksubbarao/duckdb-skills/server/luna_ci/*.tera') AS script
+          autoescape := false, template_path := '__SERVER_DIR__/server/luna_ci/*.tera') AS script
       FROM luna_ci_dispatch WHERE rid = '@RID')
 TO '/Users/aloksubbarao/.duck/raw/luna_ci/@RID/launch.sh' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '');
 INSERT INTO luna_ci_receipts BY NAME

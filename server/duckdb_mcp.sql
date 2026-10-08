@@ -38,8 +38,6 @@ SELECT *, response.status AS status, response.reason AS reason, response.body AS
   '{"sql":{"type":"string","description":"Complete SQL program, sent as written with no LIMIT added"}}',
   '["sql"]', 'json');
 -- Search and drill-down share the SQL used by the five-minute stream refresh.
-.read /Users/aloksubbarao/duckdb-skills/server/agent_base.sql
-.read /Users/aloksubbarao/duckdb-skills/server/agent_stream_tools.sql
 PRAGMA mcp_publish_tool('self_dispatch',
   'Primary row-driven execution tool. Pass a SELECT with a statement column and optional source keys; only returned rows execute through the selected dev QuackAPI. Returns full source rows, statements and raw HTTP receipts, including failures; no row cap. Zero source rows means no calls. Use WHERE NOT EXISTS for missing work. Never replay uncertain writes; dependent statements belong in one ordered SQL body.',
   $dispatch$WITH statements AS (FROM query($rows_sql)),

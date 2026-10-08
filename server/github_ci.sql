@@ -37,9 +37,9 @@ WITH stage AS (
 phase AS (SELECT true AS first UNION ALL SELECT false),
 rendered AS (
   SELECT step, first, tera_render(content, json_object('kind', kind, 'first', first,
-      'fetch_template', '/Users/aloksubbarao/duckdb-skills/server/github_fetch.tera',
+      'fetch_template', getvariable('server_dir') || '/server/github_fetch.tera',
       'sql_url', 'http://localhost:9495/sql'), autoescape := false) AS statement
   FROM stage CROSS JOIN phase
-  CROSS JOIN read_text('/Users/aloksubbarao/duckdb-skills/server/github_dispatch.tera'))
+  CROSS JOIN read_text(getvariable('server_dir') || '/server/github_dispatch.tera'))
 SELECT http_post_form('http://localhost:9495/sql', MAP{}, MAP{'sql': string_agg(statement, ';' || chr(10) ORDER BY step, first DESC)}) AS receipt
 FROM rendered;

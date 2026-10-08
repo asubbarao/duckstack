@@ -10,7 +10,7 @@
 CREATE OR REPLACE TABLE _reload_startup_files AS
 WITH
     level0(path) AS (VALUES (coalesce(nullif(getenv('DUCKSTACK_RELOAD_SETUP'), ''),
-                                      '/Users/aloksubbarao/duckdb-skills/server/setup.sql'))),
+                                      getvariable('server_dir') || '/server/setup.sql'))),
     level1(path) AS (
         SELECT DISTINCT replace(trim(replace(replace(substr(line.content, 7), chr(10), ''), chr(13), '')),
                                 '/Users/aloksubbarao/duckdb-skills/server',
@@ -121,14 +121,9 @@ SELECT http_post('http://127.0.0.1:' || getvariable('quackapi_port') || '/sql',
                      replace(command, chr(39), chr(39) || chr(39)) || chr(39) || ')')) AS restart_receipt
 FROM _reload_restart_request
 $watcher$, '*/30 * * * * *') AS reload_watcher_job;
-.read /Users/aloksubbarao/duckdb-skills/server/ext_catalog.sql
-.read /Users/aloksubbarao/duckdb-skills/readthedocs_catalog.sql
-.read /Users/aloksubbarao/duckdb-skills/server/open_prs.sql
-SELECT cron('FROM post_file(' || chr(39) || '/Users/aloksubbarao/duckdb-skills/server/' || file || chr(39) || ')', schedule) AS job
+SELECT cron('FROM post_file(' || chr(39) || getvariable('server_dir') || '/server/' || file || chr(39) || ')', schedule) AS job
 FROM (SELECT 'live.sql' AS file, '30 * * * * *' AS schedule
       UNION ALL SELECT 'open_prs.sql', '0 7 * * * *'
       UNION ALL SELECT 'luna_ci.sql', '0 9 * * * *'
       UNION ALL SELECT 'luna_ci_done.sql', '40 * * * * *'
       UNION ALL SELECT '../readthedocs_catalog.sql', '20 * * * * *');
-.read /Users/aloksubbarao/duckdb-skills/server/agent_stream_schedule.sql
-.read /Users/aloksubbarao/duckdb-skills/server/ext_catalog_schedule.sql

@@ -2,11 +2,8 @@
 -- leading request comment carries no_limit=true (query_no_limit sets it, so its "no cap" is true).
 -- Only the MCP-generated leading request comment is retained as transport provenance.
 INSTALL quackapi FROM community; LOAD quackapi;
--- Opt-in incubator SQL executor and typed browser-capture handoff.
-.read /Users/aloksubbarao/incubator/relational-acquisition/sql/routes.sql
-.read /Users/aloksubbarao/incubator/relational-acquisition/tests/routes.sql
--- Luna CI-fix webhook: POST /luna/ci-fix {repo, number[, source, jobs, task]}; handler in luna_ci/handler.sql.
-.read /Users/aloksubbarao/duckdb-skills/server/routes/luna_ci.sql
+-- Optional incubator routes are not part of this portable bootstrap. The
+-- Luna CI-fix webhook is loaded by setup.sql's ordered boot file list.
 CREATE SCHEMA IF NOT EXISTS agents;
 CREATE OR REPLACE VIEW agents.path_aliases AS
 SELECT 'asubbarao.github' AS alias, 'ASUBBARAO_GITHUB_ROOT' AS environment_variable,
@@ -57,10 +54,10 @@ SELECT 'routes ok' AS routes
 $routes$, '@QUACK_URI', getvariable('quack_uri')), '@OTLP_DIR', getvariable('otlp_dir')),
   token := getenv('QUACK_TOKEN'));
 -- Agent inbox: POST /inbox with any JSON body; luna_ci_done.sql posts completion receipts here.
-FROM read_text('mkdir -p /Users/aloksubbarao/.duck/raw/inbox && touch /Users/aloksubbarao/.duck/raw/inbox/inbox.ndjson |');
+FROM read_text('mkdir -p ' || getenv('HOME') || '/.duck/raw/inbox && touch ' || getenv('HOME') || '/.duck/raw/inbox/inbox.ndjson |');
 CREATE OR REPLACE VIEW agent_inbox AS
 SELECT received_at, source, kind, payload, filename
-FROM read_json('/Users/aloksubbarao/.duck/raw/inbox/inbox.ndjson', format = 'newline_delimited', filename = true,
+FROM read_json(getenv('HOME') || '/.duck/raw/inbox/inbox.ndjson', format = 'newline_delimited', filename = true,
                columns = {received_at: 'TIMESTAMPTZ', source: 'VARCHAR', kind: 'VARCHAR', payload: 'JSON'});
 CREATE OR REPLACE TABLE _quackapi_serve AS
 SELECT now() AS started_at, * FROM quackapi_serve(getvariable('quackapi_port'), host := '127.0.0.1');

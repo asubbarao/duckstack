@@ -38,7 +38,7 @@ COPY (SELECT 'mkdir -p ' || chr(39) || replace(parse_dirpath(target),chr(39),chr
  || chr(39) || replace(target,chr(39),chr(39)||'"'||chr(39)||'"'||chr(39)) || chr(39)
  FROM stream_pending_files ORDER BY source,batch,path)
 TO '| /bin/bash' (FORMAT csv,HEADER false,QUOTE '');
-SET VARIABLE stream_normalization = (SELECT content FROM read_text('/Users/aloksubbarao/duckdb-skills/server/agent_stream_normalize.sql'));
+SET VARIABLE stream_normalization = (SELECT content FROM read_text(getvariable('server_dir') || '/server/agent_stream_normalize.sql'));
 CREATE OR REPLACE TEMP TABLE stream_load_jobs AS
 WITH roots AS (SELECT DISTINCT source,batch,root FROM stream_pending_files),
 reader AS (

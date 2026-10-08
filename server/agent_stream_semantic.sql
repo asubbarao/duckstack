@@ -1,6 +1,7 @@
 -- Cosine search over agent.stream_hour_vector (same model and text as agent_stream_hour_index.sql). An exact scan:
 -- at ~1.5k hour vectors it is milliseconds, so there is no HNSW index. Returns five session-hours with up to five
 -- human/agent condensed items (id + head/tail); full text via stream_message(id). The quoted phrase is $q.
+LOAD quackformers;
 WITH scored AS (
     SELECT v.hour_id, array_cosine_similarity(v.embedding,
         embed('launchctl plist wrapper server exits log')::FLOAT[384]) AS similarity

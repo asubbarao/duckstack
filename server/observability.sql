@@ -90,7 +90,8 @@ WHERE j.query GLOB '*meta.host_process_samples*'
 
 SELECT cron(query, schedule)
 FROM _observability_process_job
-WHERE (trim(query), schedule) NOT IN (SELECT trim(query), schedule FROM cron_jobs());
+WHERE (trim(query), schedule) NOT IN (SELECT trim(query), schedule FROM cron_jobs())
+  AND nullif(getenv('DUCKSTACK_CI'), '') IS DISTINCT FROM '1';
 
 -- A single `text` column is emitted by quackapi as text/plain, which Prometheus can scrape.
 CREATE OR REPLACE VIEW meta.prometheus_metrics AS

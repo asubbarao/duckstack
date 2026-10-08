@@ -1,6 +1,5 @@
 -- Each dispatch binds the complete saved query as a literal PRAGMA argument.
--- stream_semantic embeds its question with quackformers' embed(); LOAD here so it works before the first cron tick.
-LOAD quackformers;
+-- stream_semantic loads quackformers when that host-only job actually runs; CI does not schedule it.
 WITH programs AS (
     SELECT filename,
         CASE WHEN ends_with(filename, 'search.sql') THEN 'stream_search' ELSE 'stream_semantic' END AS name,
@@ -9,8 +8,8 @@ WITH programs AS (
             ELSE 'Vector (cosine) search over agent.stream_hour embeddings of the human/agent exchange: five session-hours with up to five dialog items (id + head/tail). Use stream_message with an id for full text.' END AS description,
         rtrim(replace(content, '''launchctl plist wrapper server exits log''', '$q::VARCHAR'), chr(10) || chr(13) || ' ;') AS query
     FROM read_text([
-        '/Users/aloksubbarao/duckdb-skills/server/agent_stream_search.sql',
-        '/Users/aloksubbarao/duckdb-skills/server/agent_stream_semantic.sql'
+        getvariable('server_dir') || '/server/agent_stream_search.sql',
+        getvariable('server_dir') || '/server/agent_stream_semantic.sql'
     ])
 ), statements AS (
     SELECT name, printf($publish$PRAGMA mcp_publish_tool('%s', '%s', $query$%s$query$,
@@ -19,7 +18,7 @@ WITH programs AS (
     FROM programs
 ), sent AS (
     SELECT array_agg({name: name, sql: sql,
-        receipt: http_post('http://localhost:9495/sql', MAP{'Content-Type': 'application/json'}, {'sql': sql}::JSON)}) AS receipts
+        receipt: http_post('http://localhost:' || getvariable('quackapi_port') || '/sql', MAP{'Content-Type': 'application/json'}, {'sql': sql}::JSON)}) AS receipts
     FROM statements
 )
 SELECT r.name, r.receipt.status AS status, r.receipt.body AS body
