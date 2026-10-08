@@ -1,4 +1,4 @@
--- Run this complete body through dev :9495/sql after lake is attached.
+-- Run this complete body through dev's Quack door after lake is attached.
 -- Source: original native read_conversations rows on reader :19494, never agent.stream.
 -- Claude/Desktop require roots; Codex accepts literal JSONL paths (measured).
 -- Root reads stream into a TEMP table, never an HTTP array of source observations.
@@ -181,9 +181,9 @@ UPDATE lake_agent_programs SET sql=
  || 'FROM lake.raw.agent_capture_files WHERE system=''' || system
  || ''' AND path_sha256=''' || path_sha256 || ''';' || chr(10) || sql;
 
--- ShellFS performs sequential submission to the selected existing service.
--- JSON request bodies avoid form-size limits. Generated SQL and raw HTTP receipts
--- are retained locally, including failures; the first non-200 stops submission.
+-- ShellFS submits sequentially through the selected server's Quack door. The HTTP
+-- route has an execution deadline, so a stable ephemeral client transports each
+-- retained JSON program directly. Result, stderr and exit code survive failures.
 SET VARIABLE lake_agent_mkdir='mkdir -p "' || getvariable('lake_agent_work_root') || '" |';
 FROM read_text(getvariable('lake_agent_mkdir'));
 COPY (SELECT 'printf %s ' || chr(39)
@@ -191,13 +191,24 @@ COPY (SELECT 'printf %s ' || chr(39)
  || chr(39) || ' > "' || getvariable('lake_agent_work_root') || '/'
  || lpad(batch::VARCHAR,7,'0') || '.json"' FROM lake_agent_programs ORDER BY batch)
 TO '| /bin/bash' (FORMAT csv,HEADER false,QUOTE '');
+COPY (SELECT $transport$
+SET extension_directory=getenv('HOME') || '/.duck/extensions';
+LOAD quack;
+SET VARIABLE lake_agent_job_sql=(SELECT sql FROM read_json(getenv('LAKE_AGENT_JOB')));
+FROM quack_query('quack:localhost:9494',getvariable('lake_agent_job_sql'),
+ token := getenv('QUACK_TOKEN'));
+$transport$)
+TO (getvariable('lake_agent_work_root') || '/submit.sql')
+ (FORMAT csv,HEADER false,QUOTE '');
 SET VARIABLE lake_agent_submit =
  'set -e; for job in "' || getvariable('lake_agent_work_root') || '"/*.json; do '
  || '[ -f "$job" ] || continue; '
- || 'code=$(curl --silent --show-error --max-time 1800 -o "$job.receipt" -w "%{http_code}" '
- || '-H "Content-Type: application/json" --data-binary @"$job" http://localhost:9495/sql); '
+ || 'code=0; LAKE_AGENT_JOB="$job" /opt/homebrew/bin/duckdb :memory: '
+ || '-init /dev/null -bail -json -f "' || getvariable('lake_agent_work_root')
+ || '/submit.sql" > "$job.receipt" 2> "$job.stderr" || code=$?; '
  || 'printf ''%s\n'' "$code" > "$job.status"; '
- || 'cat "$job.receipt"; printf ''\n''; [ "$code" = 200 ] || exit 1; done |';
+ || 'cat "$job.receipt"; printf ''\n''; '
+ || 'if [ "$code" != 0 ]; then cat "$job.stderr" >&2; exit "$code"; fi; done |';
 FROM read_text(getvariable('lake_agent_submit'));
 DELETE FROM agent.lake_capture_lock
  WHERE name='original-agent-observations' AND run_id::VARCHAR=getvariable('lake_agent_run_id');
