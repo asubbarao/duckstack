@@ -216,7 +216,33 @@ SET VARIABLE setup_boot_program = (
                chr(39) || replace(getvariable('server_dir') || '/' || relative_path,
                                     chr(39), chr(39) || chr(39)) || chr(39) || ')' AS statement
         FROM _setup_boot_files
-        WHERE phase = 6
+        WHERE phase = 6 AND ordinal = 1
+    )
+    SELECT 'SELECT string_agg(replace(content, chr(36) || ' || chr(39) || 'SERVER_DIR' || chr(39) || ' || chr(36), ' ||
+           chr(39) || replace(getvariable('server_dir'), chr(39), chr(39) || chr(39)) || chr(39) ||
+           ') || chr(10) || chr(59), chr(10) ORDER BY ordinal) AS program FROM (' ||
+           array_to_string(list(statement ORDER BY ordinal), ' UNION ALL ') || ')'
+    FROM statements
+);
+SET VARIABLE setup_boot_program = (
+    SELECT getvariable('setup_boot_context') || chr(10) || program
+    FROM query(getvariable('setup_boot_program'))
+);
+-- Observability declares a raw CREATE ROUTE. Let the live QuackAPI parser handle it, as for the
+-- phase-4 route tail, before dispatching the remaining phase-6 SQL through native Quack.
+SELECT CASE WHEN receipt.status = 200 THEN receipt.body ELSE error('setup.sql phase 6 route failed: ' || receipt.body) END AS body
+FROM (SELECT http_post('http://127.0.0.1:' || getvariable('quackapi_port')::VARCHAR || '/sql',
+             MAP {'Content-Type': 'application/json'},
+             json_object('sql', getvariable('setup_boot_program'))) AS receipt);
+
+SET VARIABLE setup_boot_program = (
+    WITH statements AS (
+        SELECT ordinal,
+               'SELECT ' || ordinal || ' AS ordinal, content FROM read_text(' ||
+               chr(39) || replace(getvariable('server_dir') || '/' || relative_path,
+                                    chr(39), chr(39) || chr(39)) || chr(39) || ')' AS statement
+        FROM _setup_boot_files
+        WHERE phase = 6 AND ordinal > 1
     )
     SELECT 'SELECT string_agg(replace(content, chr(36) || ' || chr(39) || 'SERVER_DIR' || chr(39) || ' || chr(36), ' ||
            chr(39) || replace(getvariable('server_dir'), chr(39), chr(39) || chr(39)) || chr(39) ||
