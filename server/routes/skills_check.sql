@@ -13,10 +13,11 @@ WITH run AS (
 tmp_home=$(/usr/bin/mktemp -d); tmp_out=$(/usr/bin/mktemp); tmp_err=$(/usr/bin/mktemp); tmp_out_clean=$(/usr/bin/mktemp); tmp_err_clean=$(/usr/bin/mktemp);
 trap '/bin/rm -rf "$tmp_home" "$tmp_out" "$tmp_err" "$tmp_out_clean" "$tmp_err_clean" "$tmp_out_clean.norm" "$tmp_err_clean.norm"' EXIT;
 started=$(/bin/date +%s);
+duckdb_bin="$(command -v duckdb)";
 if [ -n "${GITHUB_TOKEN:-}" ]; then
-  /usr/bin/env -i HOME="$tmp_home" PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin GITHUB_TOKEN="$GITHUB_TOKEN" duckdb :memory: -c ".read skills/clean-room/recipe.sql" >"$tmp_out" 2>"$tmp_err";
+  /usr/bin/env -i HOME="$tmp_home" PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin GITHUB_TOKEN="$GITHUB_TOKEN" "$duckdb_bin" :memory: -c ".read skills/clean-room/recipe.sql" >"$tmp_out" 2>"$tmp_err";
 else
-  /usr/bin/env -i HOME="$tmp_home" PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin duckdb :memory: -c ".read skills/clean-room/recipe.sql" >"$tmp_out" 2>"$tmp_err";
+  /usr/bin/env -i HOME="$tmp_home" PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin "$duckdb_bin" :memory: -c ".read skills/clean-room/recipe.sql" >"$tmp_out" 2>"$tmp_err";
 fi;
 exit_code=$?;
 duration=$(( $(/bin/date +%s) - started ));
