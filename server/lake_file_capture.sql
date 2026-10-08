@@ -130,10 +130,20 @@ COPY (SELECT 'printf %s ' || chr(39) || replace(json_object('sql',sql)::VARCHAR,
  chr(39),chr(39)||'"'||chr(39)||'"'||chr(39)) || chr(39) || ' > "' || getvariable('lake_file_work_root')
  || '/' || lpad(batch::VARCHAR,7,'0') || '.json"' FROM lake_file_programs ORDER BY batch)
  TO '| /bin/bash' (FORMAT csv,HEADER false,QUOTE '');
+-- The ephemeral client transports one bundle; its database holds no source state.
+-- Direct Quack avoids the HTTP executor deadline on large native log files.
+SET VARIABLE lake_file_client_sql=$client$
+SET extension_directory=getenv('HOME') || '/.duck/extensions';
+LOAD quack;
+SET VARIABLE capture_sql=(SELECT sql FROM read_json(getenv('LAKE_FILE_JOB')));
+FROM quack_query('quack:localhost:9494',getvariable('capture_sql'),token:=getenv('QUACK_TOKEN'));
+$client$;
+COPY (SELECT getvariable('lake_file_client_sql'))
+ TO (getvariable('lake_file_work_root') || '/client.sql') (FORMAT csv,HEADER false,QUOTE '',ESCAPE '');
 SET VARIABLE lake_file_submit='set -e; for job in "' || getvariable('lake_file_work_root') || '"/*.json; do '
- || '[ -f "$job" ] || continue; code=$(curl --silent --show-error --max-time 1800 -o "$job.receipt" -w "%{http_code}" '
- || '-H "Content-Type: application/json" --data-binary @"$job" http://localhost:9495/sql 2>"$job.stderr") '
- || '|| { status=$?; printf ''%s\n'' "$status" > "$job.transport_status"; exit "$status"; }; '
- || 'printf ''%s\n'' "$code" > "$job.status"; cat "$job.receipt"; printf ''\n''; [ "$code" = 200 ] || exit 1; done |';
+ || '[ -f "$job" ] || continue; if LAKE_FILE_JOB="$job" /opt/homebrew/bin/duckdb '
+ || '-init /dev/null :memory: -bail -json -f "' || getvariable('lake_file_work_root')
+ || '/client.sql" >"$job.receipt" 2>"$job.stderr"; then code=0; else code=$?; fi; '
+ || 'printf ''%s\n'' "$code" > "$job.status"; cat "$job.receipt"; printf ''\n''; [ "$code" = 0 ] || exit "$code"; done |';
 FROM read_text(getvariable('lake_file_submit'));
 DELETE FROM agent.lake_capture_lock WHERE name='native-file-capture' AND run_id::VARCHAR=getvariable('lake_file_run_id');
