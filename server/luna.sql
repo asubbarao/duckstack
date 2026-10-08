@@ -4,6 +4,9 @@
 
 -- One row per open PR of mine whose CI is red because of the PR (open_prs.sql), minus PRs whose worktree
 -- already exists (a Luna is, or was, on it). The task column is the whole brief.
+-- open_prs.sql fills the table hourly; on a fresh boot it has to exist, empty, for the view to bind.
+CREATE TABLE IF NOT EXISTS open_prs_waiting (checked_at TIMESTAMPTZ, whose_move VARCHAR, idle_days BIGINT, repo VARCHAR,
+    number INTEGER, title VARCHAR, ci VARCHAR, base_ci VARCHAR, mergeable VARCHAR, last_reviewer VARCHAR);
 CREATE OR REPLACE VIEW agents.work AS
 SELECT repo, number, title, idle_days,
        '/Users/aloksubbarao/worktrees/luna-ci/' || replace(repo, '/', '-') || '-' || number AS worktree,
