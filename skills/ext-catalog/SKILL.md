@@ -114,8 +114,8 @@ INSTALL webbed FROM community; LOAD webbed;
 
 SELECT c.extension_name, b.*
 FROM agents.ext_catalog c
-CROSS JOIN UNNEST(html_to_duck_blocks(parse_html(c.github->>'body'))) t(b)
-WHERE c.extension_name = 'read_lines'
+CROSS JOIN UNNEST(html_to_duck_blocks(parse_html(c.response ->> 'body'))) t(b)
+WHERE c.extension_name = 'read_lines' AND c.kind = 'github'
   AND b.element_type = 'heading'
 ORDER BY b.element_order;
 ```
@@ -132,7 +132,7 @@ Every readthedocs.io page an extension README links to is saved raw in `lake.age
 `agents.ext_doc_sections` is a view over it: the saved HTML as markdown sections, one row per
 heading: `site`, `section_url` (page URL `#` heading id), `section_path`, `level`, `title`,
 `content`, `code` (the section's code blocks), `tables` (its tables as JSON). 5,075 sections over
-9 sites on 2026-10-09. No refresh job is registered in the current `setup.sql`.
+9 sites on 2026-10-09. The hourly catalog cron refreshes them with the rest of `ext_stale`.
 
 ```sql
 SELECT section_url, level, title, len(code) AS code_blocks
@@ -163,16 +163,16 @@ lengths, bounded links/headings and errors to the agent, not the entire fetched 
 
 | Object | Contents |
 |---|---|
-| `agents.ext_page` | Table, one row per fetched url: `url`, `fetched_at`, `response` (http_get JSON: status, headers, body) |
+| `lake.agents.ext_fetch` | Table, one row per fetch: `url`, `fetched_at`, `response` JSON (`status`, `body`) |
+| `agents.ext_page` | View: the newest 200 response per url |
 | `agents.ext_url` | View: `extension_name`, `kind` (community, github, yaml), `url`, read off the list page |
-| `agents.ext_catalog` | View: PIVOT of `ext_page`, one row per extension with a `community`, `github` and `yaml` response |
-| `agents.ext_docs` | View: extension name and README (the GitHub `<article>` parsed by webbed) |
+| `agents.ext_catalog` | View: `ext_url` joined to `ext_page`, one row per extension and kind with its `response` |
+| `agents.ext_docs` | View: extension name and README (the GitHub `<article>` of the `github` row, parsed by webbed) |
 | `agents.ext_stale` | View: urls missing or older than three days |
 
-`~/duckdb-skills/server/ext_catalog.sql` fetches every url in `ext_stale` into `ext_page`; pages
-expire after three days, and with nothing stale a run fetches and writes nothing. It is not
-registered in the current `setup.sql` (2026-10-09), and it uses `crawl()`, which has no DuckDB 1.5.6
-build, so the catalog is read-only until that is replaced. Reuse raw responses to add parsed columns. Catalog lookup comes first; inspect runtime signatures only
+The hourly cron in `server/setup.sql` fetches every url in `ext_stale` (curl through shellfs, one
+self-dispatched INSERT per url, 90 per run); pages expire after three days, and with nothing stale a
+run fetches and writes nothing. Reuse raw responses to add parsed columns. Catalog lookup comes first; inspect runtime signatures only
 to resolve a documentation gap or version mismatch, since READMEs may omit details.
 
 Verified on dev on 2026-09-24: glob search, correlated ScalarFS line reads, named line

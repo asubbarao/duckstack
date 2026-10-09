@@ -116,17 +116,12 @@ ANTI JOIN (FROM agents.ext_page WHERE fetched_at > now() - INTERVAL 3 DAY) USING
 ANTI JOIN (FROM agents.ext_fetch WHERE fetched_at > now() - INTERVAL 5 MINUTE) USING (url);
 CREATE OR REPLACE VIEW agents.ext_fetch_errors AS
 FROM agents.ext_fetch WHERE response ->> 'status' IS DISTINCT FROM '200';
-CREATE OR REPLACE VIEW agents.ext_catalog AS  -- one row per extension; each column is that kind's newest page
-WITH page AS (FROM agents.ext_url JOIN agents.ext_page USING (url))
-SELECT extension_name, c.response AS community, g.response AS github, y.response AS yaml
-FROM (SELECT DISTINCT extension_name FROM agents.ext_url)
-LEFT JOIN (FROM page WHERE kind = 'community') c USING (extension_name)
-LEFT JOIN (FROM page WHERE kind = 'github') g USING (extension_name)
-LEFT JOIN (FROM page WHERE kind = 'yaml') y USING (extension_name);
+CREATE OR REPLACE VIEW agents.ext_catalog AS  -- one row per extension and kind (community, github, yaml): its newest page
+FROM agents.ext_url JOIN agents.ext_page USING (url);
 CREATE OR REPLACE VIEW agents.ext_docs AS  -- the README: GitHub's <article>, minus its heading permalinks
-SELECT extension_name, duck_blocks_to_md(list_filter(html_to_duck_blocks(xml_extract_elements(parse_html(github ->> 'body'), '//article')[1]::VARCHAR),
+SELECT extension_name, duck_blocks_to_md(list_filter(html_to_duck_blocks(xml_extract_elements(parse_html(response ->> 'body'), '//article')[1]::VARCHAR),
                                                      b -> NOT coalesce(starts_with(b.attributes['id'], 'user-content-'), false))) AS readme
-FROM agents.ext_catalog;
+FROM agents.ext_catalog WHERE kind = 'github';
 -- Every readthedocs page an extension README links to, saved raw in ext_fetch, as markdown sections.
 CREATE OR REPLACE VIEW agents.ext_doc_sections AS
 WITH page AS (
@@ -171,39 +166,30 @@ FROM quack_serve('quack:localhost:9494', token := getenv('QUACK_TOKEN'));
 FROM otlp_serve('otlp:127.0.0.1:4318', disable_auth := true);
 
 -- 9495: POST /sql {"sql": "..."}; POST /inbox any JSON, read it from quackapi_jobs; GET /metrics for Prometheus (/opt/homebrew/etc/prometheus.yml);
--- POST /mcp/ is the dev MCP server: tools query and execute, each a curl to /sql, so calls run in parallel.
+-- POST /mcp/ is the dev MCP server: tools query and execute, each a post to /sql, so calls run in parallel.
 CREATE QUEUE inbox;
 CREATE OR REPLACE ROUTE sql POST '/sql' AS SELECT * FROM quack_query('quack:localhost:9494', $sql, token := getenv('QUACK_TOKEN'));
 CREATE OR REPLACE ROUTE inbox POST '/inbox' STATUS 201 AS SELECT quackapi_enqueue('inbox', $body::JSON) AS id;
 CREATE OR REPLACE ROUTE metrics GET '/metrics' AS SELECT text FROM meta.prometheus_metrics;
 -- A middleware that stops the request sends its body raw as application/json, which is what MCP clients read.
--- The fixed replies are one JSON document keyed by method; a tool call's text is the /sql reply (rows, or the
--- DuckDB error). Notifications carry no id and get 202; the body must not be empty or quackapi answers 500.
+-- The fixed replies are a MAP keyed by method; a tool call's text is the /sql reply (rows, or the DuckDB error).
+-- Notifications carry no id and get 202; the body must not be empty or quackapi answers 500.
 CREATE GROUP mcp WITH (prefix='/mcp');
 CREATE OR REPLACE ROUTE mcp POST '/' IN GROUP mcp AS SELECT '' AS text;
 CREATE OR REPLACE MIDDLEWARE mcp BEFORE GROUP mcp AS
 WITH msg AS (
-    SELECT $body::JSON -> '$.id' AS id, $body::JSON ->> '$.method' AS method
-), called AS (  -- a tool call curls /sql through shellfs; the body travels as hex, so the shell never sees a quote
-    FROM msg WHERE method IS DISTINCT FROM 'tools/call'
-    UNION ALL BY NAME
-    SELECT $body::JSON -> '$.id' AS id, 'tools/call' AS method, json AS reply, json_exists(json, '$.detail') AS failed
-    FROM read_json_objects($c$echo $c$
-         || hex(encode(json_object('sql', coalesce($body::JSON ->> '$.params.arguments.sql', $body::JSON ->> '$.params.arguments.statement'))::VARCHAR))
-         || $c$ | xxd -r -p | curl -s -H 'content-type: application/json' --data-binary @- http://127.0.0.1:9495/sql |$c$, format := 'unstructured')
-    WHERE $body::JSON ->> '$.method' = 'tools/call'
+    SELECT $body::JSON -> '$.id' AS id, $body::JSON ->> '$.method' AS method,
+           coalesce($body::JSON ->> '$.params.arguments.sql', $body::JSON ->> '$.params.arguments.statement') AS sql
+), called AS (
+    SELECT *, CASE WHEN method = 'tools/call' THEN http_post('http://127.0.0.1:9495/sql', MAP {'Content-Type': 'application/json'}, json_object('sql', sql)) END AS receipt
+    FROM msg
 )
 SELECT false AS allow, CASE WHEN id IS NULL THEN 202 ELSE 200 END AS status,
        json_object('jsonrpc', '2.0', 'id', id, 'result', coalesce(
-           $r${"initialize": {"protocolVersion": "2025-06-18", "serverInfo": {"name": "dev", "version": "1"}, "capabilities": {"tools": {}}},
-               "ping": {},
-               "tools/list": {"tools": [
-                 {"name": "query", "description": "Run any SQL on dev, reads and writes. Returns the rows as JSON; a failure returns the DuckDB error.",
-                  "inputSchema": {"type": "object", "properties": {"sql": {"type": "string"}}, "required": ["sql"]}},
-                 {"name": "execute", "description": "Same as query, for callers that name it execute.",
-                  "inputSchema": {"type": "object", "properties": {"statement": {"type": "string"}}, "required": ["statement"]}}]}}$r$::JSON
-               -> ('$."' || method || '"'),
-           json_object('content', [json_object('type', 'text', 'text', called.reply::VARCHAR)], 'isError', called.failed)))::VARCHAR AS body,
+           MAP {'initialize': '{"protocolVersion": "2025-06-18", "serverInfo": {"name": "dev", "version": "1"}, "capabilities": {"tools": {}}}',
+                'ping': '{}',
+                'tools/list': '{"tools": [{"name": "query", "description": "Run any SQL on dev, reads and writes. Returns the rows as JSON; a failure returns the DuckDB error.", "inputSchema": {"type": "object", "properties": {"sql": {"type": "string"}}, "required": ["sql"]}}, {"name": "execute", "description": "Same as query, for callers that name it execute.", "inputSchema": {"type": "object", "properties": {"statement": {"type": "string"}}, "required": ["statement"]}}]}'}[method]::JSON,
+           json_object('content', [json_object('type', 'text', 'text', receipt ->> '$.body')], 'isError', receipt ->> '$.status' <> '200')))::VARCHAR AS body,
        NULL::VARCHAR AS header_name, NULL::VARCHAR AS header_value
 FROM called;
 FROM quackapi_serve(9495, host := '127.0.0.1');
