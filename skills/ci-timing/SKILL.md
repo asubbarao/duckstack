@@ -149,7 +149,7 @@ reader.
 - `slow.sql` → `slow.html` — one green staging run: jobs, the steps inside the long pole, the
   slowest backend tests and test files, timeout plateaus, per-shard test time.
 
-Run from that folder: `duckdb :memory: -c ".read slow.sql" && open slow.html`. `raw/` is
+Run from that folder: `duckdb :memory: -f slow.sql && open slow.html`. `raw/` is
 gitignored and grows with every run; the tables are rebuilt from it alone.
 
 ## 5. A brief finding page (the INF-1390 shard brief, 2026-09-23)

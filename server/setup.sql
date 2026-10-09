@@ -54,6 +54,15 @@ SELECT * REPLACE ('claude-desktop' AS source) FROM read_conversations(source := 
 UNION ALL BY NAME
 SELECT * REPLACE ('codex' AS source) FROM read_conversations(source := 'codex', path := '/Users/aloksubbarao/.codex');
 
+-- Read every minute by the mac-metrics collector (launchd com.alok.mac-metrics, ~/Documents/mac-metrics-incubator).
+CREATE SCHEMA IF NOT EXISTS agents;
+CREATE OR REPLACE VIEW agents.mac_query_activity AS
+SELECT getenv('QUACK_INSTANCE_ID') AS instance_id, min("timestamp") OVER () AS instance_started_at,
+       getenv('QUACK_WRAPPER_PID')::BIGINT AS wrapper_pid,
+       "timestamp" AS observed_at, context_id, connection_id, query_id, query AS sql_text,
+       getenv('QUACK_NATIVE_LOG') AS source_log, 'query_log_observation' AS observation_kind
+FROM meta.query_log;
+
 -- 9494 Quack. 9496 MCP with duckdb_mcp's own tools, execute included. 4318 OTLP/HTTP into the otlp_* tables.
 FROM quack_serve('quack:localhost:9494', token := getenv('QUACK_TOKEN'));
 PRAGMA mcp_server_start('http', '127.0.0.1', 9496, '{"builtin_tools": true, "enable_execute_tool": true, "execute_allow_ddl": true, "execute_allow_dml": true, "execute_allow_load": true, "execute_allow_attach": true, "execute_allow_set": true, "background": true}');

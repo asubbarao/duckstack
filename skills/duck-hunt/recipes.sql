@@ -2,7 +2,7 @@
 --
 -- Landing convention (every recipe reads it): one plain-text job log per file, raw/joblog-<job_id>.txt,
 --   gh api --allow-escape-sequences repos/<owner>/<repo>/actions/jobs/<job_id>/logs > raw/joblog-<job_id>.txt
--- Use:  LOAD duck_hunt;  .read <this file>  from the folder that holds raw/, then SELECT from the view you need.
+-- Use, from the folder that holds raw/:  duckdb :memory: -cmd "LOAD duck_hunt" -f <this file> -c "FROM <view>"
 -- Each view re-parses every matching log when queried (≈10 s per 7 MB), so an analysis that reads one twice
 -- lands it once: CREATE OR REPLACE TABLE x AS FROM <view>.
 -- Regular expressions here run on CI log lines only (duck_hunt regexp: readers), never on backend data.

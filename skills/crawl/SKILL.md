@@ -299,12 +299,19 @@ is the conduit idiom). Assembly is `array_agg(… ORDER BY …)` → `array_to_s
 
 ## Step 4 — The next round, incremental
 
-The next hop's URLs are a column of the previous table, so the fetch is self-dispatched per row:
-pass this as `rows_sql` to the dev MCP `self_dispatch` tool, 3–5 first.
+The next hop's URLs are a column of the previous table, so the fetch is self-dispatched per row
+(`/duckstack:self-dispatch`), 3–5 first:
 
 ```sql
-SELECT href AS url, $$SELECT * FROM crawl('$$ || href || $$', …13 named…, max_results := 1)$$ AS statement
-FROM <name>_links WHERE starts_with(href, 'https://') ORDER BY href LIMIT 5
+WITH next AS (
+    SELECT href AS url FROM <name>_links WHERE starts_with(href, 'https://') ORDER BY href LIMIT 5
+), posted AS (
+    SELECT url, from_json(http_post('http://127.0.0.1:9495/sql', MAP {'Content-Type': 'application/json'},
+                                    json_object('sql', $$SELECT * FROM crawl('$$ || url || $$', …13 named…, max_results := 1)$$)),
+                          '{"status": "INTEGER", "body": "VARCHAR"}') AS receipt
+    FROM next
+)
+SELECT url, receipt.status, receipt.body FROM posted
 ```
 
 `references/crawl_rows.sql` is the verified molecule.

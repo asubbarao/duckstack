@@ -85,18 +85,11 @@ as strings — keep the whole struct in the raw layer and decide later.
 
 ```sql
 LOAD superhuman_docs;
--- read_csv(path, header := false, columns := {...}) : one-line token file read by a reader;
---   no trim() -- trim strips spaces only and a trailing newline would survive.
-SET VARIABLE sh_token = (SELECT t FROM read_csv(getenv('HOME') || '/.duck/superhuman.token',
-                                                header := false, columns := {'t': 'VARCHAR'}));
--- CREATE SECRET name (TYPE superhuman_docs, TOKEN ...) : general secret, matches any doc.
---   Alternatives the extension names itself: attach-level TOKEN, attach-level TOKEN_ENV
---   '<var>', or a doc-scoped secret against a canonical URL.
-CREATE SECRET superhuman_docs_token (TYPE superhuman_docs, TOKEN getvariable('sh_token'));
-RESET VARIABLE sh_token;
--- ATTACH '<doc-id or Coda/Superhuman browser URL>' AS <alias> (TYPE superhuman_docs)
---   Browser URLs are accepted; the extension parses them before it checks auth.
-ATTACH '<url>' AS doc (TYPE superhuman_docs);
+-- ATTACH '<doc-id or Coda/Superhuman browser URL>' AS <alias> (TYPE superhuman_docs, TOKEN_ENV '<var>')
+--   The token stays in the server's environment (launchd), never in SQL. Browser URLs are accepted;
+--   the extension parses them before it checks auth. Other forms it names: a persistent
+--   superhuman_docs secret, or a doc-scoped secret against a canonical URL.
+ATTACH '<url>' AS doc (TYPE superhuman_docs, TOKEN_ENV 'SUPERHUMAN_DOCS_TOKEN');
 ```
 
 Without credentials the attach fails with exactly:

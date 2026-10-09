@@ -41,7 +41,8 @@ Land each job's log as `raw/joblog-<job_id>.txt`:
 gh api --allow-escape-sequences repos/o/r/actions/jobs/<id>/logs > raw/joblog-<id>.txt
 ```
 
-Then `LOAD duck_hunt; .read <skill dir>/recipes.sql` from that folder. Every view carries `job_id`,
+Then, from that folder, `duckdb :memory: -cmd "LOAD duck_hunt" -f <skill dir>/recipes.sql -c "FROM gha_errors"`
+(any view in place of `gha_errors`). Every view carries `job_id`,
 parsed from the file name, so you can join it back to the jobs API.
 
 | View | Question | Verified 2026-09-23 |

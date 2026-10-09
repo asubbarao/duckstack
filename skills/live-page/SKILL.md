@@ -154,13 +154,13 @@ COPY (FROM page_html) TO 'page.html' (FORMAT csv, HEADER false, QUOTE '', ESCAPE
 ```
 
 ```bash
-uvx --from duckdb duckdb -c ".read page.sql" && open page.html
+uvx --from duckdb duckdb -f page.sql && open page.html
 ```
 
 **Live.** quackapi serves the same view, and each request re-runs it.
 
 ```bash
-uvx --from duckdb duckdb -c ".read page.sql" \
+uvx --from duckdb duckdb -f page.sql \
   -c "INSTALL quackapi FROM community; LOAD quackapi" \
   -c "CREATE OR REPLACE ROUTE page GET '/' AS FROM page_html" \
   -c "FROM quackapi_serve(8766, host := '127.0.0.1', query_timeout_ms := 120000, block := true)"

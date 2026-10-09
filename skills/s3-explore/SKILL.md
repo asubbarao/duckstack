@@ -96,7 +96,7 @@ If the user asks an analytical question (e.g., "how many rows match X"), write a
 ## Local S3 (MinIO / RustFS) — writing to it, verified 2026-09-28
 
 A whole in-memory database goes to local S3 in a handful of statements; there is no copier to build.
-Worked example: `platform/tools/duckstack/ci/export.sql` in inframe (runs after `.read ci.sql`).
+Worked example: `platform/tools/duckstack/ci/export.sql` in inframe (`duckdb -f ci.sql -f export.sql`).
 
 ```sql
 INSTALL httpfs; LOAD httpfs;
