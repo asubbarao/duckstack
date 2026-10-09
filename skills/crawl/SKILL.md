@@ -67,6 +67,11 @@ FROM due;
 Appends into one DuckLake table do not conflict; concurrent `MERGE`/`UPDATE` of the same table do
 (422), so land rows, never upsert.
 
+There is no "next round" code. The url set is a view: seeds, plus the same-site links of the pages
+already landed, anti-joined against `agents.ext_page` (that is what `agents.ext_url` and
+`agents.ext_stale` are for the catalog). The hourly cron fetches whatever that view says is due,
+so a crawl grows one round per tick until the view is empty.
+
 ## Step 2 — Look before parsing
 
 ```sql
@@ -110,25 +115,6 @@ URLs are strings: `url_resolve`, `url_origin`, `urlpattern_test`, `starts_with`,
 | pages are table-carriers keyed by an entity; the ask is relational | **crossjoin** — `html_extract_tables` per entity, typed join the site never renders | 1 + join |
 | it should refresh on its own | **staged** — a `cron()` line in `server/setup.sql` over a stale view; run 2 fetches 0 pages | — |
 | any of the above behind auth / an SPA | `--chrome` (below), or curl with the session cookie | — |
-
-## Step 4 — The next round
-
-The next hop's URLs are a column of the landed pages, so the fetch is the Step 1 dispatch
-again, `FROM` a `WHERE` that keeps only same-site, not-yet-landed urls, 3–5 first:
-
-```sql
-WITH landed AS (
-    SELECT url AS base, (response ->> 'body')::HTML AS html FROM agents.ext_page WHERE starts_with(url, 'https://<site>/')
-), linked AS (
-    SELECT DISTINCT url_resolve(base, a.href) AS url FROM landed CROSS JOIN UNNEST(html_extract_links(html)) AS t(a)
-), due AS (
-    SELECT url FROM linked ANTI JOIN agents.ext_page USING (url)
-    WHERE url_origin(url) = 'https://<site>' ORDER BY url LIMIT 5
-)
-SELECT url, http_post(…same post as Step 1…) ->> '$.status' AS status FROM due;
-```
-
-A non-200 is a url that never landed; it is not a seed for anything.
 
 ## `--chrome` — the page needs the user's session or a rendered DOM
 
