@@ -67,7 +67,7 @@ a parameter:
 
 ```sql
 SELECT page, y0, list(word ORDER BY x0) AS words, array_to_string(words, ' ') AS line
-FROM read_pdf_words(getvariable('doc')) GROUP BY page, y0;
+FROM read_pdf_words('/abs/path/document.pdf') GROUP BY page, y0;
 ```
 
 Columns are the same trick on `x0`, joined to whatever row is the header. `font_name`

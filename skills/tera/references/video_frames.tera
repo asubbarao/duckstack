@@ -13,12 +13,11 @@
       ffmpeg_output_flags  list of flags before the output path, e.g. ["-frames:v", "500"]
       sql_tag        dollar-quote tag absent from the script, e.g. 'frames_cmd'
     Output columns: second DOUBLE (absolute, from the start of the video), path VARCHAR, phash VARCHAR.
+    Renders a bare SELECT (shellfs and pic2vec loaded by the caller), so it can be prefixed with CREATE TABLE ... AS.
     avfoundation streams one row per frame as it is written; ffmpeg writes the slice first, then lists it. -#}
 {%- set start = start | default(value=0) -%}
 {%- set fps = fps | default(value=2) -%}
 {%- set width = width | default(value=1400) -%}
-INSTALL shellfs FROM community; LOAD shellfs;
-INSTALL pic2vec FROM community; LOAD pic2vec;
 SELECT second, path, pic_phash(path) AS phash
 FROM read_csv(${{ sql_tag }}$mkdir -p '{{ out_dir }}' && {% if engine == "ffmpeg" -%}
 ffmpeg -nostdin -loglevel error{% for flag in ffmpeg_input_flags | default(value=[]) %} {{ flag }}{% endfor %} -ss {{ start }}{% if end %} -to {{ end }}{% endif %} -i '{{ video }}' -vf 'fps={{ fps }},scale={{ width }}:-2{% for step in ffmpeg_filters | default(value=[]) %},{{ step }}{% endfor %}' -q:v {{ quality | default(value=3) }}{% for flag in ffmpeg_output_flags | default(value=[]) %} {{ flag }}{% endfor %} '{{ out_dir }}/slice_{{ start }}_%06d.jpg' && echo second,path && ls '{{ out_dir }}' | grep '^slice_{{ start }}_' | sort | awk -v d='{{ out_dir }}' -v s={{ start }} -v f={{ fps }} '{ n = substr($0, length($0) - 9, 6) + 0; printf "%.3f,%s/%s\n", s + (n - 1) / f, d, $0 }'

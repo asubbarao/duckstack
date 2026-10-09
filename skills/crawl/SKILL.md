@@ -366,5 +366,5 @@ the artifact — the server writes its own disk.
 
 ```sql
 --   FROM dev.query($$SELECT url, status, error FROM raw_<name> WHERE status <> 200 OR error IS NOT NULL$$);  -- empty or explained
---   FROM dev.query($$SELECT count(*) FROM raw_<name>$$);                                                    -- = seed count
+--   FROM dev.query($$SELECT len(array_agg(url)) AS urls FROM raw_<name>$$);                                 -- = seed count
 ```

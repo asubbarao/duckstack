@@ -1,19 +1,21 @@
 -- Book digest: a long text PDF -> a low-token, high-signal markdown card, plus glossary / figure / table relations.
--- duckdb-pdf head (>= c804ebc).   Run:  duckdb [file.duckdb] -f book_digest.sql      Change the doc on the next line.
+-- Published `pdf` extension.   Run:  duckdb [file.duckdb] -f book-digest.sql
 --
 -- Layers, raw first, one table per statement (tables so a file DB caches the 12s PDF read; in :memory: they are just steps):
 --   pdf_words -> pdf_lines (glued words, geometry, typographic role) -> pdf_secs (heading tree) -> pdf_owned (content by heading)
 --   -> pdf_paras -> pdf_terms -> pdf_digest -> { pdf_card, pdf_glossary, pdf_figures, pdf_tables }
--- Nothing here is per-book except the file path (read_pdf_words, pdf_pages_info, pdf_info, pdf_digest.file,
--- pdf_outline) and the word that names the glossary section ('Glossary', in pdf_glossary). Edit them in place.
+-- Nothing here is per-book except the four source reads below (the file path) and the glossary heading ('Glossary').
 .mode csv
+INSTALL pdf FROM community; LOAD pdf; INSTALL tera FROM community; LOAD tera;
 
--- L0 raw: every word with geometry and face. read_pdf_words(files, first_page := NULL, last_page := NULL, password := NULL,
---   ignore_errors := false, ocr := false, auto_ocr := false, ocr_language/ocr_dpi/ocr_psm/ocr_oem/ocr_preprocess/ocr_retry/
---   tessdata_dir/ocr_backend/ocr_plugin/ocr_endpoint := defaults)
+-- L0 raw: every word with geometry and face, and the file's own page labels, metadata and outline. The published reader has
+-- no column_index, so every word is column 0: multi-column papers are read as one column.
 CREATE OR REPLACE TABLE pdf_words AS
-SELECT page, column_index AS col, word, x0, y0, x1, y1, font_name, font_size
+SELECT page, 0 AS col, word, x0, y0, x1, y1, font_name, font_size
 FROM read_pdf_words('/Users/aloksubbarao/Downloads/Inference Engineering.pdf');
+CREATE OR REPLACE TABLE pdf_page_info AS FROM pdf_pages_info('/Users/aloksubbarao/Downloads/Inference Engineering.pdf');
+CREATE OR REPLACE TABLE pdf_doc_info AS FROM pdf_info('/Users/aloksubbarao/Downloads/Inference Engineering.pdf');
+CREATE OR REPLACE TABLE pdf_doc_outline AS FROM pdf_outline('/Users/aloksubbarao/Downloads/Inference Engineering.pdf');
 
 -- L1 lines. A new line starts when y0 jumps > 3pt within (page, column). Words are then glued where poppler split a ligature
 -- ("Profi" + "ling" overlap by 0.2pt; a real space is >= 2.5pt, so gap < 0.5 means one word). ws keeps every glued word with
@@ -150,11 +152,10 @@ WITH f AS (
   FROM pdf_lines WHERE role = 'furniture'
 ),
 -- pdf_pages_info.label is the PDF's own /PageLabels (printed numbering); the header parse is kept only as a cross-check and fallback.
--- pdf_pages_info(file, password := NULL) -> file, page, width, height, media_*, crop_*, rotation, orientation, label, duration
 j AS (
   SELECT i.page, i.label, f.printed AS printed_hdr,
          coalesce(i.label, CAST(f.printed AS VARCHAR), CAST(i.page - mode(i.page - f.printed) OVER () AS VARCHAR)) AS printed_page
-  FROM pdf_pages_info('/Users/aloksubbarao/Downloads/Inference Engineering.pdf') i LEFT JOIN f ON i.page = f.page
+  FROM pdf_page_info i LEFT JOIN f ON i.page = f.page
 )
 SELECT * FROM j;
 
@@ -286,14 +287,21 @@ rows AS (
          coalesce(CAST(d.subtree_words AS VARCHAR), '0') || 'w' ||
          CASE WHEN d.n_figs > 0 THEN ' · ' || CAST(d.n_figs AS VARCHAR) || ' fig' ELSE '' END ||
          CASE WHEN tb.n_tables > 0 THEN ' · ' || CAST(tb.n_tables AS VARCHAR) || ' tbl' ELSE '' END ||
-         CASE WHEN d.depth <= 2 AND d.lead IS NOT NULL THEN chr(10) || repeat('  ', d.depth) || '> ' || d.lead ELSE '' END ||
-         CASE WHEN d.terms IS NOT NULL THEN chr(10) || repeat('  ', d.depth) || '# ' || array_to_string(list_slice(d.terms, 1, CASE WHEN d.depth <= 2 THEN 6 ELSE 4 END), ', ') ELSE '' END AS md
+         CASE WHEN d.depth <= 2 AND d.lead IS NOT NULL THEN E'\n' || repeat('  ', d.depth) || '> ' || d.lead ELSE '' END ||
+         CASE WHEN d.terms IS NOT NULL THEN E'\n' || repeat('  ', d.depth) || '# ' || array_to_string(list_slice(d.terms, 1, CASE WHEN d.depth <= 2 THEN 6 ELSE 4 END), ', ') ELSE '' END AS md
   FROM pdf_digest d LEFT JOIN tb ON d.sec_id = tb.sec_id
 )
-SELECT '# ' || coalesce(info.title, 'Untitled') || coalesce(' — ' || info.author, '') || chr(10) ||
-       '_' || CAST(info.page_count AS VARCHAR) || ' pp · ' || CAST(info.width AS VARCHAR) || '×' || CAST(info.height AS VARCHAR) || 'pt · digest of ' ||
-       CAST(len(list(rows.sec_id)) AS VARCHAR) || ' headings · `> lead sentence`, `# tf-idf terms`_' || chr(10) || chr(10) ||
-       '## Contents' || chr(10) || chr(10) || array_to_string(list(rows.md ORDER BY rows.sec_id), chr(10)) AS md
+SELECT tera_render($t$# {{ title }}{% if author %} — {{ author }}{% endif %}
+_{{ pages }} pp · {{ width }}×{{ height }}pt · digest of {{ headings }} headings · `> lead sentence`, `# tf-idf terms`_
+
+## Contents
+
+{% for line in lines %}{{ line }}
+{% endfor %}$t$,
+       json_object('title', coalesce(info.title, 'Untitled'), 'author', info.author, 'pages', info.page_count,
+                   'width', info.width, 'height', info.height, 'headings', len(list(rows.sec_id)),
+                   'lines', list(rows.md ORDER BY rows.sec_id)),
+       autoescape := false) AS md
 FROM rows JOIN info ON rows.file = info.file GROUP BY info.title, info.author, info.page_count, info.width, info.height;
 
 -- Self-checks. Each is an independent witness that the reconstruction is faithful; a run that prints anything else is a defect.
@@ -302,7 +310,7 @@ SELECT 'conserved_chars' AS check_name, len(list(DISTINCT n)) = 1 AS ok, list(sr
 FROM (SELECT 'raw_words' AS src, sum(length(word)) AS n FROM pdf_words UNION ALL SELECT 'lines', sum(length(replace(text, ' ', ''))) FROM pdf_lines);
 -- 2. typography vs the file's own outline: headings found from font geometry alone against pdf_outline (normalised: lowercase, no spaces/colons).
 --    unmatched should be 0 when the PDF has an outline; outline_total 0 or NULL means the PDF has none (nothing to compare).
-WITH o AS (SELECT ord, title, replace(replace(lower(title), ' ', ''), ':', '') AS k FROM pdf_outline('/Users/aloksubbarao/Downloads/Inference Engineering.pdf')),
+WITH o AS (SELECT ord, title, replace(replace(lower(title), ' ', ''), ':', '') AS k FROM pdf_doc_outline),
 d AS (SELECT replace(replace(lower(title), ' ', ''), ':', '') AS k FROM pdf_digest GROUP BY k)
 SELECT 'outline_agreement' AS check_name, len(list(o.ord)) AS outline_total, len(list(o.ord) FILTER (WHERE d.k IS NULL)) AS unmatched,
        list(o.title ORDER BY o.ord) FILTER (WHERE d.k IS NULL) AS unmatched_titles

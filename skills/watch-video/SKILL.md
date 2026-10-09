@@ -19,28 +19,22 @@ come from the perceptual hash moving; the model only ever looks at one settled f
 
 ## 1. Frames and scenes
 
-```bash
-duckdb video.duckdb \
-  -cmd "SET VARIABLE video = '/abs/path/help.mov'" \
-  -cmd "SET VARIABLE out_dir = '/abs/scratch/help_frames'" \
-  -f ~/duckdb-skills/skills/tera/references/video_frames.sql
-```
+`~/duckdb-skills/skills/tera/references/video_frames.sql` runs on dev: set the video path and frames
+directory literals at the top, then run its statements through the dev MCP `execute` tool (or post
+the body to `http://127.0.0.1:9495/sql`). The knobs are literals in the file:
 
-What it does, and the knobs (all `SET VARIABLE`, all optional except `video`):
-
-| Variable | Default | Meaning |
+| Literal | Default | Meaning |
 |---|---|---|
 | `fps` | 2 | frames sampled per second; 2 catches every screen change in a demo, 0.5 is enough for slides |
 | `width` | 1400 | frame width in pixels; 1400 keeps UI text readable for the Read tool |
 | `engine` | avfoundation | macOS built-in, nothing to install; `ffmpeg` if ffmpeg is on PATH (branch written, not yet run) |
-| `scene_bits` | 10 | a scene starts when the perceptual hash moves this many bits; 4 is sensitive, 16 coarse |
-| `out_dir` | `<video>.frames` | where the JPEGs go |
-| `busy_bits` | 16 | a scene whose hash moved this much gets a second pass |
-| `busy_fps` | 10 | the rate of that second pass, so fast motion inside a busy scene is not lost |
-| `max_busy_scenes` | 20 | how many busy scenes get the second pass, most movement first |
+| scene threshold | 10 bits | a scene starts when the perceptual hash moves this many bits; 4 is sensitive, 16 coarse |
+| busy threshold | 16 bits | a scene whose hash moved this much gets a second pass |
+| busy `fps` | 10 | the rate of that second pass, so fast motion inside a busy scene is not lost |
+| busy scenes | 20 | how many busy scenes get the second pass, most movement first |
 
 Two passes: the whole video at `fps`, then each busy scene re-rendered from the same template with `start`,
-`end` and `busy_fps` (one rendered statement per scene, appended to the same table). Every bash flag is a
+`end` and the busy `fps` (one rendered statement per scene, posted to `/sql` and appended to the same table). Every bash flag is a
 context value of the template: `ffmpeg_input_flags`, `ffmpeg_filters`, `ffmpeg_output_flags`, `quality`,
 `width`, so a different capture is a different context, never a different program. Verified: the second pass
 at 10 fps over the 5 busiest scenes added 330 frames in 25 s, same 75 scenes.

@@ -300,7 +300,7 @@ parser); a glob or `context := 1` forces batch mode and fills them. `fingerprint
 
 - `LOAD zipfs` before any `zip://` or `github_actions_zip` read; it is a separate community extension.
 - `git`-style `..` in a path is refused (`Invalid file path`). Give absolute or clean relative paths.
-- A missing file returns **0 rows, no error**, `ignore_errors` or not. Check `count(*)` before trusting an empty result.
+- A missing file returns **0 rows, no error**, `ignore_errors` or not. Check `len(array_agg(fingerprint))` before trusting an empty result.
 - `severity_threshold` typos silently become `'warning'` and drop every PASS row.
 - Named parameters do not bind inside `LATERAL` (`severity_threshold := 'x'` becomes a column ref). Filter in `WHERE` instead.
 - `read_duck_hunt_workflow_log` is not an in-out function: it cannot take a column as source. `read_duck_hunt_log` / `parse_duck_hunt_log` can (`FROM t, LATERAL parse_duck_hunt_log(t.content, 'auto') e`).

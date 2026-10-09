@@ -250,7 +250,7 @@ the WHERE before the join, and read a big file a slice at a time by splitting it
 ```sql
 SELECT t.file_path, u.n, u.line
 FROM git_tree('/Users/aloksubbarao/reviews/closure.git', 'HEAD') t, git_read_each(t.git_uri) r,
-     unnest(string_split(r.text, chr(10))) WITH ORDINALITY AS u(line, n)
+     unnest(string_split(r.text, E'\n')) WITH ORDINALITY AS u(line, n)
 WHERE t.file_path IN ('server/routes.sql', 'server/views.sql') AND starts_with(upper(trim(u.line)), 'CREATE')
 LIMIT 100;
 ```

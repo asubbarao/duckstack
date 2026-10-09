@@ -44,9 +44,9 @@ catalog views answer for a database that, as far as they are concerned, is empty
 
 ```sql
 -- through ATTACH
-SELECT count(*) FROM duckdb_tables() WHERE database_name = 'dev';   -- 0
+SELECT len(array_agg(table_name)) AS tables FROM duckdb_tables() WHERE database_name = 'dev';   -- 0
 -- through quack_query
-$$SELECT count(*) FROM duckdb_tables() WHERE NOT internal$$          -- 20
+$$SELECT len(array_agg(table_name)) AS tables FROM duckdb_tables() WHERE NOT internal$$          -- 20
 ```
 
 An agent lists tables, sees nothing, and concludes its write failed. The write was fine; it
@@ -56,13 +56,13 @@ asked the wrong process. This is the single most common false alarm on this stac
 
 ```sql
 -- through ATTACH
-SELECT count(*) FROM dev.raw_gh_runs_inframe r JOIN dev.raw_git_log_inframe g
+SELECT len(array_agg(r.headSha)) AS runs FROM dev.raw_gh_runs_inframe r JOIN dev.raw_git_log_inframe g
   ON g.commit_hash = r.headSha;
 -- Not implemented Error: Multiple streaming scans or streaming scans + CTAS / insert
 -- in the same query are not currently supported
 
 -- through quack_query, same join, inside the body
-$$SELECT count(*) FROM raw_gh_runs_inframe r JOIN raw_git_log_inframe g
+$$SELECT len(array_agg(r.headSha)) AS runs FROM raw_gh_runs_inframe r JOIN raw_git_log_inframe g
     ON g.commit_hash = r.headSha$$                                   -- 140
 ```
 

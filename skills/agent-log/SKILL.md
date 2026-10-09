@@ -81,34 +81,26 @@ Verified 2026-09-22 through the `dev` MCP: row written and read back, `it's` and
 
 ### The prelude — every template starts with this, then one COPY
 
-Paste it whole. It loads what the COPY needs, defines `agent_session()`, and creates `<DIR>` —
-`COPY … PARTITION_BY` does **not** create a missing parent directory; without this line a fresh
-directory fails with `Failed to create directory … No such file or directory`.
+Paste it whole. It loads what the COPY needs and creates `<DIR>` — `COPY … PARTITION_BY` does
+**not** create a missing parent directory; without this line a fresh directory fails with
+`Failed to create directory … No such file or directory`.
 
 ```sql
 LOAD markdown; LOAD shellfs;
-CREATE OR REPLACE MACRO agent_session() AS {
-  'system': CASE
-              WHEN nullif(getenv('CODEX_THREAD_ID'), '') IS NOT NULL THEN 'codex'
-              WHEN nullif(getenv('CLAUDE_CODE_SESSION_ID'), '') IS NOT NULL THEN 'claude'
-              ELSE 'unknown' END,
-  'session_id': coalesce(nullif(getenv('CODEX_THREAD_ID'), ''),
-                         nullif(getenv('CLAUDE_CODE_SESSION_ID'), ''))
-};
--- COPY ... TO '| <cmd>' pipes the rows to the command's stdin; mkdir ignores them and just runs.
--- mkdir -p is a no-op when the directory exists, so running the prelude twice is harmless.
-COPY (SELECT 1) TO '| mkdir -p <DIR>';
+FROM read_text('mkdir -p <DIR> |');
 ```
 
-`getenv()` returns `''` for an unset variable, not NULL — that is why the `nullif` calls are there.
+`<SESSION>` below is your session id as a literal: `$CODEX_THREAD_ID` for Codex,
+`$CLAUDE_CODE_SESSION_ID` for Claude (check Codex first: a Codex worker launched by Claude inherits
+the Claude id). `getenv()` would read the environment of whichever DuckDB evaluates it, so on dev it
+returns the server's, not yours.
 
 ### SQL, scalar answer
 
 ```sql
 COPY (SELECT uuidv7() AS row_id, '<type>' AS type,
-             '<AGENT>' AS agent, agent_session().system AS agent_system,
-             agent_session().session_id AS session_id,
-             '<AGENT>-' || coalesce(agent_session().session_id, 'no-session') AS agent_signature,
+             '<AGENT>' AS agent, '<SESSION>' AS session_id,
+             '<AGENT>-<SESSION>' AS agent_signature,
              '<SQL>' AS query_was_ran, (<SQL>)::VARCHAR AS result,
              '<NOTES>' AS markdown_notes, md_valid('<NOTES>') AS notes_ok, now() AS ts)
 TO '<DIR>' (FORMAT parquet, PARTITION_BY (type, agent_signature), OVERWRITE_OR_IGNORE true,
@@ -121,7 +113,7 @@ Same statement; the result arrives as typed columns instead of one string, so it
 
 ```sql
 COPY (SELECT uuidv7() AS row_id, '<type>' AS type, '<AGENT>' AS agent,
-             '<AGENT>-' || coalesce(agent_session().session_id, 'no-session') AS agent_signature,
+             '<SESSION>' AS session_id, '<AGENT>-<SESSION>' AS agent_signature,
              '<SQL>' AS query_was_ran, '<NOTES>' AS markdown_notes, now() AS ts, r.*
       FROM (<SQL>) r)
 TO '<DIR>' (FORMAT parquet, PARTITION_BY (type, agent_signature), OVERWRITE_OR_IGNORE true,
@@ -130,58 +122,16 @@ TO '<DIR>' (FORMAT parquet, PARTITION_BY (type, agent_signature), OVERWRITE_OR_I
 
 Readers of a directory holding both shapes need `union_by_name := true`.
 
-### Any other language
-
-The code becomes a file first. **Nothing is escaped** — that is why this works where inlining a
-program into SQL does not.
-
-```sql
--- 1. write the artifact. QUOTE '' keeps it verbatim.
-COPY (SELECT '<CODE>') TO '<DIR>/<NAME>.py' (FORMAT csv, HEADER false, QUOTE '');
-
--- 2. store the same token and run it. `2>&1; true` is required, see below.
-COPY (SELECT uuidv7() AS row_id, 'programs' AS type, '<AGENT>' AS agent,
-             '<AGENT>-' || coalesce(agent_session().session_id, 'no-session') AS agent_signature,
-             'python3 <NAME>.py' AS ran, '<CODE>' AS code,
-             (SELECT string_agg(line, chr(10)) FROM read_csv(
-                'python3 <DIR>/<NAME>.py 2>&1; true |',
-                header := false, columns := {'line':'VARCHAR'}, ignore_errors := true)
-             ) AS result,
-             '<NOTES>' AS markdown_notes, now() AS ts)
-TO '<DIR>' (FORMAT parquet, PARTITION_BY (type, agent_signature), OVERWRITE_OR_IGNORE true,
-            FILENAME_PATTERN '{uuid}');
-```
-
-Swap `python3` for `bash`, `cmd /d /s /c`, `node` — the row shape does not change.
-
 ## Four things that are load-bearing
 
 - **`FILENAME_PATTERN '{uuid}'`** is the concurrency guarantee. Verified: three agents wrote the
   same partition directory simultaneously, got three distinct files, zero errors, all readable
   together. Nothing is read-modify-written, so there is nothing to lock and no queue.
-- **`2>&1; true`** — without it, shellfs aborts the whole statement when the child exits non-zero
-  (`Pipe process exited abnormally code=1`) and one bad program takes the write down. With it a
-  crash is a row carrying its traceback, so running the COPY always beats not running it. Query
-  the parquet for the failures later.
 - **`try()` cannot rescue a broken scalar subquery** — `TRY can not be used in combination with a
   scalar subquery`. For SQL, a broken query means no row at all; that is honest, and the missing
   row is itself the signal.
-- **`<AGENT>` is yours to supply** (`claude-opus-5.5`, `codex-terra-5.6-high`, …). Nothing derives
-  it. `agent_session()` supplies only the system and session id.
-
-## agent_session()
-
-It is in the prelude, and it must run in your **own** process: `getenv()` reads the environment
-of whichever DuckDB evaluates it. Your `:memory:` client has your session's ids. The dev quack on
-9494 and the MCP sidecar are launchd processes with their own environments — verified 2026-09-21,
-the quack returns empty for both ids and the sidecar has `getenv` disabled outright by
-`enable_external_access = false`.
-
-Codex is checked first deliberately: a Codex worker launched by Claude **inherits**
-`CLAUDE_CODE_SESSION_ID`, so the Claude id would otherwise mislabel the worker. Verified both ways.
-
-One id per session, so every row a session writes shares it — group by `session_id` to see one
-agent's whole run.
+- **`<AGENT>` and `<SESSION>` are yours to supply** (`claude-opus-5.5`, `codex-terra-5.6-high`, …).
+  Nothing derives them. One id per session, so group by `session_id` to see one agent's whole run.
 
 ## Reading it back
 
@@ -196,18 +146,24 @@ than text.
 
 ## Auditing — catching an agent that invented a result
 
-Because every row carries the query that produced it, re-run it and compare. `query_was_ran` is a
-column and a table function binds literals, so build the statement per row and post it to your own
-route (`/duckstack:self-dispatch` — on dev, rows → statements → array_agg of the posts to `/sql` → UNNEST). Verified: two honest agents matched, one that
-hand-wrote `99` for `SELECT 6 * 7` was caught.
+Because every row carries the query that produced it, re-run it on dev and compare
+(`/duckstack:self-dispatch`). Verified: two honest agents matched, one that hand-wrote `99` for
+`SELECT 6 * 7` was caught.
 
 ```sql
-CREATE OR REPLACE ROUTE run POST '/run' AS SELECT rows.* FROM query($q) rows;
-INSTALL curl_httpfs FROM community; LOAD curl_httpfs;
-SET memory_limit = '4GiB'; SET threads = 4; SET httpfs_client_implementation = 'curl';
-SELECT listen_url FROM quackapi_serve(19584, host := '127.0.0.1');
--- array_agg(http_post(..., MAP{'Content-Type':'application/json'}, json_object('sql', ...))) is the barrier; compare the answer to the stored result
-SELECT status FROM quackapi_stop(19584);
+WITH logged AS (
+    SELECT agent_signature, query_was_ran, result
+    FROM read_parquet('<DIR>/**/*.parquet', hive_partitioning := true, union_by_name := true)
+    WHERE query_was_ran IS NOT NULL
+), rerun AS (
+    SELECT *, from_json(http_post('http://127.0.0.1:9495/sql', MAP {'Content-Type': 'application/json'},
+                                  json_object('sql', 'SELECT (' || query_was_ran || ')::VARCHAR AS result')),
+                        '{"status": "INTEGER", "body": "VARCHAR"}') AS receipt
+    FROM logged
+)
+SELECT agent_signature, query_was_ran, result AS logged_result,
+       from_json(receipt.body, '[{"result": "VARCHAR"}]')[1].result AS rerun_result
+FROM rerun WHERE rerun_result IS DISTINCT FROM result
 ```
 
 ## Dispatching subagents
