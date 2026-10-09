@@ -12,8 +12,8 @@ allowed-tools: mcp__dev__query
 
 Use the selected dev service at `http://localhost:9495/sql`. `agents.ext_docs` is the
 agent entrypoint: `SELECT extension_name, readme FROM agents.ext_docs`.
-The MCP tool `ext_docs(extension)` returns a complete README; for a specific question, query matching
-lines or blocks first. Do not dump a whole README or save it to a temporary file to search it.
+For a specific question, query matching lines or blocks first. Do not dump a whole README or save it
+to a temporary file to search it. Dev publishes no `ext_docs` tool (2026-10-09); query the view.
 
 Preserve raw source data as a general rule. Derive parsed fields, previews and search indexes
 from it. An existing authoritative source does not require another raw copy. Never replace
@@ -125,58 +125,28 @@ representation: it does not replace the saved raw HTML or the source README.
 
 ## Stored layers and refresh
 
-### Upstream documentation sites
+### Upstream documentation sites (readthedocs)
 
-`~/duckdb-skills/readthedocs_catalog.sql` adds a separate, joinable documentation layer.
-Run it after the normal catalog setup; it fetches at most three due representations per
-invocation. Re-run deliberately to expand the discovered same-site page frontier. It is
-not registered with cron, does not crawl the entire web, and does not change `ext_catalog`.
-
-- `agents.ext_doc_source`: extension name → documentation root; currently Duck Hunt,
-  Duck Tails and Sitting Duck. Add source registrations here, not columns per extension.
-- `agents.ext_doc_fetch` / `ext_doc_page`: raw attempts / last successful bodies by
-  `(url, representation)`, with timestamps. Failed attempts remain inspectable and never
-  overwrite a successful cached page. Good pages expire after three days; attempts have
-  a five-minute retry cooldown. The cache is bounded per run, not in total page count.
-- `agents.ext_doc_links`: source page → normalized label, target URL, fetchable page URL,
-  fragment, and original label. Fragments are section coordinates, not additional fetches.
-- `agents.ext_doc_content` / `ext_doc_blocks`: full content and derived ordered blocks.
-- `agents.ext_doc_sections`: ID-bearing headings → section URL, ordered block list,
-  HTML, Markdown and extracted links. Includes child headings, stops at the next equal/lower
-  heading or enclosing-container exit. It parses cached HTML; selecting a fragment does
-  not fetch again. This is a heading-section index, not a selector for arbitrary DOM IDs.
-- `agents.ext_catalog_documented`: existing catalog plus its documentation-root pointer.
+Every readthedocs.io page an extension README links to is saved raw in `lake.agents.ext_fetch`
+(`url`, `fetched_at`, `response` JSON with `effective_url` and `body`; 1,054 pages on 2026-10-09).
+`agents.ext_doc_sections` is a view over it: the saved HTML as markdown sections, one row per
+heading: `site`, `section_url` (page URL `#` heading id), `section_path`, `level`, `title`,
+`content`, `code` (the section's code blocks), `tables` (its tables as JSON). 5,075 sections over
+9 sites on 2026-10-09. No refresh job is registered in the current `setup.sql`.
 
 ```sql
-SELECT extension_name, source_url, label, target_url
-FROM agents.ext_doc_links
-WHERE extension_name = 'duck_hunt'
-  AND source_url = 'https://duck-hunt.readthedocs.io/en/latest/schema/'
-  AND fragment IS NOT NULL
-  AND label NOT IN ('¶', 'Skip to content')
-LIMIT 7;
+SELECT section_url, level, title, len(code) AS code_blocks
+FROM agents.ext_doc_sections
+WHERE site = 'duck-hunt.readthedocs.io' AND level <= 2
+ORDER BY section_url LIMIT 7;
+
+SELECT title, content, code
+FROM agents.ext_doc_sections
+WHERE section_url = 'https://duck-hunt.readthedocs.io/en/latest/#compression-support';
 ```
 
-Discover available section coordinates, then consume just the chosen sections:
-
-```sql
-SELECT DISTINCT fragment
-FROM agents.ext_doc_sections
-WHERE url = 'https://duck-hunt.readthedocs.io/en/latest/examples/'
-ORDER BY fragment;
-
-SELECT fragment, markdown
-FROM agents.ext_doc_sections
-WHERE url = 'https://duck-hunt.readthedocs.io/en/latest/examples/'
-  AND fragment IN ('#aggregation', '#dynamic-regexp-parser')
-ORDER BY start_order;
-```
-
-Preview with `len(markdown)` and `left(markdown, 240)` before returning content. `html`
-and `links` are available from the same row. Verified on this page: pytest/ESLint anchors,
-both sections above, inclusion of nested Quality Gate, and exclusion of the last section's
-footer. Webbed's `block.level` is nesting depth; `attributes['heading_level']` is heading rank.
-Do not infer missing sections until their parent page has been successfully cached.
+Preview with `len(content)` and `left(content, 240)` before returning a section. A heading can
+appear twice when the page repeats it (TOC and body); `DISTINCT` on `section_url` if that matters.
 
 Known documentation pages need only `http_get`, not the Read the Docs management API.
 Request `Accept: text/markdown` for compact content; fetch HTML separately when navigation
@@ -199,9 +169,10 @@ lengths, bounded links/headings and errors to the agent, not the entire fetched 
 | `agents.ext_docs` | View: extension name and README (the GitHub `<article>` parsed by webbed) |
 | `agents.ext_stale` | View: urls missing or older than three days |
 
-`~/duckdb-skills/server/ext_catalog.sql` fetches every url in `ext_stale` into `ext_page`. Startup loads it and cron runs hourly (`0 15 * * * *`); pages
-expire after three days. With nothing stale a run fetches and writes nothing. Reuse raw
-responses to add parsed columns. Catalog lookup comes first; inspect runtime signatures only
+`~/duckdb-skills/server/ext_catalog.sql` fetches every url in `ext_stale` into `ext_page`; pages
+expire after three days, and with nothing stale a run fetches and writes nothing. It is not
+registered in the current `setup.sql` (2026-10-09), and it uses `crawl()`, which has no DuckDB 1.5.6
+build, so the catalog is read-only until that is replaced. Reuse raw responses to add parsed columns. Catalog lookup comes first; inspect runtime signatures only
 to resolve a documentation gap or version mismatch, since READMEs may omit details.
 
 Verified on dev on 2026-09-24: glob search, correlated ScalarFS line reads, named line

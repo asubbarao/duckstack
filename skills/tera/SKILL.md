@@ -7,8 +7,8 @@ allowed-tools: mcp__dev__query, mcp__dev__execute
 
 # Tera
 
-Use the selected DuckDB MCP. `render(template, ctx)` takes a template file path
-and a JSON-object string. SQL can call the same native `tera_render` function.
+Use the selected DuckDB MCP (`query`) and the native `tera_render` function; a named
+template file is rendered through `template_path`. Dev publishes no `render` tool (2026-10-09).
 
 Templates own repeated syntax, not business logic. SQL selects, filters, joins
 and prepares the context. Call `read_csv`, `read_json`, or another reader directly
@@ -17,33 +17,6 @@ when repeated calls vary optional or repeated command flags, reader parameters, 
 surrounding syntax. Shell stages provide external capabilities; filter, normalize,
 replace and extract from returned rows in subsequent SQL CTEs. Self-dispatch does
 not require Tera, a macro, or a dedicated tool.
-
-## Inspectable template sources on dev
-
-`agents.templates` is a filesystem-backed view, not a stored template table.
-It exposes `name`, `path`, `source`, `source_hash`, `bytes`, and `modified_at`.
-`name` comes directly from HostFS `file_name(filename)`, with no logical-name mapping.
-Callers select a name such as `dispatch.tera`, then pass
-`source` to `tera_render(..., autoescape := false)`. Physical globs stay in the
-view definition; `path` exposes one exact file for inspection. Source edits are
-read on the next query. Check for duplicate names before using a template.
-This inline-source mode is verified for the generic dispatch template; templates
-with includes still need the named file loader below.
-
-```sql
-SELECT name, path, source_hash, source
-FROM agents.templates WHERE name = 'dispatch.tera';
-```
-
-The view is registered in dev with this definition:
-
-```sql
-CREATE OR REPLACE VIEW agents.templates AS
-SELECT file_name(filename) AS name,
-       filename AS path, content AS source, md5(content) AS source_hash,
-       file_size(filename) AS bytes, file_last_modified(filename) AS modified_at
-FROM read_text(getenv('HOME') || '/duckdb-skills/skills/*/references/**/*.tera');
-```
 
 ## Native calls
 

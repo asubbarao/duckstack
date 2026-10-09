@@ -2,7 +2,7 @@
 name: live-page
 description: >
   Make a web page fast with DuckDB alone: tera for the HTML, quickjs for SVG charts (any JS),
-  crawler's css_select to check, pull or serve one block of HTML, jsonata to reshape rows into the
+  webbed's html_extract_text to check one block of the rendered page, jsonata to reshape rows into the
   page's JSON. It writes one self-contained .html (opens from file://, uploads to Slack) and can
   serve it live through quackapi, so each browser refresh re-runs the SQL. Use for any HTML page,
   analysis page, writeup, report, one-pager, dashboard, "chart that", comparison with charts,
@@ -17,8 +17,8 @@ Read `/duckstack:duck` first; its SQL rules apply. This skill covers only how a 
 The analysis supplies its own relations and prose. An example analysis is `/duckstack:ci-timing`,
 which covers CI/CD and duck_hunt.
 
-**Where it runs.** Use the selected DuckDB MCP. `render(template, ctx)` renders a named
-template file on that server; `query`/`sql` run the full program. Do not start another
+**Where it runs.** Use the selected DuckDB MCP: `query` runs the SQL, `tera_render` with
+`template_path` renders a named template file on that server. Do not start another
 database or listener to make a page. Register any requested route on the selected
 QuackAPI. Standalone serving examples below apply only to an explicitly selected
 isolated environment. No new macros.
@@ -43,7 +43,7 @@ the file, or DuckDB fetches it when the page is served.
 
 ```sql
 INSTALL shellfs FROM community; LOAD shellfs;
-INSTALL crawler FROM community; LOAD crawler;
+INSTALL webbed FROM community; LOAD webbed;
 -- CLI / API through shellfs: the command's stdout is the file; tee keeps the raw response
 -- read_json(path, format := 'auto', records := 'auto', filename := false, columns := NULL, maximum_depth := -1, sample_size := 20480, ignore_errors := false)
 CREATE OR REPLACE VIEW raw_runs AS
@@ -57,13 +57,13 @@ QUALIFY row_number() OVER (PARTITION BY databaseId ORDER BY filename DESC) = 1;
 INSTALL postgres; LOAD postgres;
 ATTACH 'host=localhost dbname=postgres' AS pg (TYPE postgres, READ_ONLY);
 
--- the web: crawler for many pages (/duckstack:crawl); one page is read_text + css_select
--- css_select(html VARCHAR, selector VARCHAR, mode VARCHAR) -> VARCHAR ; mode 'text' | 'html' | 'attr:<name>'
-SELECT css_select(content, 'title', 'text') AS title FROM read_text('https://duckdb.org/');
+-- the web: one page is http_get + webbed (/duckstack:web-read)
+-- html_extract_text(html HTML, xpath VARCHAR) -> VARCHAR[]
+SELECT html_extract_text((http_get('https://duckdb.org/') ->> '$.body')::HTML, '//title') AS title;
 ```
 
-Verified 2026-09-23. The Postgres ATTACH listed 208 tables, and a `CREATE` through it was refused.
-`css_select` returned the page title.
+Verified 2026-09-23: the Postgres ATTACH listed 208 tables, and a `CREATE` through it was refused.
+`crawler` (and its `css_select`) has no DuckDB 1.5.6 build (404 on community-extensions, 2026-10-09).
 
 ## Reshape: jsonata (optional)
 
@@ -135,21 +135,15 @@ FROM page_data, chart;
 
 The full engine reference, with error bisection and minijinja, is `/duckstack:tera`.
 
-## css_select: check, pull, serve a block
+## Check a block: webbed xpath
 
 ```sql
-INSTALL crawler FROM community; LOAD crawler;
--- check what the page actually says (the rendered text, links in charts)
-SELECT css_select(html, '#top p', 'text'), css_select(html, 'svg a', 'attr:href') FROM page_html;
--- pull a block out of another page into this one's context
-SELECT css_select(content, '#detail', 'html') AS block FROM read_text('old/page.html');
+INSTALL webbed FROM community; LOAD webbed;
+-- what the rendered page actually says; verified 2026-10-09 on dev: ['beta leads']
+SELECT html_extract_text(html::HTML, '//section[@id="top"]/p') AS top_p FROM page_html;
 ```
 
-- **`'html'` mode re-serializes** the node: a `<table>` comes back with `<tbody>` added. It is not a
-  byte-for-byte slice of the source, so do not `replace()` with it. To swap one block, render it
-  as its own string in the context.
-- **No match** returns `''`, not NULL.
-- **An unknown mode** behaves as `'text'`.
+`html_extract_text` returns a list of the matching nodes' text; an empty list means no match.
 
 ## Out: the file, and the live page
 
@@ -169,14 +163,13 @@ uvx --from duckdb duckdb -c ".read page.sql" && open page.html
 uvx --from duckdb duckdb -c ".read page.sql" \
   -c "INSTALL quackapi FROM community; LOAD quackapi" \
   -c "CREATE OR REPLACE ROUTE page GET '/' AS FROM page_html" \
-  -c "CREATE OR REPLACE ROUTE section GET '/section/:id' AS SELECT css_select(html, '#' || \$id, 'html') AS html FROM page_html" \
   -c "FROM quackapi_serve(8766, host := '127.0.0.1', query_timeout_ms := 120000, block := true)"
 # open http://127.0.0.1:8766/   (GET /health answers once it is up)
 # stop: Ctrl-C, or  kill $(lsof -ti tcp:8766 -sTCP:LISTEN)
 ```
 
 Verified end to end on 2026-09-23 (DuckDB 1.5.5, quackapi ed4552b):
-- `GET /` returned `text/html` and `/section/top` returned the one block.
+- `GET /` returned `text/html`.
 - After a new `raw/items-*.json` landed, the next request showed it ("beta leads" became "delta leads").
 - `kill` freed the port.
 

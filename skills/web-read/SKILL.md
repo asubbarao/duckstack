@@ -29,12 +29,13 @@ WHERE b.kind = 'block' AND b.element_type IN ('paragraph', 'code', 'heading', 't
 -- 200 | 82892 | 652 blocks | 209 links; code blocks come back as code, tables as JSON {headers, rows}
 ```
 
-The dev MCP tool `web_read(url)` is this query. Keep `status`: a 404 page is also HTML.
+Keep `status`: a 404 page is also HTML. Dev publishes no `web_read` tool (2026-10-09); run this query.
 Do not wrap a page you will serve in `parse_html` — it voids `<script src>`.
 
 ## 2. A JSON API (GitHub REST here) → shaped with JSONata
 
 ```sql
+INSTALL jsonata FROM community; LOAD jsonata;
 -- jsonata(expression VARCHAR, json_data JSON [, bindings JSON]) -> JSON
 WITH fetched AS (SELECT http_get('https://api.github.com/repos/duckdb/duckdb/releases?per_page=3',
         MAP {'Accept': 'application/vnd.github+json', 'User-Agent': 'duckdb'}, MAP {}) AS response),
@@ -51,6 +52,7 @@ in the headers MAP from `getenv`, never pasted.
 ## 3. QuickJS — JavaScript on a value
 
 ```sql
+INSTALL quickjs FROM community; LOAD quickjs;
 -- quickjs(code VARCHAR) -> VARCHAR   (quickjs_eval(function VARCHAR) for a function body)
 SELECT quickjs('JSON.stringify(' || picked::VARCHAR || '.map(r => r.tag).sort())') AS tags_sorted
 -- ["v1.5.4","v1.5.5","v1.5.6"]
@@ -69,10 +71,9 @@ SELECT tera_render('{% for r in releases %}{{ r.tag }} ({{ r.published }}){% if 
 
 ## Rules that keep context small and the SQL honest
 
-- Start at `LIMIT 3`; widen when the shape is right. `/sql` returns 20 rows unless you give an explicit LIMIT.
+- Start at `LIMIT 3`; widen when the shape is right.
 - Whole-document readers (`html_to_duck_blocks`, `html_extract_links`, `read_html`, `jsonata` over the whole body)
   before any selector; a hand-written xpath/css/jsonpath per column means the shape is not understood yet.
-- Build any generated URL or statement by `||` concatenation; no printf, no doubled quotes.
-- Many URLs: one row per URL, `http_get(url)` is a scalar, so it runs per row with no self-dispatch; land the raw
-  responses (a table or files under raw/) before parsing if they will be read twice.
-- A missing extension is `INSTALL x FROM community; LOAD x;`, then continue.
+- Many URLs: one row per URL, `http_get(url)` is a scalar, so it runs per row with no self-dispatch.
+- A missing extension is `INSTALL x FROM community; LOAD x;`, then continue. `jsonata` and `quickjs` are
+  installed on dev but not loaded at boot.

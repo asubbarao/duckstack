@@ -11,6 +11,11 @@ argument-hint: "<url> [url ...] [--name raw_table] [--shape map|rounds|walk|cros
 allowed-tools: Bash
 ---
 
+**2026-10-09: `crawler` has no DuckDB 1.5.6 build** (404 on community-extensions.duckdb.org/v1.5.6/osx_arm64),
+so `crawl()`, `crawl_url()`, `sitemap()` and `css_select()` below do not run on dev until it is published. Until
+then fetch with `http_get` and parse with webbed (`/duckstack:web-read`); the topology and section-delimiter
+decisions below still apply.
+
 You are fetching web pages into tables. Read `/duckstack:duck` first. A scraper is not a
 program; it is two decisions — **crawl topology** (how the URL space is discovered) and
 **section delimiter** (what bounds the datum on a page) — answered with crawler and webbed used
