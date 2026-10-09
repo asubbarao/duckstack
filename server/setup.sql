@@ -19,7 +19,6 @@ INSTALL http_client FROM community; LOAD http_client;
 INSTALL read_lines FROM community; LOAD read_lines;
 INSTALL agent_data FROM community; LOAD agent_data;
 INSTALL quackapi FROM community; LOAD quackapi;
-INSTALL duckdb_mcp FROM community; LOAD duckdb_mcp;
 -- Used by the agents.ext_* docs views and meta.prometheus_metrics.
 INSTALL webbed FROM community; LOAD webbed;
 INSTALL markdown FROM community; LOAD markdown;
@@ -163,26 +162,51 @@ SELECT getenv('QUACK_INSTANCE_ID') AS instance_id, min("timestamp") OVER () AS i
 FROM meta.query_log;
 
 -- 9494 Quack. 4318 OTLP/HTTP into the otlp_* tables.
--- duckdb_mcp runs with no port of its own; quackapi serves it at /mcp/ below.
 FROM quack_serve('quack:localhost:9494', token := getenv('QUACK_TOKEN'));
-PRAGMA mcp_server_start('memory', '', 0, '{"builtin_tools": true, "enable_execute_tool": true, "execute_allow_ddl": true, "execute_allow_dml": true, "execute_allow_load": true, "execute_allow_attach": true, "execute_allow_set": true}');
 FROM otlp_serve('otlp:127.0.0.1:4318', disable_auth := true);
 
 -- 9495: POST /sql {"sql": "..."}; POST /inbox any JSON, read it from quackapi_jobs; GET /metrics for Prometheus (/opt/homebrew/etc/prometheus.yml);
--- POST /mcp/ is the dev MCP server (query, execute and the built-ins).
+-- POST /mcp/ is the dev MCP server: tools query and execute, each a post to /sql, so calls run in parallel.
 CREATE QUEUE inbox;
 CREATE OR REPLACE ROUTE sql POST '/sql' AS SELECT * FROM quack_query('quack:localhost:9494', $sql, token := getenv('QUACK_TOKEN'));
 CREATE OR REPLACE ROUTE inbox POST '/inbox' STATUS 201 AS SELECT quackapi_enqueue('inbox', $body::JSON) AS id;
 CREATE OR REPLACE ROUTE metrics GET '/metrics' AS SELECT text FROM meta.prometheus_metrics;
 -- A middleware that stops the request sends its body raw as application/json, which is what MCP clients read.
--- JSON-RPC notifications carry no id and get 202 with no body.
+-- JSON-RPC notifications carry no id and get 202. A tool call's text is the /sql reply: rows, or the DuckDB error.
 CREATE GROUP mcp WITH (prefix='/mcp');
 CREATE OR REPLACE ROUTE mcp POST '/' IN GROUP mcp AS SELECT '' AS text;
 CREATE OR REPLACE MIDDLEWARE mcp BEFORE GROUP mcp AS
+WITH req AS (
+    SELECT $body::JSON AS j
+), msg AS (
+    SELECT j -> '$.id' AS id, j ->> '$.method' AS method, j ->> '$.params.protocolVersion' AS version,
+           coalesce(j ->> '$.params.arguments.sql', j ->> '$.params.arguments.statement') AS sql
+    FROM req
+), called AS (
+    SELECT *, CASE WHEN method = 'tools/call' THEN
+               from_json(http_post('http://127.0.0.1:9495/sql', MAP {'Content-Type': 'application/json'}, json_object('sql', sql)),
+                         '{"status": "INTEGER", "body": "VARCHAR"}') END AS receipt
+    FROM msg
+)
 SELECT false AS allow,
-       CASE WHEN json_exists($body::JSON, '$.id') THEN 200 ELSE 202 END AS status,
-       CASE WHEN json_exists($body::JSON, '$.id') THEN mcp_server_send_request($body) END AS body,
-       NULL::VARCHAR AS header_name, NULL::VARCHAR AS header_value;
+       CASE WHEN id IS NULL THEN 202 ELSE 200 END AS status,
+       CASE WHEN id IS NULL THEN ''
+            WHEN method = 'initialize' THEN json_object('jsonrpc', '2.0', 'id', id, 'result', json_object(
+                 'protocolVersion', coalesce(version, '2025-06-18'),
+                 'serverInfo', json_object('name', 'dev', 'version', '1'),
+                 'capabilities', json_object('tools', json_object())))
+            WHEN method = 'tools/list' THEN json_object('jsonrpc', '2.0', 'id', id, 'result', json_object('tools', [
+                 json_object('name', 'query', 'description', 'Run any SQL on dev, reads and writes. Returns the rows as JSON; a failure returns the DuckDB error.',
+                             'inputSchema', json_object('type', 'object', 'properties', json_object('sql', json_object('type', 'string')), 'required', ['sql'])),
+                 json_object('name', 'execute', 'description', 'Same as query; kept for callers that name it execute.',
+                             'inputSchema', json_object('type', 'object', 'properties', json_object('statement', json_object('type', 'string')), 'required', ['statement']))]))
+            WHEN method = 'tools/call' THEN json_object('jsonrpc', '2.0', 'id', id, 'result', json_object(
+                 'content', [json_object('type', 'text', 'text', receipt.body)], 'isError', receipt.status IS DISTINCT FROM 200))
+            WHEN method = 'ping' THEN json_object('jsonrpc', '2.0', 'id', id, 'result', json_object())
+            ELSE json_object('jsonrpc', '2.0', 'id', id, 'error', json_object('code', -32601, 'message', 'method not found: ' || method))
+       END::VARCHAR AS body,
+       NULL::VARCHAR AS header_name, NULL::VARCHAR AS header_value
+FROM called;
 FROM quackapi_serve(9495, host := '127.0.0.1');
 -- quackapi_serve switches logging off.
 CALL enable_logging(['QueryLog', 'HTTP', 'Quack'], storage := 'file', storage_path := getenv('QUACK_NATIVE_LOG'), storage_buffer_size := 0);
