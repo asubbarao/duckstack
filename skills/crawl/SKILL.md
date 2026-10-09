@@ -299,22 +299,15 @@ is the conduit idiom). Assembly is `array_agg(… ORDER BY …)` → `array_to_s
 
 ## Step 4 — The next round, incremental
 
-The next hop's URLs are a column of the previous table; the fetch is self-dispatched per row
-or (staged) fed by a variable; 3–5 first:
+The next hop's URLs are a column of the previous table, so the fetch is self-dispatched per row:
+pass this as `rows_sql` to the dev MCP `self_dispatch` tool, 3–5 first.
 
 ```sql
--- per-row fetch: self-dispatch. One crawl('<literal url>', …13 named…, max_results := 1) statement per row,
--- posted to the selected /sql, receipts UNNESTed. references/crawl_rows.sql is the verified molecule; the
--- seeds CTE there becomes (SELECT href AS url FROM <name>_links WHERE starts_with(href, 'https://') ORDER BY href LIMIT 5).
-
--- or the list rides in a variable and crawl() runs once with state_table (the staged shape)
-FROM dev.query($$
-SET VARIABLE urls = (SELECT list(href) FROM <name>_links);
-CREATE TABLE IF NOT EXISTS <name>_pages AS SELECT now() AS fetched_at, * FROM crawl(getvariable('urls'), ... all 13 ..., state_table := '<name>_state') WHERE false;
-INSERT INTO <name>_pages BY NAME
-SELECT now() AS fetched_at, * FROM crawl(getvariable('urls'), ... all 13 ..., state_table := '<name>_state') WHERE status = 200
-$$);
+SELECT href AS url, $$SELECT * FROM crawl('$$ || href || $$', …13 named…, max_results := 1)$$ AS statement
+FROM <name>_links WHERE starts_with(href, 'https://') ORDER BY href LIMIT 5
 ```
+
+`references/crawl_rows.sql` is the verified molecule.
 
 `crawl_url` is allowed here only after the URL column has been rendered as a literal inside the
 self-dispatched statement. Direct correlation is not the composition mechanism; a binder error

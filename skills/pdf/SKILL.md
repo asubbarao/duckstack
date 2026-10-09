@@ -119,9 +119,9 @@ scores it — filter on confidence, never on a hunch.
   `page`, and `bbox_x0` where `read_pdf_words` says `x0`. Alias on the way in.
 - `read_pdf_meta.encrypted` and `pdf_info.is_encrypted` are the same fact under two
   names; `read_pdf_meta.pages` and `pdf_info.page_count` likewise.
-- Table functions bind literals. Per-file fan-out is `SET VARIABLE` + a glob, or
-  `/duckstack:self-dispatch`; `pdf_redact_lateral` exists because `pdf_redact`
-  cannot take a column.
+- Table functions bind literals. Several known files: a literal glob or list
+  (`read_pdf(['/a.pdf', '/b.pdf'])`). Files held in a column: `/duckstack:self-dispatch`.
+  `pdf_redact_lateral` exists because `pdf_redact` cannot take a column.
 - Claude Code's own PDF reader shells out to `pdftoppm`. If it errors with
   "poppler-utils not installed", do not install poppler — render with
   `pdf_write_page_images` and read the PNGs.

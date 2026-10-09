@@ -13,8 +13,9 @@ FROM ls('/Users/aloksubbarao/duckdb-skills')
 ORDER BY is_dir DESC, name;
 ```
 
-`lsr(path)` walks the whole tree, including `.git` and `node_modules`; use it only on a folder
-already known to be small. Otherwise list one level, prune in the WHERE
+`lsr(path, depth)` walks everything under `path` to that depth, including `.git`, `.venv` and
+`node_modules`; even `lsr(child, 1)` lists the inside of a hidden folder one level down. Use it only
+on a folder already known to be clean. Otherwise list one level, prune in the WHERE
 (`NOT starts_with(name, '.') AND name NOT IN ('node_modules', '__pycache__', 'venv', 'dist', 'build')`),
 and list the surviving folders in the next stage. `ls` takes a literal, so the next stage is
 self-dispatch: see `/duckstack:self-dispatch`, whose molecule is exactly this walk.

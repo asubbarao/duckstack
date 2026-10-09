@@ -3,7 +3,7 @@ name: quack
 description: >
   How to call the Quack server: quack_query, one complete body, no attach. Use before any
   statement that touches the server, when a table "does not exist", when a join fails with
-  "Multiple streaming scans", or when reaching for ATTACH / .read / SET VARIABLE to set up.
+  "Multiple streaming scans", or when reaching for ATTACH, .read or session variables to set up.
 argument-hint: "[send <sql> | probe]"
 allowed-tools: Bash
 ---

@@ -6,10 +6,13 @@ description: Run SQL that writes SQL and runs it on the same dev DuckDB. Use whe
 # Self-dispatch
 
 A table function such as `ls(path)` takes a literal, not a column. Self-dispatch gets around it
-without a loop, a script or a second server: one CTE writes the statement for each row and posts it
-to dev's own `/sql` route; the next CTE unnests the receipts back into rows.
+without a loop, a script or a second server: SQL writes the statement for each row, and dev runs it.
 
 ## The molecule
+
+One `ls` per surviving folder per level, pruned by name before the next level is written. Never
+`lsr` on an unpruned folder: `lsr(child, 1)` lists the inside of `.venv` and `.pytest_cache` before
+any WHERE runs (measured 2026-10-09).
 
 ```sql
 WITH folders AS (
