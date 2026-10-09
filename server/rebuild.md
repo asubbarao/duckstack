@@ -22,6 +22,23 @@ agents.ext_doc_* and ext_catalog_documented from ../readthedocs_catalog.sql
 (minute cron); meta.query_* and remote_queries from query_history.sql
 (native log views, no separately attached history backup).
 
+## Current entrypoints after cleanup
+
+| Purpose | Retained source / interface |
+|---|---|
+| Conversation ingestion | `agent_stream_incremental.sql`, `agent_stream_normalize.sql`, and `agent_stream_views.sql`; scheduled by `agent_stream_schedule.sql`. |
+| Open PR status | `open_prs.sql` builds `open_prs_waiting`; `duckdb_mcp.sql` publishes `ci_hunt` for native CI-log inspection. Broader run/job analysis uses `../skills/ci-timing/SKILL.md` and `../skills/duck-hunt/SKILL.md`. |
+| Query timing and errors | `observability.sql` and `query_history.sql` expose native query records; `server_diagnostics.sql` retains native log-file and crash evidence. |
+| Prometheus / Grafana | `observability.sql` serves `GET /metrics`; the existing Homebrew services own their configuration. |
+| OTLP intake and reading | `quackapi.sql` retains received payloads; `telemetry.sql` resolves `pathmacro:telemetry?signal=logs`, `traces`, or `metrics`; `tests/telemetry.sql` exercises the intake/readers. |
+
+The old full-refresh stream, isolated GitHub collector/templates, unused endpoint registry,
+and unwired OTLP exporter/test have been removed from this folder.
+The native query views are the retained query-monitoring interface. They do not generate
+OTLP copies or provide the retired exporter's cursor/delivery ledger; that exporter was not
+part of startup or a schedule. Original files and SHA-256 receipts are retained outside the
+repository under `~/.duck/retired/server-cleanup-*/`.
+
 The following previously restored tables are disposable session scratch and
 are intentionally absent after an empty rebuild:
 

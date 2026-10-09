@@ -97,3 +97,4 @@ scene detection and is 20x cheaper.
 - No `.sh` and no Python in the path: the frame writer is a heredoc inside the Tera template, run by `read_csv`.
 - The ffmpeg branch of the template is written but unverified; the first run with `engine = 'ffmpeg'`
   should be checked against the avfoundation frame count and then noted here.
+

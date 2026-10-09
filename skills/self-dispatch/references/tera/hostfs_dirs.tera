@@ -1,0 +1,76 @@
+{% macro report() %}
+metadata AS (
+    SELECT folder, path, absolute_path(path) AS abspath,
+           file_name(path) AS name, file_extension(path) AS extension,
+           is_dir(path) AS is_folder, is_file(path) AS is_file,
+           file_size(path) AS bytes, hsize(file_size(path)) AS human_size,
+           file_last_modified(path) AS last_modified,
+           path_exists(path) AS path_exists, path_type(path) AS type,
+           path_split(path) AS parts
+    FROM entries
+), grouped AS (
+    SELECT folder, array_agg(metadata ORDER BY path) AS children,
+           list_filter(children, child -> child.is_file) AS files,
+           list_filter(children, child -> child.is_folder) AS folders
+    FROM metadata GROUP BY folder
+), hostfs_dirs AS (
+    SELECT folder AS path, absolute_path(folder) AS abspath,
+           file_name(folder) AS name, path_split(folder) AS parts,
+           path_type(folder) AS type, is_dir(folder) AS is_folder,
+           file_last_modified(folder) AS last_modified,
+           path_exists(folder) AS path_exists,
+           depth, files, folders,
+           list_filter(children, child -> child.path IS NOT NULL) AS children,
+           len(files) AS file_count, len(folders) AS folder_count,
+           pwd() AS working_directory, path_separator() AS separator,
+           statement, receipt, status, error
+    FROM listings JOIN grouped USING (folder)
+)
+{% endmacro report %}
+
+{% macro listing(level) %}
+{% if level > 1 %}
+frontier{{ level }} AS (
+    SELECT child.path AS folder, depth + 1 AS depth, q
+    FROM listings{{ level - 1 }}
+    CROSS JOIN UNNEST(paths) AS child(path)
+    WHERE status = 200 AND is_dir(child.path)
+),
+{% endif %}
+programs{{ level }} AS (
+    SELECT *, array_to_string([q, replace(folder, q, q || q), q], '') AS folder_literal,
+           printf($ls$SELECT coalesce(array_agg(path ORDER BY path), []) AS paths
+FROM ls(%s, true) LIMIT 4$ls$, folder_literal) AS statement
+    FROM {% if level == 1 %}seed{% else %}frontier{{ level }}{% endif %}
+), responses{{ level }} AS (
+    SELECT *, http_post('{{ self_uri }}',
+                         MAP {'Content-Type': 'application/json'},
+                         json_object('sql', statement)) AS receipt
+    FROM programs{{ level }}
+), listings{{ level }} AS (
+    SELECT *, try_cast(receipt ->> '$.status' AS INTEGER) AS status,
+           json_extract_string(try_cast(receipt ->> '$.body' AS JSON),
+                               '$[0].paths[*]') AS paths,
+           CASE WHEN status IS DISTINCT FROM 200 THEN receipt ->> '$.body'
+                WHEN paths IS NULL THEN 'Unrecognized listing response' END AS error
+    FROM responses{{ level }}
+),
+{% endmacro listing %}
+
+WITH seed AS (
+    SELECT {{ root_sql }} AS folder, 1 AS depth, chr(39) AS q
+),
+{% for level in levels %}
+{{ self::listing(level=level) }}
+{% endfor %}
+listings AS (
+{% for level in levels %}
+    SELECT folder, depth, statement, receipt, status, paths, error FROM listings{{ level }}
+{% if not loop.last %}    UNION ALL{% endif %}
+{% endfor %}
+), entries AS (
+    SELECT *, unnest(CASE WHEN len(paths) > 0 THEN paths ELSE [NULL] END) AS path
+    FROM listings
+),
+{{ self::report() }}
+SELECT * FROM hostfs_dirs ORDER BY depth, path LIMIT 1000000;

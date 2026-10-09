@@ -1,0 +1,9 @@
+SELECT source.*,
+       http_post(
+           '{{ self_uri }}',
+           MAP {'Content-Type': 'application/json'},
+           json_object('sql', statement)
+       ) AS receipt
+FROM (
+{{ source_sql }}
+) AS source
