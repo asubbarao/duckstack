@@ -46,6 +46,27 @@ ATTACH IF NOT EXISTS 'ducklake:/Users/aloksubbarao/.duck/lake/duckstack/catalog.
 CALL enable_logging(['QueryLog', 'HTTP', 'Quack'], storage := 'file', storage_path := getenv('QUACK_NATIVE_LOG'), storage_buffer_size := 0);
 SELECT cron('CHECKPOINT', '45 */5 * * * *');
 
+-- Extension catalog. lake.agents.ext_fetch is the raw log: one row per fetch (url, fetched_at, response {status, body}).
+-- agents.ext_page is the newest good fetch per url; ext_catalog and ext_docs read it. agents.ext_stale lists the urls
+-- missing or older than three days. Hourly, each stale url is fetched by curl through shellfs, one self-dispatched
+-- INSERT per url; a failed fetch (curl --fail) lands no row and is retried next hour.
+CREATE SCHEMA IF NOT EXISTS agents;
+CREATE OR REPLACE VIEW agents.ext_fetch AS FROM lake.agents.ext_fetch;
+CREATE OR REPLACE VIEW agents.ext_page AS
+SELECT url, max(fetched_at) AS fetched_at, arg_max(response, fetched_at) AS response
+FROM lake.agents.ext_fetch WHERE response ->> 'status' = '200' GROUP BY url;
+SELECT cron($$
+WITH due AS (
+    SELECT url FROM (SELECT url, min(kind) AS kind FROM agents.ext_stale GROUP BY url) ORDER BY kind = 'list' DESC, url LIMIT 90
+)
+SELECT url, http_post('http://127.0.0.1:9495/sql', MAP {'Content-Type': 'application/json'}, json_object('sql', tera_render($t$
+INSERT INTO lake.agents.ext_fetch BY NAME
+SELECT '{{ url }}' AS url, now() AS fetched_at, json_object('status', 200, 'body', content) AS response
+FROM read_text('curl -sSL --fail --max-time 30 {{ url }} |')
+$t$, json_object('url', url), autoescape := false))) ->> '$.status' AS status
+FROM due
+$$, '0 15 * * * *');
+
 CREATE SCHEMA IF NOT EXISTS agent;
 CREATE OR REPLACE VIEW agent.stream AS
 SELECT * REPLACE ('claude' AS source) FROM read_conversations(source := 'claude', path := '/Users/aloksubbarao/.claude')
