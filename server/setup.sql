@@ -46,6 +46,52 @@ ATTACH IF NOT EXISTS 'ducklake:/Users/aloksubbarao/.duck/lake/duckstack/catalog.
 CALL enable_logging(['QueryLog', 'HTTP', 'Quack'], storage := 'file', storage_path := getenv('QUACK_NATIVE_LOG'), storage_buffer_size := 0);
 SELECT cron('CHECKPOINT', '45 */5 * * * *');
 
+-- Queries and Quack requests, from DuckDB's own log; the launchd wrapper's lifecycle events.
+CREATE SCHEMA IF NOT EXISTS meta;
+CREATE OR REPLACE VIEW meta.query_log AS SELECT * EXCLUDE (type, message), message AS query FROM duckdb_logs WHERE type = 'QueryLog';
+CREATE OR REPLACE VIEW meta.quack_events AS
+SELECT * EXCLUDE (message), unnest(parse_duckdb_log_message('Quack', message)) FROM duckdb_logs WHERE type = 'Quack';
+CREATE OR REPLACE VIEW meta.remote_query_history AS
+SELECT timestamp AS started_at, quack_connection_id, client_query_id, query, duration_ms, duration_ms / 1000.0 AS wall_seconds, response_type, error
+FROM meta.quack_events WHERE message_type = 'PREPARE_REQUEST' AND server IS NULL AND client_query_id IS NOT NULL;
+CREATE OR REPLACE VIEW meta.query_minute AS
+SELECT time_bucket(INTERVAL 1 MINUTE, started_at) AS minute, count(started_at) AS queries, count(error) AS errors,
+       quantile_cont(duration_ms, 0.50) AS p50_ms, quantile_cont(duration_ms, 0.95) AS p95_ms, quantile_cont(duration_ms, 0.99) AS p99_ms,
+       max(duration_ms) AS max_ms, sum(duration_ms) / 1000.0 AS wall_seconds
+FROM meta.remote_query_history GROUP BY ALL;
+CREATE OR REPLACE VIEW meta.server_events AS
+FROM read_json('/Users/aloksubbarao/.duck/logs/server-events*.jsonl', format := 'newline_delimited', union_by_name := true);
+-- GET /metrics: Prometheus text, computed per scrape.
+CREATE OR REPLACE VIEW meta.prometheus_metrics AS
+WITH q AS (
+  SELECT count(started_at) AS queries, count(error) AS errors, sum(duration_ms) / 1000.0 AS wall_seconds,
+         quantile_cont(duration_ms, 0.5) FILTER (started_at > now() - INTERVAL 5 MINUTE) AS p50_ms,
+         quantile_cont(duration_ms, 0.95) FILTER (started_at > now() - INTERVAL 5 MINUTE) AS p95_ms
+  FROM meta.remote_query_history
+), duck AS (
+  SELECT pid, memory_percent FROM sazgar_processes() WHERE name = 'duckdb'
+), samples AS (
+  SELECT 'duckdb_quack_queries_total' AS name, 'counter' AS kind, '' AS labels, queries AS value FROM q
+  UNION ALL SELECT 'duckdb_quack_query_errors_total', 'counter', '', errors FROM q
+  UNION ALL SELECT 'duckdb_quack_query_wall_seconds_total', 'counter', '', wall_seconds FROM q
+  UNION ALL SELECT 'duckdb_quack_query_ms_5m', 'gauge', '{quantile="0.5"}', p50_ms FROM q
+  UNION ALL SELECT 'duckdb_quack_query_ms_5m', 'gauge', '{quantile="0.95"}', p95_ms FROM q
+  UNION ALL SELECT 'duckdb_log_lag_seconds', 'gauge', '', date_diff('millisecond', max(timestamp), now()) / 1000.0 FROM duckdb_logs
+  UNION ALL SELECT 'duckdb_memory_usage_bytes', 'gauge', '{tag="' || tag || '"}', memory_usage_bytes FROM duckdb_memory()
+  UNION ALL SELECT 'duckdb_temporary_storage_bytes', 'gauge', '', sum(temporary_storage_bytes) FROM duckdb_memory()
+  UNION ALL SELECT 'duckdb_processes', 'gauge', '', count(pid) FROM duck
+  UNION ALL SELECT 'duckdb_process_memory_percent_sum', 'gauge', '', sum(memory_percent) FROM duck
+  UNION ALL SELECT 'duckdb_cron_jobs', 'gauge', '{status="' || status || '"}', count(job_id) FROM cron_jobs() GROUP BY status
+), families AS (
+  SELECT name, '# TYPE ' || name || ' ' || kind || '
+' || string_agg(name || labels || ' ' || coalesce(value::DOUBLE, 0), '
+' ORDER BY labels) AS block
+  FROM samples GROUP BY name, kind
+)
+SELECT string_agg(block, '
+' ORDER BY name) || '
+' AS text FROM families;
+
 -- Extension catalog. lake.agents.ext_fetch is the raw log: one row per fetch (url, fetched_at, response {status, body}).
 -- agents.ext_page is the newest good fetch per url; ext_catalog and ext_docs read it. agents.ext_stale lists the urls
 -- missing or older than three days. Hourly, each stale url is fetched by curl through shellfs, one self-dispatched
