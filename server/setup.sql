@@ -1,4 +1,4 @@
--- Dev DuckDB. launchd runs `duckdb -bail ~/.duck/dev.duckdb -init setup.sql` and keeps stdin open.
+-- Dev DuckDB. launchd runs `duckdb -bail ~/.duck/db/dev.duckdb -init setup.sql` and keeps stdin open.
 -- Dev boots ~/.duck/deploy/server/setup.sql, the duckdb-skills branch `deploy`. A save here changes nothing until
 -- it is committed and the branch moved: git branch -f deploy <commit>; the watcher restarts dev within 30 s.
 SET GLOBAL extension_directory = '/Users/aloksubbarao/.duck/extensions';
@@ -20,7 +20,7 @@ INSTALL read_lines FROM community; LOAD read_lines;
 INSTALL agent_data FROM community; LOAD agent_data;
 INSTALL quackapi FROM community; LOAD quackapi;
 INSTALL duckdb_mcp FROM community; LOAD duckdb_mcp;
--- Used by the agents.ext_* docs views, otlp_events and meta.prometheus_metrics.
+-- Used by the agents.ext_* docs views and meta.prometheus_metrics.
 INSTALL webbed FROM community; LOAD webbed;
 INSTALL markdown FROM community; LOAD markdown;
 INSTALL urlpattern FROM community; LOAD urlpattern;
@@ -83,14 +83,12 @@ WITH q AS (
   UNION ALL SELECT 'duckdb_process_memory_percent_sum', 'gauge', '', sum(memory_percent) FROM duck
   UNION ALL SELECT 'duckdb_cron_jobs', 'gauge', '{status="' || status || '"}', count(job_id) FROM cron_jobs() GROUP BY status
 ), families AS (
-  SELECT name, '# TYPE ' || name || ' ' || kind || '
-' || string_agg(name || labels || ' ' || coalesce(value::DOUBLE, 0), '
-' ORDER BY labels) AS block
-  FROM samples GROUP BY name, kind
+  SELECT name, kind, list({labels: labels, value: coalesce(value::DOUBLE, 0)} ORDER BY labels) AS samples FROM samples GROUP BY name, kind
 )
-SELECT string_agg(block, '
-' ORDER BY name) || '
-' AS text FROM families;
+SELECT tera_render($p${% for f in families %}# TYPE {{ f.name }} {{ f.kind }}
+{% for s in f.samples %}{{ f.name }}{{ s.labels }} {{ s.value }}
+{% endfor %}{% endfor %}$p$, json_object('families', list({name: name, kind: kind, samples: samples} ORDER BY name)), autoescape := false) AS text
+FROM families;
 
 -- Extension catalog. lake.agents.ext_fetch is the raw log: one row per fetch (url, fetched_at, response {status, body}).
 -- agents.ext_page is the newest good fetch per url; ext_catalog and ext_docs read it. agents.ext_stale lists the urls
@@ -157,7 +155,6 @@ UNION ALL BY NAME
 SELECT * REPLACE ('codex' AS source) FROM read_conversations(source := 'codex', path := '/Users/aloksubbarao/.codex');
 
 -- Read every minute by the mac-metrics collector (launchd com.alok.mac-metrics, ~/Documents/mac-metrics-incubator).
-CREATE SCHEMA IF NOT EXISTS agents;
 CREATE OR REPLACE VIEW agents.mac_query_activity AS
 SELECT getenv('QUACK_INSTANCE_ID') AS instance_id, min("timestamp") OVER () AS instance_started_at,
        getenv('QUACK_WRAPPER_PID')::BIGINT AS wrapper_pid,
