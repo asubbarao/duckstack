@@ -30,7 +30,7 @@ new macro without explicit approval.
 
 | Door | What | Token | Who |
 |---|---|---|---|
-| `dev` MCP (`query`, `execute` tools) | duckdb_mcp inside dev on `http://127.0.0.1:9496/mcp` | none, loopback | any agent with the MCP — `/duckstack:agent-door` |
+| `dev` MCP (`query`, `execute` tools) | duckdb_mcp inside dev, served by quackapi at `http://localhost:9495/mcp/` | none, loopback | any agent with the MCP — `/duckstack:agent-door` |
 | `http://127.0.0.1:9495/sql` | quackapi route inside dev; runs any SQL | none, loopback | any agent with a shell; dev's own self-dispatch |
 | `quack:localhost:9494` | dev, read-write | `~/.duck/token` | `quack_query` from a `:memory:` client |
 | OTLP `http://127.0.0.1:4318/v1/*` | `otlp_serve` inside dev; rows land in `otlp_logs`, `otlp_traces`, `otlp_metrics_*` | none, loopback | telemetry senders |

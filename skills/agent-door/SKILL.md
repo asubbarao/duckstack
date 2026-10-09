@@ -15,7 +15,7 @@ restarts it (every MCP session drops); `~/.duck/dev.duckdb` is a rebuildable out
 
 | door | how | runs |
 |---|---|---|
-| `dev` MCP → `query(sql)` | tool call | read-only SQL; no row cap, so write your own LIMIT. Refuses writes and file-access functions. |
+| `dev` MCP → `query(sql)` at `http://localhost:9495/mcp/` (quackapi serves duckdb_mcp; no separate port) | tool call | read-only SQL; no row cap, so write your own LIMIT. Refuses writes and file-access functions. |
 | `dev` MCP → `execute(sql)` | tool call | any statement: DDL, DML, LOAD, ATTACH, SET, file readers, shellfs (`read_lines('cmd |')`). Per-row table functions: build the statements as rows and run each through `execute`. |
 | `dev` MCP → `describe`, `list_tables`, `database_info`, `export` | tool call | duckdb_mcp built-ins. |
 | HTTP `/sql` | POST JSON `{"sql": "…"}` to `http://127.0.0.1:9495/sql` | any SQL, run untouched; a parse or bind error is HTTP 422 with the message. |

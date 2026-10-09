@@ -5,7 +5,7 @@ description: Use the local DuckStack DuckLake, preserve original observations, p
 
 # Local DuckLake
 
-Use the selected dev MCP (9496), its existing JSON `/sql` endpoint (9495), or
+Use the selected dev MCP (9495 `/mcp/`), its existing JSON `/sql` endpoint (9495), or
 `quack_query` against `quack:localhost:9494`. Never start another service or open
 the live catalog for writing from a second local process.
 

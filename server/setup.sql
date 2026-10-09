@@ -162,16 +162,27 @@ SELECT getenv('QUACK_INSTANCE_ID') AS instance_id, min("timestamp") OVER () AS i
        getenv('QUACK_NATIVE_LOG') AS source_log, 'query_log_observation' AS observation_kind
 FROM meta.query_log;
 
--- 9494 Quack. 9496 MCP with duckdb_mcp's own tools, execute included. 4318 OTLP/HTTP into the otlp_* tables.
+-- 9494 Quack. 4318 OTLP/HTTP into the otlp_* tables.
+-- duckdb_mcp runs with no port of its own; quackapi serves it at /mcp/ below.
 FROM quack_serve('quack:localhost:9494', token := getenv('QUACK_TOKEN'));
-PRAGMA mcp_server_start('http', '127.0.0.1', 9496, '{"builtin_tools": true, "enable_execute_tool": true, "execute_allow_ddl": true, "execute_allow_dml": true, "execute_allow_load": true, "execute_allow_attach": true, "execute_allow_set": true, "background": true}');
+PRAGMA mcp_server_start('memory', '', 0, '{"builtin_tools": true, "enable_execute_tool": true, "execute_allow_ddl": true, "execute_allow_dml": true, "execute_allow_load": true, "execute_allow_attach": true, "execute_allow_set": true}');
 FROM otlp_serve('otlp:127.0.0.1:4318', disable_auth := true);
 
--- 9495: POST /sql {"sql": "..."}; POST /inbox any JSON, read it from quackapi_jobs; GET /metrics for Prometheus (/opt/homebrew/etc/prometheus.yml).
+-- 9495: POST /sql {"sql": "..."}; POST /inbox any JSON, read it from quackapi_jobs; GET /metrics for Prometheus (/opt/homebrew/etc/prometheus.yml);
+-- POST /mcp/ is the dev MCP server (query, execute and the built-ins).
 CREATE QUEUE inbox;
 CREATE OR REPLACE ROUTE sql POST '/sql' AS SELECT * FROM quack_query('quack:localhost:9494', $sql, token := getenv('QUACK_TOKEN'));
 CREATE OR REPLACE ROUTE inbox POST '/inbox' STATUS 201 AS SELECT quackapi_enqueue('inbox', $body::JSON) AS id;
 CREATE OR REPLACE ROUTE metrics GET '/metrics' AS SELECT text FROM meta.prometheus_metrics;
+-- A middleware that stops the request sends its body raw as application/json, which is what MCP clients read.
+-- JSON-RPC notifications carry no id and get 202 with no body.
+CREATE GROUP mcp WITH (prefix='/mcp');
+CREATE OR REPLACE ROUTE mcp POST '/' IN GROUP mcp AS SELECT '' AS text;
+CREATE OR REPLACE MIDDLEWARE mcp BEFORE GROUP mcp AS
+SELECT false AS allow,
+       CASE WHEN json_exists($body::JSON, '$.id') THEN 200 ELSE 202 END AS status,
+       CASE WHEN json_exists($body::JSON, '$.id') THEN mcp_server_send_request($body) END AS body,
+       NULL::VARCHAR AS header_name, NULL::VARCHAR AS header_value;
 FROM quackapi_serve(9495, host := '127.0.0.1');
 -- quackapi_serve switches logging off.
 CALL enable_logging(['QueryLog', 'HTTP', 'Quack'], storage := 'file', storage_path := getenv('QUACK_NATIVE_LOG'), storage_buffer_size := 0);

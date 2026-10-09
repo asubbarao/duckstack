@@ -5,7 +5,7 @@ description: Add semantic judgments to DuckDB rows with the JEV community extens
 
 JEV asks a model about each input row. Use it when SQL can select candidates but cannot decide their meaning. Keep source IDs, context, raw answers and errors so each judgment remains inspectable.
 
-Use the selected DuckDB service: dev is http://localhost:9496/mcp, with http://localhost:9495/sql as its fallback. Start with a bounded SELECT over existing data or a file reader. Install and load with `INSTALL jev FROM community; LOAD jev;`.
+Use the selected DuckDB service: dev is http://localhost:9495/mcp/, with http://localhost:9495/sql as its fallback. Start with a bounded SELECT over existing data or a file reader. Install and load with `INSTALL jev FROM community; LOAD jev;`.
 
 Read [useful_queries.sql](references/useful_queries.sql) for the compact working example and [explain.sql](references/explain.sql) for binding checks. Show the core declarative operation clearly: source rows become rows with semantic companion columns, or explicit pairs receive relationship judgments. Prefer under 100 lines, around 50 for a skeleton; 100–200 lines can be justified by real primary-dataset preparation. Explain the need for length rather than hiding complexity in the first CTE. Put EXPLAIN plans in a separate file. Use direct SELECT or file input, without VALUES clauses or fixture tables. Inspect schemas with DESCRIBE and profiles with SUMMARIZE. Preserve detail with array_agg when grouping is needed; avoid COUNT FILTER and custom lossy metric summaries. Use finetype for local type detection and fakeit when generated input earns its place; preserve generated rows for repeatable comparisons.
 
