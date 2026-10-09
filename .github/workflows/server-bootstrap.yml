@@ -1,0 +1,94 @@
+name: Server Bootstrap Smoke
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'server/**'
+      - '.github/workflows/server-bootstrap.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'server/**'
+      - '.github/workflows/server-bootstrap.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  server-bootstrap:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      DUCKSTACK_CI: '1'
+      QUACK_TOKEN: ci-bootstrap-token
+      SERVER_DIR: ${{ github.workspace }}
+      DEV_QUACK_PORT: '39494'
+      DEV_QUACKAPI_PORT: '39495'
+      DEV_MCP_PORT: '39496'
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: false
+
+      - name: Boot setup.sql and query the scratch server
+        run: |
+          set -euo pipefail
+          scratch="$(mktemp -d)"
+          export HOME="$scratch/home"
+          mkdir -p "$HOME/.duck/logs" "$HOME/.duck/tmp"
+          printf '%s\n' 'context_id,scope,connection_id,transaction_id,query_id,thread_id,timestamp,type,log_level,message' > "$HOME/.duck/logs/duckdb_log.csv"
+
+          mkfifo "$scratch/server.stdin"
+          while :; do sleep 3600; done > "$scratch/server.stdin" &
+          feeder_pid=$!
+          uv run --no-project --with duckdb-cli==1.5.5 duckdb -bail "$scratch/server.duckdb" \
+            -cmd '.read server/setup.sql' < "$scratch/server.stdin" > "$scratch/server.out" 2> "$scratch/server.err" &
+          server_pid=$!
+          cleanup() {
+            kill "$server_pid" 2>/dev/null || true
+            wait "$server_pid" 2>/dev/null || true
+            kill "$feeder_pid" 2>/dev/null || true
+            wait "$feeder_pid" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+
+          ready=''
+          for attempt in $(seq 1 180); do
+            if ! kill -0 "$server_pid" 2>/dev/null; then
+              break
+            fi
+            ready="$(curl -sS --max-time 2 -H 'Content-Type: application/json' \
+            --data-raw '{"sql":"SELECT table_name FROM duckdb_tables() WHERE table_name = chr(95) || chr(115) || chr(101) || chr(116) || chr(117) || chr(112) || chr(95) || chr(99) || chr(111) || chr(109) || chr(112) || chr(108) || chr(101) || chr(116) || chr(101)"}' \
+              "http://127.0.0.1:${DEV_QUACKAPI_PORT}/sql" 2>/dev/null || true)"
+            case "$ready" in
+              *setup_complete*) break ;;
+            esac
+            sleep 1
+          done
+          case "$ready" in
+            *setup_complete*) ;;
+            *)
+              echo "setup.sql did not reach _setup_complete" >&2
+              sed -n '1,240p' "$scratch/server.err" >&2
+              exit 1
+              ;;
+          esac
+
+          answer="$(curl --fail-with-body -sS -H 'Content-Type: application/json' \
+            --data-raw '{"sql":"SELECT 42 AS answer"}' \
+            "http://127.0.0.1:${DEV_QUACKAPI_PORT}/sql")"
+          test "$answer" = '[{"answer":42}]'
+
+      - name: Confirm a broken table macro fails startup
+        run: |
+          set -euo pipefail
+          scratch_home="$(mktemp -d)"
+          if printf '%s\n' 'CREATE OR REPLACE MACRO ci_broken() AS TABLE SELECT * FROM extension_that_does_not_exist();' \
+            | HOME="$scratch_home" uv run --no-project --with duckdb-cli==1.5.5 duckdb -bail :memory:; then
+            echo 'broken macro unexpectedly succeeded' >&2
+            exit 1
+          fi
