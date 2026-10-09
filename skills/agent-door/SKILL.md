@@ -27,10 +27,6 @@ restarts it (every MCP session drops); `~/.duck/dev.duckdb` is a rebuildable out
 Use the MCP first. If its tools are missing in the harness, POST to `/sql` or use quack; all three
 reach the same database. Give subagents the endpoint explicitly.
 
-`standby` is a second DuckDB (launchd `com.inframe.standby`, in memory, same extensions, no lake and no
-crons) on 9504 (quack), 9505 (`/sql`) and 9506 (MCP `standby`). It stays up while dev restarts, for
-file readers, shellfs and HTTP; it does not hold dev's tables.
-
 ## Task recipes (plain SQL, no special tools)
 
 | task | SQL |
