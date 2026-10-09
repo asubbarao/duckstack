@@ -30,6 +30,14 @@ ATTACH IF NOT EXISTS 'ducklake:~/.duck/lake/duckstack/catalog.ducklake' AS lake
 CALL enable_logging(['QueryLog', 'HTTP', 'Quack'], storage := 'file', storage_path := '~/.duck/logs/duckdb_log.csv', storage_buffer_size := 0);
 SELECT cron('CHECKPOINT', '45 */5 * * * *');
 
+CREATE SCHEMA IF NOT EXISTS agent;
+CREATE OR REPLACE VIEW agent.stream AS
+SELECT * REPLACE ('claude' AS source) FROM read_conversations(source := 'claude', path := '~/.claude')
+UNION ALL BY NAME
+SELECT * REPLACE ('claude-desktop' AS source) FROM read_conversations(source := 'claude-desktop', path := '~/Library/Application Support/Claude')
+UNION ALL BY NAME
+SELECT * REPLACE ('codex' AS source) FROM read_conversations(source := 'codex', path := '~/.codex');
+
 FROM quack_serve('quack:localhost:9494', token := getenv('QUACK_TOKEN'));
 PRAGMA mcp_server_start('http', '127.0.0.1', 9496, '{"builtin_tools": true, "enable_execute_tool": true, "execute_allow_ddl": true, "execute_allow_dml": true, "execute_allow_load": true, "execute_allow_attach": true, "execute_allow_set": true, "background": true}');
 
