@@ -32,9 +32,8 @@ The version printed is the checked-out SHA. Verified here on `c804ebc`.
 
 ```bash
 mkdir -p /tmp/x && cd /tmp/x            # card.md is written to the cwd
-# doc = the PDF; gloss = a word in the glossary section's title (default 'Glossary'; no match just gives an empty pdf_glossary)
-~/reviews/.../duckdb-pdf/build/release/duckdb [cache.duckdb] -cmd "SET VARIABLE doc = '/path/x.pdf'" \
-  -f ~/duckdb-skills/skills/pdf-digest/references/book-digest.sql > run.out
+# first write the PDF's path into book-digest.sql (5 places) and, if its glossary heading is not 'Glossary', that word
+~/reviews/.../duckdb-pdf/build/release/duckdb [cache.duckdb] -f ~/duckdb-skills/skills/pdf-digest/references/book-digest.sql > run.out
 ```
 
 A file DB argument caches the layers (the 259-page read is ~11s), so follow-up questions are millisecond queries.

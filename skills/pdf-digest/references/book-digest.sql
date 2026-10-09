@@ -4,18 +4,16 @@
 -- Layers, raw first, one table per statement (tables so a file DB caches the 12s PDF read; in :memory: they are just steps):
 --   pdf_words -> pdf_lines (glued words, geometry, typographic role) -> pdf_secs (heading tree) -> pdf_owned (content by heading)
 --   -> pdf_paras -> pdf_terms -> pdf_digest -> { pdf_card, pdf_glossary, pdf_figures, pdf_tables }
--- Nothing here is per-book except the two SET VARIABLEs: the file, and the word that names a glossary section.
+-- Nothing here is per-book except the file path (read_pdf_words, pdf_pages_info, pdf_info, pdf_digest.file,
+-- pdf_outline) and the word that names the glossary section ('Glossary', in pdf_glossary). Edit them in place.
 .mode csv
--- Override either from the command line: duckdb -cmd "SET VARIABLE doc = 'x.pdf'" -f book-digest.sql
-SET VARIABLE doc = coalesce(getvariable('doc'), '/Users/aloksubbarao/Downloads/Inference Engineering.pdf');
-SET VARIABLE gloss = coalesce(getvariable('gloss'), 'Glossary');
 
 -- L0 raw: every word with geometry and face. read_pdf_words(files, first_page := NULL, last_page := NULL, password := NULL,
 --   ignore_errors := false, ocr := false, auto_ocr := false, ocr_language/ocr_dpi/ocr_psm/ocr_oem/ocr_preprocess/ocr_retry/
 --   tessdata_dir/ocr_backend/ocr_plugin/ocr_endpoint := defaults)
 CREATE OR REPLACE TABLE pdf_words AS
 SELECT page, column_index AS col, word, x0, y0, x1, y1, font_name, font_size
-FROM read_pdf_words(getvariable('doc'));
+FROM read_pdf_words('/Users/aloksubbarao/Downloads/Inference Engineering.pdf');
 
 -- L1 lines. A new line starts when y0 jumps > 3pt within (page, column). Words are then glued where poppler split a ligature
 -- ("Profi" + "ling" overlap by 0.2pt; a real space is >= 2.5pt, so gap < 0.5 means one word). ws keeps every glued word with
@@ -156,7 +154,7 @@ WITH f AS (
 j AS (
   SELECT i.page, i.label, f.printed AS printed_hdr,
          coalesce(i.label, CAST(f.printed AS VARCHAR), CAST(i.page - mode(i.page - f.printed) OVER () AS VARCHAR)) AS printed_page
-  FROM pdf_pages_info(getvariable('doc')) i LEFT JOIN f ON i.page = f.page
+  FROM pdf_pages_info('/Users/aloksubbarao/Downloads/Inference Engineering.pdf') i LEFT JOIN f ON i.page = f.page
 )
 SELECT * FROM j;
 
@@ -229,7 +227,7 @@ LEFT JOIN pdf_terms tm ON s.sec_id = tm.sec_id;
 
 -- Glossary: paragraphs of the section whose title contains the 'gloss' word; the term is the leading bold run, the definition the rest.
 CREATE OR REPLACE TABLE pdf_glossary AS
-WITH g AS (SELECT p.* FROM pdf_paras p JOIN pdf_secs s ON p.sec_id = s.sec_id WHERE contains(s.title, getvariable('gloss'))),
+WITH g AS (SELECT p.* FROM pdf_paras p JOIN pdf_secs s ON p.sec_id = s.sec_id WHERE contains(s.title, 'Glossary')),
 b AS (
   SELECT *, list_position(list_transform(first_ws, x -> contains(x.f, 'Bold')), false) AS fp FROM g
 ),
@@ -280,10 +278,10 @@ SELECT sec_id, page, block_id, row_id, list_transform(range(1, ncols + 1), i -> 
 
 -- The card: contents first (depth-nested, page + words), leads and terms on the sections, then the stats line. This is the low-token read.
 CREATE OR REPLACE TABLE pdf_card AS
-WITH info AS (SELECT * FROM pdf_info(getvariable('doc'))),
+WITH info AS (SELECT * FROM pdf_info('/Users/aloksubbarao/Downloads/Inference Engineering.pdf')),
 tb AS (SELECT sec_id, len(list(DISTINCT (page * 1000 + block_id))) AS n_tables FROM pdf_tables GROUP BY sec_id),
 rows AS (
-  SELECT d.sec_id, getvariable('doc') AS file,
+  SELECT d.sec_id, '/Users/aloksubbarao/Downloads/Inference Engineering.pdf' AS file,
          repeat('  ', d.depth - 1) || '- ' || d.title || ' · p' || d.printed_page || ' (pdf ' || d.pdf_page || ') · ' ||
          coalesce(CAST(d.subtree_words AS VARCHAR), '0') || 'w' ||
          CASE WHEN d.n_figs > 0 THEN ' · ' || CAST(d.n_figs AS VARCHAR) || ' fig' ELSE '' END ||
@@ -304,7 +302,7 @@ SELECT 'conserved_chars' AS check_name, len(list(DISTINCT n)) = 1 AS ok, list(sr
 FROM (SELECT 'raw_words' AS src, sum(length(word)) AS n FROM pdf_words UNION ALL SELECT 'lines', sum(length(replace(text, ' ', ''))) FROM pdf_lines);
 -- 2. typography vs the file's own outline: headings found from font geometry alone against pdf_outline (normalised: lowercase, no spaces/colons).
 --    unmatched should be 0 when the PDF has an outline; outline_total 0 or NULL means the PDF has none (nothing to compare).
-WITH o AS (SELECT ord, title, replace(replace(lower(title), ' ', ''), ':', '') AS k FROM pdf_outline(getvariable('doc'))),
+WITH o AS (SELECT ord, title, replace(replace(lower(title), ' ', ''), ':', '') AS k FROM pdf_outline('/Users/aloksubbarao/Downloads/Inference Engineering.pdf')),
 d AS (SELECT replace(replace(lower(title), ' ', ''), ':', '') AS k FROM pdf_digest GROUP BY k)
 SELECT 'outline_agreement' AS check_name, len(list(o.ord)) AS outline_total, len(list(o.ord) FILTER (WHERE d.k IS NULL)) AS unmatched,
        list(o.title ORDER BY o.ord) FILTER (WHERE d.k IS NULL) AS unmatched_titles
