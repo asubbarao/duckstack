@@ -22,7 +22,7 @@ jobs:
         run: |
           curl -sSLo duckdb.zip https://github.com/duckdb/duckdb/releases/download/v1.5.6/duckdb_cli-linux-amd64.zip
           unzip -q duckdb.zip duckdb
-          mkdir -p ~/.duck/logs ~/.duck/tmp
+          mkdir -p ~/.duck/logs ~/.duck/tmp ~/.duck/lake/duckstack/data
           ./duckdb -bail ~/.duck/dev.duckdb -init server/setup.sql < /dev/zero > server.out 2> server.err &
           for i in $(seq 1 120); do
             curl -sf -H 'content-type: application/json' --data '{"sql":"SELECT 42 AS up"}' http://127.0.0.1:9495/sql && exit 0
