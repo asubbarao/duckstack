@@ -1,28 +1,5 @@
 {
   "mcpServers": {
-    "fledgling": {
-      "type": "stdio",
-      "command": "fledgling-mcp",
-      "args": [
-        "serve",
-        "--profile",
-        "analyst",
-        "--transport",
-        "stdio",
-        "--root",
-        "."
-      ],
-      "env": {}
-    },
-    "squackit": {
-      "type": "stdio",
-      "command": "squackit",
-      "args": [
-        "mcp",
-        "serve"
-      ],
-      "env": {}
-    },
     "dev": {
       "type": "http",
       "url": "http://127.0.0.1:9496/mcp"
