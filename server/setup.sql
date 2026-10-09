@@ -145,14 +145,6 @@ $t$, json_object('url', url), autoescape := false))) ->> '$.status' AS status
 FROM due
 $$, '0 15 * * * *');
 
-CREATE SCHEMA IF NOT EXISTS agent;
-CREATE OR REPLACE VIEW agent.stream AS
-SELECT * REPLACE ('claude' AS source) FROM read_conversations(source := 'claude', path := '/Users/aloksubbarao/.claude')
-UNION ALL BY NAME
-SELECT * REPLACE ('claude-desktop' AS source) FROM read_conversations(source := 'claude-desktop', path := '/Users/aloksubbarao/Library/Application Support/Claude')
-UNION ALL BY NAME
-SELECT * REPLACE ('codex' AS source) FROM read_conversations(source := 'codex', path := '/Users/aloksubbarao/.codex');
-
 -- Read every minute by the mac-metrics collector (launchd com.alok.mac-metrics, ~/Documents/mac-metrics-incubator).
 CREATE OR REPLACE VIEW agents.mac_query_activity AS
 SELECT getenv('QUACK_INSTANCE_ID') AS instance_id, min("timestamp") OVER () AS instance_started_at,
@@ -172,32 +164,32 @@ CREATE OR REPLACE ROUTE sql POST '/sql' AS SELECT * FROM quack_query('quack:loca
 CREATE OR REPLACE ROUTE inbox POST '/inbox' STATUS 201 AS SELECT quackapi_enqueue('inbox', $body::JSON) AS id;
 CREATE OR REPLACE ROUTE metrics GET '/metrics' AS SELECT text FROM meta.prometheus_metrics;
 -- A middleware that stops the request sends its body raw as application/json, which is what MCP clients read.
--- The fixed replies are one JSON document keyed by method; a tool call's text is the /sql reply (rows, or the
--- DuckDB error). Notifications carry no id and get 202; the body must not be empty or quackapi answers 500.
+-- The request is read once into a typed struct; the fixed replies are a map keyed by method; a tool call's text is
+-- the /sql reply (rows, or the DuckDB error). Notifications carry no id and get 202; the body must not be empty or
+-- quackapi answers 500.
 CREATE GROUP mcp WITH (prefix='/mcp');
 CREATE OR REPLACE ROUTE mcp POST '/' IN GROUP mcp AS SELECT '' AS text;
 CREATE OR REPLACE MIDDLEWARE mcp BEFORE GROUP mcp AS
 WITH msg AS (
-    SELECT $body::JSON -> '$.id' AS id, $body::JSON ->> '$.method' AS method,
-           coalesce($body::JSON ->> '$.params.arguments.sql', $body::JSON ->> '$.params.arguments.statement') AS sql
+    SELECT from_json($body::JSON, '{"id": "JSON", "method": "VARCHAR", "params": {"arguments": {"sql": "VARCHAR", "statement": "VARCHAR"}}}') AS m
 ), called AS (
-    SELECT *, from_json(http_post('http://127.0.0.1:9495/sql', MAP {'Content-Type': 'application/json'}, json_object('sql', sql)),
+    SELECT m, from_json(http_post('http://127.0.0.1:9495/sql', MAP {'Content-Type': 'application/json'},
+                                  json_object('sql', coalesce(m.params.arguments.sql, m.params.arguments.statement))),
                         '{"status": "INTEGER", "body": "VARCHAR"}') AS receipt
-    FROM msg WHERE method = 'tools/call'
+    FROM msg WHERE m.method = 'tools/call'
     UNION ALL BY NAME
-    FROM msg WHERE method IS DISTINCT FROM 'tools/call'
+    SELECT m FROM msg WHERE m.method IS DISTINCT FROM 'tools/call'
 )
-SELECT false AS allow, CASE WHEN id IS NULL THEN 202 ELSE 200 END AS status,
-       json_object('jsonrpc', '2.0', 'id', id, 'result', coalesce(
-           $r${"initialize": {"protocolVersion": "2025-06-18", "serverInfo": {"name": "dev", "version": "1"}, "capabilities": {"tools": {}}},
-               "ping": {},
-               "tools/list": {"tools": [
-                 {"name": "query", "description": "Run any SQL on dev, reads and writes. Returns the rows as JSON; a failure returns the DuckDB error.",
-                  "inputSchema": {"type": "object", "properties": {"sql": {"type": "string"}}, "required": ["sql"]}},
-                 {"name": "execute", "description": "Same as query, for callers that name it execute.",
-                  "inputSchema": {"type": "object", "properties": {"statement": {"type": "string"}}, "required": ["statement"]}}]}}$r$::JSON
-               -> ('$."' || method || '"'),
-           json_object('content', [json_object('type', 'text', 'text', receipt.body)], 'isError', receipt.status <> 200)))::VARCHAR AS body,
+SELECT false AS allow, CASE WHEN m.id IS NULL THEN 202 ELSE 200 END AS status,
+       to_json({jsonrpc: '2.0', id: m.id, result: coalesce(
+           MAP {'initialize': to_json({protocolVersion: '2025-06-18', serverInfo: {name: 'dev', version: '1'}, capabilities: '{"tools": {}}'::JSON}),
+                'ping': '{}'::JSON,
+                'tools/list': to_json({tools: [
+                    to_json({name: 'query', description: 'Run any SQL on dev, reads and writes. Returns the rows as JSON; a failure returns the DuckDB error.',
+                             inputSchema: {type: 'object', properties: {sql: {type: 'string'}}, required: ['sql']}}),
+                    to_json({name: 'execute', description: 'Same as query, for callers that name it execute.',
+                             inputSchema: {type: 'object', properties: {statement: {type: 'string'}}, required: ['statement']}})]})}[m.method],
+           to_json({content: [{type: 'text', text: receipt.body}], isError: receipt.status <> 200}))})::VARCHAR AS body,
        NULL::VARCHAR AS header_name, NULL::VARCHAR AS header_value
 FROM called;
 FROM quackapi_serve(9495, host := '127.0.0.1');
