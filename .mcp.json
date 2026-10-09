@@ -26,6 +26,10 @@
     "dev": {
       "type": "http",
       "url": "http://127.0.0.1:9496/mcp"
+    },
+    "standby": {
+      "type": "http",
+      "url": "http://127.0.0.1:9506/mcp"
     }
   }
 }
