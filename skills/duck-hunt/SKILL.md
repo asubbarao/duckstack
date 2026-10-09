@@ -50,8 +50,7 @@ parsed from the file name, so you can join it back to the jobs API.
 | `pytest_xdist_tests` | how long did each backend test take? Measured as the gap to the previous line on its xdist worker | 19,187 tests over 3 shards |
 | `vitest_files` | which vitest files are slow? | 545 files; RequestPicker.test.tsx 14.8 s |
 | `vitest_phases` | where does a vitest shard's wall time go (import, environment, tests)? | phases = 95% of wall: files run one at a time |
-| `backend_shard_balance` | did pytest-split balance measured worker cost and wall time? | 350.0-468.7 s across 3 shards |
-| `frontend_shard_balance` | did Vitest's equal-file shards balance measured cost? | 208-211 files but 340.9-431.4 s walls |
+| shard balance | did the shards balance? `SUMMARIZE SELECT ts, ms FROM pytest_xdist_tests WHERE job_id = …` (or `vitest_files`): ts min..max is the wall span | 350.0-468.7 s across 3 shards |
 | `gha_steps` | when did each step start and how long did it run, from the log alone? | pytest step 566.6 s, API 566 s |
 | `gha_errors` | which `##[error]` annotations did each job raise? | 5 failed jobs |
 | `biome_diagnostics` | which lint rule fired where, and which one failed the job? Uses `context := 3` | the one `×` error found |
