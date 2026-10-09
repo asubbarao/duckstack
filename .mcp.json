@@ -25,18 +25,7 @@
     },
     "dev": {
       "type": "http",
-      "url": "http://localhost:9496/mcp"
-    },
-    "duckstack": {
-      "type": "stdio",
-      "command": "uv",
-      "args": [
-        "run",
-        "--directory",
-        "${CLAUDE_PLUGIN_ROOT}/lib",
-        "duckstack-mcp"
-      ],
-      "env": {}
+      "url": "http://127.0.0.1:9496/mcp"
     }
   }
 }

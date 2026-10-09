@@ -5,7 +5,7 @@ description: >
   ScalarFS, or parse Markdown/HTML into DuckBlocks. Discover extension functions and all
   documented parameters before inspecting runtime signatures. Raw responses stay available.
 argument-hint: "[extension name | glob | function or parameter]"
-allowed-tools: mcp__dev__ext_docs, mcp__dev__query_with_limit
+allowed-tools: mcp__dev__query
 ---
 
 # Extension catalog

@@ -7,7 +7,7 @@ description: >
   `whisper`. Use when asked to watch, read, summarize or check a video, a demo, a Loom or a screen
   recording. Not for a single image (use pic2vec directly) or for live video.
 argument-hint: "<file.mov|mp4> [what you want to know]"
-allowed-tools: Bash, Read, mcp__dev__query_with_limit, mcp__dev__shellfs
+allowed-tools: Read, mcp__dev__query, mcp__dev__execute
 ---
 
 # Watch a video as rows

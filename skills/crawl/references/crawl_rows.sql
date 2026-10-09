@@ -1,5 +1,5 @@
 -- crawl_rows.sql: one page per row, fetched by raw crawl() self-dispatched with literal arguments.
--- Run it on dev (mcp__dev__query_with_limit, or POST 127.0.0.1:9495/sql). Verified 2026-09-29, crawler 7725ede, DuckDB 1.5.5.
+-- Run it on dev (mcp__dev__query, or POST 127.0.0.1:9495/sql). Verified 2026-09-29, crawler 7725ede, DuckDB 1.5.5.
 --
 -- crawl_url is allowed, but not with the source column passed directly: a binder complaint means the per-row
 -- self-dispatch step was skipped. This example chooses crawl() for its richer receipt. Either function must be rendered

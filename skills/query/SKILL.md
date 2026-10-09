@@ -1,105 +1,54 @@
 ---
 name: query
 description: >
-  Run SQL through the selected DuckDB MCP. If unavailable in the harness, use the same
-  service's QuackAPI endpoint or quack_query. Explore with queries; save reusable SQL.
-argument-hint: <SQL | question | path.sql> [--door dev|quack:host:port]
-allowed-tools: Bash, mcp__dev__query_with_limit, mcp__dev__query_no_limit
+  Run SQL on dev through its MCP: `query` for a SELECT, `execute` for anything else. If the MCP is
+  missing from the harness, POST the same SQL to dev's /sql or use quack_query. Explore with live
+  queries; save a .sql once its shape is proven.
+argument-hint: <SQL | question | path.sql>
+allowed-tools: mcp__dev__query, mcp__dev__execute
 ---
 
-# Query the selected service
+# Query dev
 
-Read /duckstack:agent-door for the endpoint and /duckstack:duck for SQL rules.
-For dev, prefer its MCP at http://localhost:9496/mcp: query for SELECT, sql for
-DDL/DML or an ordered multi-statement body. Use task tools such as stream_recent,
-stream_search, read_lines and ext_docs when they fit.
+Read /duckstack:agent-door for the doors and /duckstack:duck for the SQL rules.
 
-query/sql are primary execution tools: complete SQL bodies go through QuackAPI
-to the same Quack server, including filesystem readers, ShellFS host commands,
-HTTP and authorized writes. They return HTTP status/reason plus the full raw
-response. The final SELECT defaults to 3 rows unless it has an explicit
-outer LIMIT (including LIMIT ALL). Writes are never row-limited. parser_tools
-splits statements; DuckDB's SELECT AST identifies limits, not text heuristics.
-Receipts expose request_id, submitted_sql, executed_sql and default_limit_applied.
-
-If the harness does not expose the MCP, use dev's existing QuackAPI endpoint:
-
-```bash
-curl --silent --show-error http://localhost:9495/sql \
-  --data-urlencode 'sql=SELECT current_database() AS database_name;'
-```
-
-For a saved program, use --data-urlencode sql@/absolute/path/program.sql.
-A local :memory: client with quack_query to quack:localhost:9494 is another
-transport to the same service; see /duckstack:quack. Do not open the database file,
-create another service or silently switch endpoints. Pass the endpoint to subagents.
+- `query(sql)`: a SELECT. No row cap, so write your own `LIMIT` while shaping. It refuses writes and
+  file readers.
+- `execute(statement)`: one statement of any kind: DDL, DML, COPY, LOAD, ATTACH, SET, file readers,
+  shellfs (`read_lines('cmd |')`). One statement per call; a dependent sequence is several calls in
+  order.
+- Without the MCP: `POST http://127.0.0.1:9495/sql` with `{"sql": "..."}`; it runs the SQL
+  untouched and a parse or bind error is a 422 with the message. Or `quack_query('quack:localhost:9494',
+  $$...$$, token := getenv('QUACK_TOKEN'))` from a `:memory:` client. Same database either way; never
+  open the database file or start another service. Pass the door to subagents.
 
 ## Shelf of useful queries
 
 `references/useful_queries.sql` is a shared, append-only file of small verified queries that do not
-deserve their own .sql or skill (a job-status check, a CI-log reader, a hard-won crawler/webbed expression).
-Read it before writing a query of that kind; when a query of yours earns its keep, append it with the
-recipe in the file's header and one line saying when to reach for it.
+deserve their own .sql or skill. Read it before writing a query of that kind; when a query of yours
+earns its keep, append it with one line saying when to reach for it.
 
 ## Explore and compose
 
-- Issue live SELECTs first and iterate on useful result sets. A saved SQL file is
-  an outcome of exploration, not a prerequisite. Reuse the source CTE, vary later
-  CTEs, and use outer LIMIT 3 while shaping columns. Save the verified,
-  reusable program after it proves useful. Read-only exploration is cheap to
-  reconstruct; uncertain writes still require receipt/state inspection before retry.
-- SQL is the interactive workspace, not only a saved artifact format. ShellFS and
-  self-dispatch make it an orchestrator for other runtimes. Generated Python inside
-  SQL or separate files can be useful; choose from task needs and measured behavior.
-- Turn verified discoveries into improvements to local skills and permitted memory
-  notes: working extension examples, actual parameters, failure modes and simpler
-  compositions. Fix contradictory advice. Preserve the user's intent, not just recipes.
-- Probe the service and DESCRIBE relevant relations before selecting columns.
-  Inspect its catalog on the service, not in an unrelated local database.
-- Search agents.ext_catalog/ext_docs before runtime function introspection.
-  Install and load needed community extensions yourself. Send LOAD separately
-  before batches using extension PRAGMAs or parser syntax.
-- Use typed SQL readers and read_lines selectors, retaining line numbers. Put
-  globs in readers. Use HostFS for discovery and ShellFS for host commands through
-  the selected service; measure sizes before reading contents.
-- Literal/column-parameter binder errors call for per-row self-dispatch to the
-  selected endpoint. Preserve source keys, statements, raw receipts and errors.
-- Project scalars directly: SELECT 'widget' AS term, * FROM items. Do not cross
-  join singleton settings CTEs or disguise them as comma joins or JOIN ON true.
-  CROSS JOIN UNNEST(arr) is allowed. Other expansion needs a relational purpose;
-  supported lateral readers must be correlated.
-- Reuse same-query aliases, named CTEs, SELECT * EXCLUDE/REPLACE, GROUP BY ALL,
-  GROUPING SETS, QUALIFY, DESCRIBE and SUMMARIZE. Prefer printf or Tera for SQL
-  generation. No scalar subqueries in SELECT lists, COUNT(*), LIMIT 1, recursive
-  CTEs or explicit AS MATERIALIZED. Prefer CTAS replacement and INSERT BY NAME.
-- NULL is meaningful. Use nullif(col, '') when appropriate; never replace NULL
-  with an empty string except at a final ML boundary that requires it.
-- Keep base data and intermediate columns. Return bounded previews and IDs for
-  drill-down. Exploration does not require saving every query; save the reusable
-  pipeline once its shape is verified.
-- Agent-facing `agent.stream` results do not return `message_content`,
-  `content_headtail`, or complete `tool_data`. They return the row ID,
-  `content_head`, `content_tail`, and `content_length`: text at most 200
-  characters is wholly in the head with a NULL tail; longer text has 100
-  characters at each end. Use the `stream_message` tool with an exact row ID
-  when complete message text or tool data is explicitly needed.
-- Search the stream with `stream_search` (BM25) or `stream_semantic` (vectors).
-  Both read `agent.stream_hour` (one row per session-hour) and return ids plus
-  condensed head/tail items. See /duckstack:agent-stream.
-- `/sql` returns `[]` with HTTP 200 for a statement that fails to *parse* (for
-  example an implicit alias that is a keyword: `count(x) hours`). Binder errors
-  come back as `detail`. Alias with `AS`, and treat an unexpected `[]` as a
-  possible parse error.
+- Live SELECTs first; a saved file is an outcome of exploration. Reuse the source CTE and vary the
+  later ones; `LIMIT 3` while shaping columns.
+- `DESCRIBE` the relation before selecting columns. `agents.ext_catalog` / `agents.ext_docs` before
+  guessing an extension's functions; `INSTALL x FROM community; LOAD x;` the moment one is missing
+  (`LOAD` is its own `execute` call before a batch that uses the extension's PRAGMAs or syntax).
+- Readers take globs; hostfs for discovery and sizes, shellfs for host commands; measure before
+  reading contents.
+- A literal/column-parameter binder error means per-row self-dispatch (/duckstack:self-dispatch).
+- Project scalars directly (`SELECT 'widget' AS term, * FROM items`); no singleton CTE cross joins.
+  `CROSS JOIN UNNEST(arr)` is fine.
+- Same-query aliases, named CTEs, `SELECT * EXCLUDE/REPLACE`, `GROUP BY ALL`, `QUALIFY`, `DESCRIBE`,
+  `SUMMARIZE`. Counts are a named column (`len(array_agg(id))`), never a star count. No scalar
+  subqueries in SELECT lists, no `LIMIT 1`, no recursive CTEs, no `AS MATERIALIZED`, no printf.
+  Prefer CTAS replacement and `INSERT BY NAME`.
+- NULL is meaningful: `nullif(col, '')`, never an empty string for a missing value.
+- Keep base and intermediate columns; return bounded previews and ids for drill-down.
+- Agent conversations: `read_conversations()` directly, see /duckstack:agent-stream.
 
 ## Inspect the result
 
-Check transport receipts and actual SQL results. HTTP 200 can carry an error.
-Never replay an uncertain write; inspect state first. The MCP query/sql and
-self_dispatch tools send JSON; 20 KB SQL bodies have been verified. The older
-form-encoded path can reject approximately 8 KB. Keep large receipts as
-individual rows rather than aggregating all response bodies. QuackAPI ed4552b
-retains DuckDB diagnostics in HTTP errors; inspect both layers.
-
-For authorization errors, inspect the actual route/tool and requested operation.
-Port 9495 is dev's QuackAPI, not a presumed read-only database. Retain inner SQL
-errors and fix them. Verify a small live result before scaling.
+HTTP 200 can carry an error in the body; read the rows, not the status. Never replay an uncertain
+write; inspect state first. Keep large receipts as rows rather than one aggregated body.

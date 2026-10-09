@@ -12,7 +12,7 @@ description: >
   CI finding, or any timing evidence a teammate may see. Never use local logs. Worked examples:
   ~/inframe/internal/ci/duckdb/ (review.sql, slow.sql) and the INF-1390 shard brief (§5).
 argument-hint: "<owner/repo> [workflow] [question]"
-allowed-tools: Bash, mcp__dev__ci_hunt, mcp__dev__query_with_limit
+allowed-tools: Bash, mcp__dev__query
 ---
 
 Read `/duckstack:duck` first; its process rules apply. This skill is the GitHub half of a CI/CD
@@ -56,8 +56,8 @@ FROM read_csv('[ -s raw/run-<id>.zip ] || gh api repos/<o>/<r>/actions/runs/<id>
 - `gh api --paginate` prints one JSON array per page, concatenated: read with
   `format := 'unstructured'` and `unnest(json)`.
 - The bash lives in the shellfs string. No `.sh` file, no Python.
-- A run's zip is `{N}_{job name}.txt` per job — the input to `/duckstack:duck-hunt`, or to the
-  dev MCP's `ci_hunt(zip, glob, format)`.
+- A run's zip is `{N}_{job name}.txt` per job — the input to `/duckstack:duck-hunt`
+  (`read_duck_hunt_log('zip://' || zip || '/' || glob, format)` on dev).
 
 ## 2. Raw views, then tables — newest copy per key wins
 

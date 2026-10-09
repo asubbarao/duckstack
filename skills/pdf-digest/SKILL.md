@@ -8,7 +8,7 @@ description: >
   is covered, or to pull a section, glossary term, figure list or table out of one. Not for short PDFs,
   forms, or scans — use /duckstack:pdf for those.
 argument-hint: "<file.pdf> [what you want to know]"
-allowed-tools: mcp__dev__shellfs, mcp__dev__query_with_limit, Read, Bash
+allowed-tools: mcp__dev__execute, mcp__dev__query, Read, Bash
 ---
 
 Read `/duckstack:pdf` first for the five grains. This skill is the worked answer to "the PDF is 259 pages;
@@ -38,8 +38,8 @@ mkdir -p /tmp/x && cd /tmp/x            # card.md is written to the cwd
 ```
 
 A file DB argument caches the layers (the 259-page read is ~11s), so follow-up questions are millisecond queries.
-Through the `dev` MCP, run it as `SELECT content FROM read_lines($cmd$… -f book-digest.sql 2>&1 |$cmd$, "trim" := true)`
-(select `content` only: the `mcp__dev__shellfs` tool repeats the whole command on every row). Outputs: `card.md` (read this first), then `pdf_digest`, `pdf_glossary`, `pdf_figures`, `pdf_tables`,
+Through the `dev` MCP `execute` tool, run it as `CREATE OR REPLACE TABLE digest_run AS SELECT content FROM read_lines($cmd$… -f book-digest.sql 2>&1 |$cmd$, "trim" := true)`
+and read `digest_run` with `query`. Outputs: `card.md` (read this first), then `pdf_digest`, `pdf_glossary`, `pdf_figures`, `pdf_tables`,
 `pdf_paras` (section text) as tables in the cache DB. `references/example-card.md` shows what the card looks like.
 
 ## 3. What the layers are (raw first, one table per statement)

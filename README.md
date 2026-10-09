@@ -1,7 +1,5 @@
 # duckstack
 
-Duckstack’s asset factory is inspired by Meta’s Dataswarm.
-
 Alok's DuckDB skills for the **duckstack**: one persistent DuckDB per machine
 (`~/.duck/dev.duckdb`) held locked by an always-on server, agents as stateless `:memory:`
 clients, the `dev` MCP as the agent door, and his SQL process rules. The server itself is in

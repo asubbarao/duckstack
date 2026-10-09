@@ -13,7 +13,7 @@ description: >
   ci-timing (runs, jobs, steps), duck_tails (blame the ref_file:ref_line the parser points at)
   and live-page (render the result).
 argument-hint: "<run id | log path | 'this PR'> [question]"
-allowed-tools: Bash, mcp__dev__ci_hunt
+allowed-tools: Bash, mcp__dev__query
 ---
 
 ## Upstream documentation
@@ -29,8 +29,8 @@ question it answers and one verified line. Add each new gotcha to §Learned as a
 Don't inline one-offs.** The library only improves if every analysis leaves something in it.
 
 Where it runs: this doc and `recipes.sql` (next to it), in your own `duckdb :memory:` or through
-`uvx --from duckdb-cli duckdb`. The `dev` MCP tool `ci_hunt(zip, glob, format)` is a shortcut for one
-read over an Actions log zip. Recipes are views, never macros. A page built from them is
+`uvx --from duckdb-cli duckdb`, or on dev through the MCP `query` tool (duck_hunt and zipfs are
+loaded there). Recipes are views, never macros. A page built from them is
 `/duckstack:live-page`.
 
 ## Recipes: `recipes.sql`
@@ -131,8 +131,8 @@ Dated one-liners. Add to this list; don't rewrite it.
 Everything below was verified on this machine (2026-09-17, extended 2026-09-22): DuckDB 1.5.5
 osx_arm64, `duck_hunt` 68ca1c4 and `zipfs`. Parse in your own `:memory:` client
 (`INSTALL duck_hunt FROM community; LOAD duck_hunt; INSTALL zipfs FROM community; LOAD zipfs;`
-— always allowed), or on dev: `~/duckdb-skills/server/setup.sql` loads both and the dev MCP
-publishes `ci_hunt(zip, glob, format)` over `read_duck_hunt_log('zip://' || zip || '/' || glob, format)`
+— always allowed), or on dev: `~/duckdb-skills/server/setup.sql` loads both, so
+`read_duck_hunt_log('zip://' || zip || '/' || glob, format)` runs through the MCP `query` tool
 (`/duckstack:agent-door`). Land client-side results on dev with
 `quack_query('quack:localhost:9494', $$CREATE OR REPLACE TABLE … AS …$$, token := getenv('QUACK_TOKEN'))`
 or write them out with `COPY … TO` parquet. Read `/duckstack:duck` §4 and `/duckstack:quack`

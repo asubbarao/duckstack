@@ -1,7 +1,7 @@
 ---
 name: web-read
 description: Cookbook for reading the web in DuckDB — fetch any page or API with http_client, cast the body (::HTML, ::JSON) and parse it with webbed (readable blocks, links), shape JSON with JSONata, compute with QuickJS, render with tera. Use when asked to read a docs page, a URL, a GitHub/REST API, or to turn fetched content into rows or text, without dumping raw HTML into context.
-allowed-tools: mcp__dev__query_with_limit, mcp__dev__query_no_limit, mcp__dev__web_read
+allowed-tools: mcp__dev__query
 ---
 
 # Reading the web in DuckDB

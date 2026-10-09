@@ -8,7 +8,7 @@ description: >
   crawler/webbed, Chrome-as-relations, or when an agent is about to write SQL for this user.
   Every other duckdb-skills skill assumes this one.
 argument-hint: "[topic: boundary | client | rules | repos | facts]"
-allowed-tools: mcp__dev__query_with_limit, mcp__dev__query_no_limit, mcp__dev__self_dispatch, mcp__dev__dispatch_sql, mcp__dev__dispatch_sequence, mcp__dev__hostfs_ls, mcp__dev__read_lines
+allowed-tools: mcp__dev__query, mcp__dev__execute
 ---
 
 The **duckstack** is source-defined, not file-defined. Dev is the convenient shared default; an
@@ -22,18 +22,18 @@ Read [references/query-first.md](references/query-first.md) before building a da
 
 ## 1. The stack
 
-The selected MCP is the primary agent workspace. Submit ordinary SQL, native
-readers and ShellFS through query/sql. Submit a SELECT producing `statement`
-to self_dispatch for row-driven work; the tool handles routing and returns
-raw receipts. Start with the MCP forms in agent-door, not the historical
-standalone/client examples below. No new macro without explicit approval.
+The selected MCP is the primary agent workspace: `query` for a SELECT, `execute` for
+everything else (native readers, ShellFS, DDL, COPY). Row-driven work is SQL that
+posts one statement per row to `/sql` (/duckstack:self-dispatch). Start with the
+MCP forms in agent-door, not the historical standalone/client examples below. No
+new macro without explicit approval.
 
 | Door | What | Token | Who |
 |---|---|---|---|
-| `dev` MCP (`query`, `sql` tools) | duckdb_mcp inside dev on `http://localhost:9496/mcp` | none, loopback | any agent with the MCP — `/duckstack:agent-door` |
-| `http://localhost:9495/sql` | quackapi route inside dev; runs any SQL | none, loopback | any agent with a shell; dev's own self-dispatch |
+| `dev` MCP (`query`, `execute` tools) | duckdb_mcp inside dev on `http://127.0.0.1:9496/mcp` | none, loopback | any agent with the MCP — `/duckstack:agent-door` |
+| `http://127.0.0.1:9495/sql` | quackapi route inside dev; runs any SQL | none, loopback | any agent with a shell; dev's own self-dispatch |
 | `quack:localhost:9494` | dev, read-write | `~/.duck/token` | `quack_query` from a `:memory:` client |
-| `quack:localhost:9497` + OTLP `:4318` | telemetry DuckDB | `~/.duck/telemetry/` | observability |
+| OTLP `http://127.0.0.1:4318/v1/*` | `otlp_serve` inside dev; rows land in `otlp_logs`, `otlp_traces`, `otlp_metrics_*` | none, loopback | telemetry senders |
 
 `~/.duck/dev.duckdb` is held open by `com.inframe.quack` (launchd `KeepAlive`); `~/.duck/setup.sql`
 is the dev definition (a symlink to the copy in git, `~/duckdb-skills/server/setup.sql`). A watcher

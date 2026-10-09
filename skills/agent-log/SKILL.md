@@ -1,14 +1,14 @@
 ---
 name: agent-log
 description: >
-  Log what you did as parquet, in one call (a COPY through the dev MCP `sql` tool), so a human can read every agent's work in SQL.
+  Log what you did as parquet, in one call (a COPY through the dev MCP `execute` tool), so a human can read every agent's work in SQL.
   Use whenever you run a query or a program worth keeping, and whenever you dispatch subagents —
   they call this themselves, you do not collect their output. One call per artifact: the same
   token is stored as text and executed, so the result cannot be invented; a crash is a row, not a
   lost turn. `FILENAME_PATTERN '{uuid}'` makes n writers into one directory safe with no lock.
   Works the same for SQL, Python, .bat or any other language.
 argument-hint: "<agent-name> [sql | code] [dir]"
-allowed-tools: Bash, mcp__dev__query_no_limit
+allowed-tools: mcp__dev__query, mcp__dev__execute
 ---
 
 # agent-log
@@ -29,9 +29,9 @@ answer instead, the audit below catches it.
 `'<X>'` when the replacement must be a quoted literal, bare `<X>` when it is an identifier or a
 statement — the same convention as `'<DATEID-3>'` and `<TABLE:tablename>`.
 
-## Primary: one `sql` call on the `dev` MCP
+## Primary: one `execute` call on the `dev` MCP
 
-The `dev` MCP's `sql` tool runs any SQL on dev, `COPY` included. Dollar-quote the query and the
+The `dev` MCP's `execute` tool runs any statement on dev, `COPY` included. Dollar-quote the query and the
 notes (`$query$…$query$`, `$notes$…$notes$`) and **nothing is escaped** — quotes, newlines and
 `$HOME` go through as written. The same `$query$…$query$` token is stored and executed.
 
@@ -74,7 +74,7 @@ FROM read_parquet('/Users/aloksubbarao/.duck/agent_log/signed/**/*.parquet',
 WHERE type = '<type>' ORDER BY row_id;
 ```
 
-Verified 2026-09-22 through the `dev` MCP `sql` tool: row written and read back, `it's` and
+Verified 2026-09-22 through the `dev` MCP: row written and read back, `it's` and
 `$HOME` stored verbatim.
 
 ## Programs: your own `duckdb :memory:`
@@ -211,7 +211,7 @@ SELECT status FROM quackapi_stop(19584);
 ## Dispatching subagents
 
 Give the worker its full `<AGENT>` label (system-model-version-thinking), its session id and a `type`, and tell it to run the COPY above
-through the `dev` MCP `sql` tool (or the local JSON POST, with `<DIR>`, for programs) — nothing else. It writes its own rows; you do
+through the `dev` MCP `execute` tool (or the local JSON POST, with `<DIR>`, for programs) — nothing else. It writes its own rows; you do
 not collect them, and a worker that fails writes a row saying so. Then read the directory.
 
 ## Signed notes, decisions, and artifacts

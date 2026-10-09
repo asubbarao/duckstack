@@ -9,5 +9,10 @@ WITH rendered AS (
     template_path := '/Users/aloksubbarao/duckdb-skills/skills/tera/references/*.tera'
   ) AS statement
 )
-SELECT rendered.statement, status, body
-FROM rendered, agents.dispatch_sql([statement]);
+, posted AS (
+  SELECT statement,
+         from_json(http_post('http://127.0.0.1:9495/sql', MAP {'Content-Type': 'application/json'}, json_object('sql', statement)),
+                   '{"status": "INTEGER", "body": "VARCHAR"}') AS receipt
+  FROM rendered
+)
+SELECT statement, receipt.status, receipt.body FROM posted;

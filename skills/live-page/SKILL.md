@@ -10,7 +10,7 @@ description: >
   or API through shellfs, a read-only Postgres, crawled web pages, or files. Short verified
   snippets, not templates; the analysis supplies the data and the words (e.g. ci-timing for CI/CD).
 argument-hint: "<what the page shows> [data source]"
-allowed-tools: Bash, mcp__dev__render
+allowed-tools: Bash, mcp__dev__query
 ---
 
 Read `/duckstack:duck` first; its SQL rules apply. This skill covers only how a page gets made.
