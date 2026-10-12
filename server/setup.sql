@@ -19,6 +19,7 @@ INSTALL http_client FROM community; LOAD http_client;
 INSTALL read_lines FROM community; LOAD read_lines;
 INSTALL agent_data FROM community; LOAD agent_data;
 INSTALL quackapi FROM community; LOAD quackapi;
+INSTALL duckflight FROM community; LOAD duckflight;
 -- Used by the agents.ext_* docs views and meta.prometheus_metrics.
 INSTALL webbed FROM community; LOAD webbed;
 INSTALL markdown FROM community; LOAD markdown;
@@ -164,6 +165,11 @@ FROM meta.query_log;
 -- 9494 Quack. 4318 OTLP/HTTP into the otlp_* tables.
 FROM quack_serve('quack:localhost:9494', token := getenv('QUACK_TOKEN'));
 FROM otlp_serve('otlp:127.0.0.1:4318', disable_auth := true);
+-- 31337 Arrow Flight (duckflight), for Airport clients. The bearer is QUACK_TOKEN; the config keeps only its sha256 and is rewritten each boot.
+-- Client: CREATE SECRET (TYPE airport, SCOPE 'grpc://127.0.0.1:31337', auth_token getenv('QUACK_TOKEN')); ATTACH 'grpc://127.0.0.1:31337' AS dev (TYPE airport);
+COPY (SELECT printf(E'[tokens.dev]\nsha256 = "%s"\nsubject = "dev"\nscopes = ["query:execute", "transaction:manage"]', sha256(getenv('QUACK_TOKEN'))))
+    TO '/Users/aloksubbarao/.duck/secrets/duckflight.toml' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '');
+FROM duckflight_flight_serve('127.0.0.1:31337', '/Users/aloksubbarao/.duck/secrets/duckflight.toml');
 
 -- 9495: POST /sql {"sql": "..."}; POST /inbox any JSON, read it from quackapi_jobs; GET /metrics for Prometheus (/opt/homebrew/etc/prometheus.yml);
 -- POST /mcp/ is the dev MCP server: tools query and execute, each a curl to /sql through shellfs, so calls run in parallel.
