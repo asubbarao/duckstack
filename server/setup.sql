@@ -163,26 +163,41 @@ SELECT getenv('QUACK_INSTANCE_ID') AS instance_id, min("timestamp") OVER () AS i
        getenv('QUACK_NATIVE_LOG') AS source_log, 'query_log_observation' AS observation_kind
 FROM meta.query_log;
 
--- Each local branch's files whose blob differs from origin/staging's: both trees stacked, grouped by
--- branch and path. sides / git_uris / blob_hashes keep both versions; one side means added or deleted.
--- Filter with WHERE branch_name = ….
+-- What each local branch changed since it left origin/staging, and whether origin has it: the files a PR
+-- shows, with no gh. branch_point = shared commits that no other shared commit has as a parent (git's
+-- merge base). One row per branch and changed file; filter with WHERE branch_name = ….
 CREATE OR REPLACE VIEW branch_diff AS
-WITH compared AS (
-    SELECT b.branch_name, b.is_current, 'branch' AS side, t.*
-    FROM git_branches() b, LATERAL git_tree_each(b.repo_path, b.commit_hash) t
-    WHERE NOT b.is_remote AND t.kind = 'file'
-    UNION ALL
-    SELECT b.branch_name, b.is_current, 'origin/staging' AS side, s.*
-    FROM git_branches() b, LATERAL git_tree_each(b.repo_path, 'origin/staging') s
-    WHERE NOT b.is_remote AND s.kind = 'file'
+WITH local_branches AS (
+    SELECT * FROM git_branches() WHERE NOT is_remote
+), remote_branches AS (
+    SELECT branch_name AS remote_branch_name, commit_hash AS remote_commit_hash FROM git_branches() WHERE is_remote
+), tracked_branches AS (
+    SELECT local_branches.*, remote_branches.remote_branch_name, remote_branches.remote_commit_hash,
+           remote_branches.remote_commit_hash IS NOT DISTINCT FROM local_branches.commit_hash AS is_pushed
+    FROM local_branches
+    LEFT JOIN remote_branches ON remote_branches.remote_branch_name = 'origin/' || local_branches.branch_name
+), staging_commits AS (
+    SELECT commit_hash FROM git_log('.', 'origin/staging')
+), staging_parent_edges AS (
+    SELECT commit_hash, parent_hash FROM git_parents('.', 'origin/staging')
+), branch_history AS (
+    SELECT tracked_branches.branch_name, history.commit_hash
+    FROM tracked_branches, LATERAL git_log_each(tracked_branches.repo_path, tracked_branches.commit_hash) history
+), shared_history AS (
+    SELECT * FROM branch_history SEMI JOIN staging_commits USING (commit_hash)
+), shared_parents AS (
+    SELECT shared_history.branch_name, staging_parent_edges.parent_hash AS commit_hash
+    FROM shared_history JOIN staging_parent_edges USING (commit_hash)
+), branch_points AS (
+    SELECT branch_name, commit_hash AS branch_point FROM shared_history
+    ANTI JOIN shared_parents USING (branch_name, commit_hash)
 )
-SELECT branch_name, file_path,
-       array_agg(side ORDER BY side) AS sides,
-       array_agg(git_uri ORDER BY side) AS git_uris,
-       array_agg(blob_hash ORDER BY side) AS blob_hashes
-FROM compared
-GROUP BY branch_name, file_path
-HAVING count(DISTINCT blob_hash) = count(blob_hash);
+SELECT tracked_branches.*, branch_points.branch_point, changed_file.* EXCLUDE (repo_path),
+       git_uri(tracked_branches.repo_path, changed_file.file_path, branch_points.branch_point) AS before_uri,
+       git_uri(tracked_branches.repo_path, changed_file.file_path, tracked_branches.commit_hash) AS after_uri
+FROM tracked_branches
+JOIN branch_points USING (branch_name)
+CROSS JOIN LATERAL git_diff_tree_each(tracked_branches.repo_path, branch_points.branch_point, tracked_branches.commit_hash) changed_file;
 
 -- 9494 Quack. 4318 OTLP/HTTP into the otlp_* tables.
 FROM quack_serve('quack:localhost:9494', token := getenv('QUACK_TOKEN'));
