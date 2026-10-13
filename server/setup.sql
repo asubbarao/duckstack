@@ -161,26 +161,57 @@ SELECT getenv('QUACK_INSTANCE_ID') AS instance_id, min("timestamp") OVER () AS i
        getenv('QUACK_NATIVE_LOG') AS source_log, 'query_log_observation' AS observation_kind
 FROM meta.query_log;
 
--- Every inframe worktree's changed files against its merge base with origin/staging; filter with WHERE repo = …
+-- Every inframe worktree's changed files against its merge base with <remote>/staging; filter with
+-- WHERE worktree_path = …. Each stage keeps all its columns. cd() sets the dev process's directory.
 CREATE OR REPLACE VIEW branch_diffs AS
-WITH lines AS (
-    SELECT string_split(content, ' ') AS f
-    FROM read_lines('git -C /Users/aloksubbarao/inframe worktree list --porcelain |', "trim" := true)
-), wt AS (
-    SELECT f[2] AS repo FROM lines WHERE f[1] = 'worktree' AND path_exists(f[2])
-), staging AS (
-    SELECT commit_hash FROM git_log('/Users/aloksubbarao/inframe', 'origin/staging')
+WITH here AS (
+    SELECT current_directory AS main_checkout FROM cd(getenv('HOME') || '/inframe')
+), remotes AS (
+    SELECT here.main_checkout, remote.content AS remote_name, remote.content || '/staging' AS base_ref
+    FROM here CROSS JOIN LATERAL read_lines_lateral('git -C ' || here.main_checkout || ' remote |', NULL, true) remote
+), porcelain_lines AS (
+    SELECT here.main_checkout, line.line_number, line.content AS porcelain_line,
+           position(' ' IN line.content) AS first_space
+    FROM here CROSS JOIN LATERAL read_lines_lateral('git -C ' || here.main_checkout || ' worktree list --porcelain |', NULL, true) line
+), porcelain_attributes AS (
+    SELECT main_checkout, line_number, porcelain_line,
+           CASE WHEN first_space = 0 THEN porcelain_line ELSE porcelain_line[:first_space - 1] END AS attribute_name,
+           CASE WHEN first_space = 0 THEN NULL ELSE porcelain_line[first_space + 1:] END AS attribute_value,
+           sum(CASE WHEN attribute_name = 'worktree' THEN 1 ELSE 0 END) OVER (ORDER BY line_number) AS worktree_number
+    FROM porcelain_lines
+    WHERE porcelain_line <> ''
+), worktrees AS (
+    SELECT main_checkout, worktree_number,
+           max(CASE WHEN attribute_name = 'worktree' THEN attribute_value END) AS worktree_path,
+           max(CASE WHEN attribute_name = 'HEAD' THEN attribute_value END) AS head_commit,
+           max(CASE WHEN attribute_name = 'branch' THEN attribute_value END) AS branch_ref,
+           bool_or(attribute_name = 'detached') AS is_detached,
+           bool_or(attribute_name = 'bare') AS is_bare,
+           max(CASE WHEN attribute_name = 'locked' THEN coalesce(attribute_value, '') END) AS locked_reason,
+           max(CASE WHEN attribute_name = 'prunable' THEN attribute_value END) AS prunable_reason
+    FROM porcelain_attributes
+    GROUP BY main_checkout, worktree_number
+), live_worktrees AS (
+    SELECT worktrees.*, remotes.remote_name, remotes.base_ref
+    FROM worktrees JOIN remotes USING (main_checkout)
+    WHERE prunable_reason IS NULL AND path_exists(worktree_path)
+), base_log AS (
+    SELECT remotes.main_checkout, base_commit.commit_hash
+    FROM remotes CROSS JOIN LATERAL git_log_each(remotes.main_checkout, remotes.base_ref) base_commit
 ), head_log AS (
-    SELECT wt.repo, l.commit_hash, l.commit_date FROM wt, git_log_each(wt.repo, 'HEAD') l
-), base AS (
-    SELECT repo, arg_max(commit_hash, commit_date) AS merge_base
-    FROM head_log SEMI JOIN staging USING (commit_hash)
-    GROUP BY repo
+    SELECT live_worktrees.worktree_path, head_commit_row.commit_hash, head_commit_row.commit_date
+    FROM live_worktrees CROSS JOIN LATERAL git_log_each(live_worktrees.worktree_path, 'HEAD') head_commit_row
+), merge_bases AS (
+    SELECT head_log.worktree_path, arg_max(head_log.commit_hash, head_log.commit_date) AS merge_base
+    FROM head_log SEMI JOIN base_log USING (commit_hash)
+    GROUP BY head_log.worktree_path
 )
-SELECT base.repo, base.merge_base, d.file_path, d.file_ext, d.status, d.old_path,
-       git_uri(base.repo, d.file_path, base.merge_base) AS before_uri,
-       git_uri(base.repo, d.file_path, 'HEAD') AS after_uri
-FROM base, git_diff_tree_each(base.repo, base.merge_base, 'HEAD') d;
+SELECT live_worktrees.*, merge_bases.merge_base, changed_file.*,
+       git_uri(live_worktrees.worktree_path, changed_file.file_path, merge_bases.merge_base) AS before_uri,
+       git_uri(live_worktrees.worktree_path, changed_file.file_path, 'HEAD') AS after_uri
+FROM live_worktrees
+JOIN merge_bases USING (worktree_path)
+CROSS JOIN LATERAL git_diff_tree_each(live_worktrees.worktree_path, merge_bases.merge_base, 'HEAD') changed_file;
 
 -- 9494 Quack. 4318 OTLP/HTTP into the otlp_* tables.
 FROM quack_serve('quack:localhost:9494', token := getenv('QUACK_TOKEN'));
