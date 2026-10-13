@@ -199,6 +199,80 @@ FROM tracked_branches
 JOIN branch_points USING (branch_name)
 CROSS JOIN LATERAL git_diff_tree_each(tracked_branches.repo_path, branch_points.branch_point, tracked_branches.commit_hash) changed_file;
 
+-- Every line each branch_diff file changed, from git's own diff (duck_tails' diff_text is not minimal). read_csv
+-- takes only a literal path, so each file's row dispatches its own statement to /sql; read_lines would split on a
+-- lone carriage return. One row per branch, file and diff line; filter with WHERE branch_name = ….
+CREATE OR REPLACE VIEW branch_line_changes AS
+WITH statements AS (
+    SELECT branch_diff.*,
+           'SELECT row_number() OVER () AS diff_line_number, diff_line FROM read_csv($cmd$git -C ' || branch_diff.repo_path
+           || ' diff --unified=0 --no-color ' || branch_diff.branch_point || ' ' || branch_diff.commit_hash || ' -- ' || branch_diff.file_path
+           || ' |$cmd$, delim := $d$\x1f$d$, quote := $q$$q$, escape := $q$$q$, header := false, new_line := $n$\n$n$, columns := {diff_line: $t$VARCHAR$t$})' AS dispatched_sql
+    FROM branch_diff
+), receipts AS (
+    SELECT statements.*, quackapi_post('http://127.0.0.1:9495/sql', json_object('sql', dispatched_sql)) AS receipt
+    FROM statements
+)
+SELECT receipts.* EXCLUDE (receipt), receipts.receipt.status AS receipt_status, receipts.receipt.error AS receipt_error,
+       diff.diff_line_number, diff.diff_line,
+       CASE WHEN starts_with(diff.diff_line, '+++') THEN 'file_header'
+            WHEN starts_with(diff.diff_line, '---') THEN 'file_header'
+            WHEN starts_with(diff.diff_line, '@@') THEN 'hunk_header'
+            WHEN starts_with(diff.diff_line, '+') THEN 'added'
+            WHEN starts_with(diff.diff_line, '-') THEN 'removed'
+            ELSE 'file_header' END AS line_kind
+FROM receipts
+CROSS JOIN UNNEST(from_json(receipts.receipt.body, '[{"diff_line_number": "BIGINT", "diff_line": "VARCHAR"}]')) AS t(diff);
+
+-- Definitions each branch_diff file added, removed or modified: sitting_duck parses both ends; a declaration
+-- wrapping a same-named definition (TS `const x` around its declarator) is dropped so each name counts once,
+-- and the two ends join on qualified_name (scope path with per-name index), not on name.
+CREATE OR REPLACE VIEW branch_definition_changes AS
+WITH file_sides AS (
+    SELECT branch_diff.branch_name, branch_diff.file_path, 'before' AS side, file_read.text
+    FROM branch_diff, LATERAL git_read_each(branch_diff.before_uri) file_read
+    WHERE branch_diff.status <> 'added'
+    UNION ALL
+    SELECT branch_diff.branch_name, branch_diff.file_path, 'after' AS side, file_read.text
+    FROM branch_diff, LATERAL git_read_each(branch_diff.after_uri) file_read
+    WHERE branch_diff.status <> 'deleted'
+), nodes AS (
+    SELECT branch_name, file_path, side, unnest(parse_ast_list(text, detect_language(file_path)), recursive := true)
+    FROM file_sides
+    WHERE detect_language(file_path) IS NOT NULL
+), definitions AS (
+    SELECT * FROM nodes WHERE is_definition(semantic_type) AND name <> ''
+), wrapper_definitions AS (
+    SELECT parent.branch_name, parent.file_path, parent.side, parent.node_id
+    FROM definitions parent JOIN definitions child
+      ON child.branch_name = parent.branch_name AND child.file_path = parent.file_path AND child.side = parent.side
+     AND child.parent_id = parent.node_id AND child.name = parent.name
+), own_definitions AS (
+    SELECT * FROM definitions ANTI JOIN wrapper_definitions USING (branch_name, file_path, side, node_id)
+), before_definitions AS (
+    SELECT * FROM own_definitions WHERE side = 'before'
+), after_definitions AS (
+    SELECT * FROM own_definitions WHERE side = 'after'
+)
+SELECT coalesce(after_definitions.branch_name, before_definitions.branch_name) AS branch_name,
+       coalesce(after_definitions.file_path, before_definitions.file_path) AS file_path,
+       coalesce(after_definitions.qualified_name, before_definitions.qualified_name) AS qualified_name,
+       coalesce(after_definitions.name, before_definitions.name) AS name,
+       coalesce(after_definitions.type, before_definitions.type) AS node_type,
+       CASE WHEN before_definitions.node_id IS NULL THEN 'added'
+            WHEN after_definitions.node_id IS NULL THEN 'removed'
+            WHEN after_definitions.descendant_count <> before_definitions.descendant_count THEN 'modified'
+            WHEN after_definitions.peek <> before_definitions.peek THEN 'modified'
+            ELSE 'unchanged' END AS change,
+       before_definitions.start_line AS before_start_line, before_definitions.end_line AS before_end_line,
+       after_definitions.start_line AS after_start_line, after_definitions.end_line AS after_end_line,
+       before_definitions.descendant_count AS before_descendant_count, after_definitions.descendant_count AS after_descendant_count,
+       before_definitions.peek AS before_peek, after_definitions.peek AS after_peek
+FROM before_definitions FULL JOIN after_definitions
+  ON after_definitions.branch_name = before_definitions.branch_name
+ AND after_definitions.file_path = before_definitions.file_path
+ AND after_definitions.qualified_name = before_definitions.qualified_name;
+
 -- 9494 Quack. 4318 OTLP/HTTP into the otlp_* tables.
 FROM quack_serve('quack:localhost:9494', token := getenv('QUACK_TOKEN'));
 FROM otlp_serve('otlp:127.0.0.1:4318', disable_auth := true);
