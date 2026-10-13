@@ -161,28 +161,26 @@ SELECT getenv('QUACK_INSTANCE_ID') AS instance_id, min("timestamp") OVER () AS i
        getenv('QUACK_NATIVE_LOG') AS source_log, 'query_log_observation' AS observation_kind
 FROM meta.query_log;
 
--- Every inframe worktree's changed files against git's merge base with <remote>/staging; filter with
--- WHERE worktree_path = …. Worktrees are git's own admin files, one gitdir per worktree; every value
--- after that comes from git run in that worktree, so nothing is parsed, pivoted or aggregated.
-CREATE OR REPLACE VIEW branch_diffs AS
-WITH worktrees AS (
-    SELECT gitdir.file_path AS worktree_admin_file, gitdir.content AS worktree_git_file,
-           parse_dirpath(gitdir.content) AS worktree_path, path_exists(gitdir.content) AS worktree_present
-    FROM read_lines(getenv('HOME') || '/inframe/.git/worktrees/*/gitdir', NULL, true) gitdir
-), remotes AS (
-    SELECT worktrees.worktree_path, remote.content AS remote_name, remote.content || '/staging' AS base_ref
-    FROM worktrees CROSS JOIN LATERAL read_lines_lateral('git -C ' || worktrees.worktree_path || ' remote |', NULL, true) remote
-    WHERE worktrees.worktree_present
-), merge_bases AS (
-    SELECT remotes.*, merge_base_line.content AS merge_base
-    FROM remotes CROSS JOIN LATERAL read_lines_lateral('git -C ' || remotes.worktree_path || ' merge-base HEAD ' || remotes.base_ref || ' |', NULL, true) merge_base_line
+-- Every file each inframe branch's own commits changed: commits on the branch and not on origin/staging,
+-- each non-merge commit diffed against its parent. One row per branch, commit and file; filter with
+-- WHERE branch_name = ….
+CREATE OR REPLACE VIEW branch_commit_files AS
+WITH branches AS (
+    FROM git_branches(getenv('HOME') || '/inframe') WHERE NOT is_remote
+), staging_commits AS (
+    SELECT commit_hash FROM git_log(getenv('HOME') || '/inframe', 'origin/staging')
+), branch_commits AS (
+    SELECT branches.branch_name, branches.is_current, branch_commit.*
+    FROM branches CROSS JOIN LATERAL git_log_each(branches.repo_path, branches.branch_name) branch_commit
+), branch_only_commits AS (
+    SELECT * FROM branch_commits ANTI JOIN staging_commits USING (commit_hash)
 )
-SELECT worktrees.*, merge_bases.remote_name, merge_bases.base_ref, merge_bases.merge_base, changed_file.*,
-       git_uri(worktrees.worktree_path, changed_file.file_path, merge_bases.merge_base) AS before_uri,
-       git_uri(worktrees.worktree_path, changed_file.file_path, 'HEAD') AS after_uri
-FROM worktrees
-JOIN merge_bases USING (worktree_path)
-CROSS JOIN LATERAL git_diff_tree_each(worktrees.worktree_path, merge_bases.merge_base, 'HEAD') changed_file;
+SELECT branch_only_commits.*, changed_file.file_path, changed_file.file_ext, changed_file.status, changed_file.old_path,
+       git_uri(branch_only_commits.repo_path, changed_file.file_path, branch_only_commits.commit_hash || '~1') AS before_uri,
+       git_uri(branch_only_commits.repo_path, changed_file.file_path, branch_only_commits.commit_hash) AS after_uri
+FROM branch_only_commits
+CROSS JOIN LATERAL git_diff_tree_each(branch_only_commits.repo_path, branch_only_commits.commit_hash || '~1', branch_only_commits.commit_hash) changed_file
+WHERE branch_only_commits.parent_count = 1;
 
 -- 9494 Quack. 4318 OTLP/HTTP into the otlp_* tables.
 FROM quack_serve('quack:localhost:9494', token := getenv('QUACK_TOKEN'));
