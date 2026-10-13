@@ -199,30 +199,30 @@ FROM tracked_branches
 JOIN branch_points USING (branch_name)
 CROSS JOIN LATERAL git_diff_tree_each(tracked_branches.repo_path, branch_points.branch_point, tracked_branches.commit_hash) changed_file;
 
--- Every line each branch_diff file changed, from git's own diff (duck_tails' diff_text is not minimal). read_csv
--- takes only a literal path, so each file's row dispatches its own statement to /sql; read_lines would split on a
--- lone carriage return. One row per branch, file and diff line; filter with WHERE branch_name = ….
-CREATE OR REPLACE VIEW branch_line_changes AS
-WITH statements AS (
-    SELECT branch_diff.*,
-           'SELECT row_number() OVER () AS diff_line_number, diff_line FROM read_csv($cmd$git -C ' || branch_diff.repo_path
-           || ' diff --unified=0 --no-color ' || branch_diff.branch_point || ' ' || branch_diff.commit_hash || ' -- ' || branch_diff.file_path
-           || ' |$cmd$, delim := $d$\x1f$d$, quote := $q$$q$, escape := $q$$q$, header := false, new_line := $n$\n$n$, columns := {diff_line: $t$VARCHAR$t$})' AS dispatched_sql
-    FROM branch_diff
+-- git's added/removed line counts for every branch_diff file. read_csv takes only a literal path, so each
+-- branch dispatches one `git diff --numstat <branch_point> <commit>` to /sql. Binary files report '-'.
+-- One row per branch and changed file, with all of branch_diff's columns; filter with WHERE branch_name = ….
+CREATE OR REPLACE VIEW branch_numstat AS
+WITH branch_ranges AS (
+    SELECT DISTINCT branch_name, repo_path, branch_point, commit_hash FROM branch_diff
+), statements AS (
+    SELECT branch_ranges.*,
+           'SELECT * FROM read_csv($cmd$git -C ' || branch_ranges.repo_path || ' diff --numstat '
+           || branch_ranges.branch_point || ' ' || branch_ranges.commit_hash
+           || ' |$cmd$, delim := $d$\t$d$, header := false, columns := {added_lines: $t$VARCHAR$t$, removed_lines: $t$VARCHAR$t$, file_path: $t$VARCHAR$t$})' AS dispatched_sql
+    FROM branch_ranges
 ), receipts AS (
     SELECT statements.*, quackapi_post('http://127.0.0.1:9495/sql', json_object('sql', dispatched_sql)) AS receipt
     FROM statements
+), numstat AS (
+    SELECT receipts.branch_name, receipts.receipt.status AS receipt_status, receipts.receipt.error AS receipt_error,
+           file_count.file_path, TRY_CAST(file_count.added_lines AS BIGINT) AS added_lines,
+           TRY_CAST(file_count.removed_lines AS BIGINT) AS removed_lines
+    FROM receipts
+    CROSS JOIN UNNEST(from_json(receipts.receipt.body, '[{"added_lines": "VARCHAR", "removed_lines": "VARCHAR", "file_path": "VARCHAR"}]')) AS t(file_count)
 )
-SELECT receipts.* EXCLUDE (receipt), receipts.receipt.status AS receipt_status, receipts.receipt.error AS receipt_error,
-       diff.diff_line_number, diff.diff_line,
-       CASE WHEN starts_with(diff.diff_line, '+++') THEN 'file_header'
-            WHEN starts_with(diff.diff_line, '---') THEN 'file_header'
-            WHEN starts_with(diff.diff_line, '@@') THEN 'hunk_header'
-            WHEN starts_with(diff.diff_line, '+') THEN 'added'
-            WHEN starts_with(diff.diff_line, '-') THEN 'removed'
-            ELSE 'file_header' END AS line_kind
-FROM receipts
-CROSS JOIN UNNEST(from_json(receipts.receipt.body, '[{"diff_line_number": "BIGINT", "diff_line": "VARCHAR"}]')) AS t(diff);
+SELECT branch_diff.*, numstat.added_lines, numstat.removed_lines, numstat.receipt_status, numstat.receipt_error
+FROM branch_diff JOIN numstat USING (branch_name, file_path);
 
 -- Definitions each branch_diff file added, removed or modified: sitting_duck parses both ends; a declaration
 -- wrapping a same-named definition (TS `const x` around its declarator) is dropped so each name counts once,
