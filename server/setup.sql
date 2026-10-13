@@ -38,6 +38,8 @@ INSTALL pdf FROM community; LOAD pdf;
 INSTALL gh FROM community; LOAD gh;
 INSTALL netquack FROM community; LOAD netquack;
 INSTALL fts; LOAD fts;
+-- Dev works in the inframe checkout: duck_tails calls take '.' or no path at all.
+FROM cd(getenv('HOME') || '/inframe');
 
 ATTACH IF NOT EXISTS 'ducklake:/Users/aloksubbarao/.duck/lake/duckstack/catalog.ducklake' AS lake
     (DATA_PATH '/Users/aloksubbarao/.duck/lake/duckstack/data/', DATA_INLINING_ROW_LIMIT 0);
@@ -161,26 +163,26 @@ SELECT getenv('QUACK_INSTANCE_ID') AS instance_id, min("timestamp") OVER () AS i
        getenv('QUACK_NATIVE_LOG') AS source_log, 'query_log_observation' AS observation_kind
 FROM meta.query_log;
 
--- Every file each inframe branch's own commits changed: commits on the branch and not on origin/staging,
--- each non-merge commit diffed against its parent. One row per branch, commit and file; filter with
--- WHERE branch_name = ….
-CREATE OR REPLACE VIEW branch_commit_files AS
-WITH branches AS (
-    FROM git_branches(getenv('HOME') || '/inframe') WHERE NOT is_remote
-), staging_commits AS (
-    SELECT commit_hash FROM git_log(getenv('HOME') || '/inframe', 'origin/staging')
-), branch_commits AS (
-    SELECT branches.branch_name, branches.is_current, branch_commit.*
-    FROM branches CROSS JOIN LATERAL git_log_each(branches.repo_path, branches.branch_name) branch_commit
-), branch_only_commits AS (
-    SELECT * FROM branch_commits ANTI JOIN staging_commits USING (commit_hash)
+-- Each local branch's files whose blob differs from origin/staging's: both trees stacked, grouped by
+-- branch and path. sides / git_uris / blob_hashes keep both versions; one side means added or deleted.
+-- Filter with WHERE branch_name = ….
+CREATE OR REPLACE VIEW branch_diff AS
+WITH compared AS (
+    SELECT b.branch_name, b.is_current, 'branch' AS side, t.*
+    FROM git_branches() b, LATERAL git_tree_each(b.repo_path, b.commit_hash) t
+    WHERE NOT b.is_remote AND t.kind = 'file'
+    UNION ALL
+    SELECT b.branch_name, b.is_current, 'origin/staging' AS side, s.*
+    FROM git_branches() b, LATERAL git_tree_each(b.repo_path, 'origin/staging') s
+    WHERE NOT b.is_remote AND s.kind = 'file'
 )
-SELECT branch_only_commits.*, changed_file.file_path, changed_file.file_ext, changed_file.status, changed_file.old_path,
-       git_uri(branch_only_commits.repo_path, changed_file.file_path, branch_only_commits.commit_hash || '~1') AS before_uri,
-       git_uri(branch_only_commits.repo_path, changed_file.file_path, branch_only_commits.commit_hash) AS after_uri
-FROM branch_only_commits
-CROSS JOIN LATERAL git_diff_tree_each(branch_only_commits.repo_path, branch_only_commits.commit_hash || '~1', branch_only_commits.commit_hash) changed_file
-WHERE branch_only_commits.parent_count = 1;
+SELECT branch_name, file_path,
+       array_agg(side ORDER BY side) AS sides,
+       array_agg(git_uri ORDER BY side) AS git_uris,
+       array_agg(blob_hash ORDER BY side) AS blob_hashes
+FROM compared
+GROUP BY branch_name, file_path
+HAVING count(DISTINCT blob_hash) = count(blob_hash);
 
 -- 9494 Quack. 4318 OTLP/HTTP into the otlp_* tables.
 FROM quack_serve('quack:localhost:9494', token := getenv('QUACK_TOKEN'));
