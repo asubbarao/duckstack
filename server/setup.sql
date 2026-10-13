@@ -1,9 +1,9 @@
 -- Dev DuckDB. launchd runs `duckdb -bail ~/.duck/db/dev.duckdb -init setup.sql` and keeps stdin open.
 -- Dev boots ~/.duck/deploy/server/setup.sql, the duckdb-skills branch `deploy`. A save here changes nothing until
 -- it is committed and the branch moved: git branch -f deploy <commit>; the watcher restarts dev within 30 s.
-SET GLOBAL extension_directory = '/Users/aloksubbarao/.duck/extensions';
-SET GLOBAL secret_directory = '/Users/aloksubbarao/.duck/secrets';
-SET GLOBAL temp_directory = '/Users/aloksubbarao/.duck/tmp';
+SET GLOBAL extension_directory = '~/.duck/extensions';
+SET GLOBAL secret_directory = '~/.duck/secrets';
+SET GLOBAL temp_directory = '~/.duck/tmp';
 SET GLOBAL memory_limit = '8GB';
 SET GLOBAL threads = 10;
 SET GLOBAL TimeZone = 'UTC';
@@ -40,8 +40,8 @@ INSTALL gh FROM community; LOAD gh;
 INSTALL netquack FROM community; LOAD netquack;
 INSTALL fts; LOAD fts;
 
-ATTACH IF NOT EXISTS 'ducklake:/Users/aloksubbarao/.duck/lake/duckstack/catalog.ducklake' AS lake
-    (DATA_PATH '/Users/aloksubbarao/.duck/lake/duckstack/data/', DATA_INLINING_ROW_LIMIT 0);
+ATTACH IF NOT EXISTS 'ducklake:~/.duck/lake/duckstack/catalog.ducklake' AS lake
+    (DATA_PATH '~/.duck/lake/duckstack/data/', DATA_INLINING_ROW_LIMIT 0);
 
 CALL enable_logging(['QueryLog', 'HTTP', 'Quack'], storage := 'file', storage_path := getenv('QUACK_NATIVE_LOG'), storage_buffer_size := 0);
 SELECT cron('CHECKPOINT', '45 */5 * * * *');
@@ -60,7 +60,7 @@ SELECT time_bucket(INTERVAL 1 MINUTE, started_at) AS minute, count(started_at) A
        max(duration_ms) AS max_ms, sum(duration_ms) / 1000.0 AS wall_seconds
 FROM meta.remote_query_history GROUP BY ALL;
 CREATE OR REPLACE VIEW meta.server_events AS
-FROM read_json('/Users/aloksubbarao/.duck/logs/server-events*.jsonl', format := 'newline_delimited', union_by_name := true);
+FROM read_json('~/.duck/logs/server-events*.jsonl', format := 'newline_delimited', union_by_name := true);
 -- GET /metrics: Prometheus text, computed per scrape.
 CREATE OR REPLACE VIEW meta.prometheus_metrics AS
 WITH q AS (
@@ -148,11 +148,11 @@ $$, '0 15 * * * *');
 
 CREATE SCHEMA IF NOT EXISTS agent;
 CREATE OR REPLACE VIEW agent.stream AS
-SELECT * REPLACE ('claude' AS source) FROM read_conversations(source := 'claude', path := '/Users/aloksubbarao/.claude')
+SELECT * REPLACE ('claude' AS source) FROM read_conversations(source := 'claude', path := '~/.claude')
 UNION ALL BY NAME
-SELECT * REPLACE ('claude-desktop' AS source) FROM read_conversations(source := 'claude-desktop', path := '/Users/aloksubbarao/Library/Application Support/Claude')
+SELECT * REPLACE ('claude-desktop' AS source) FROM read_conversations(source := 'claude-desktop', path := '~/Library/Application Support/Claude')
 UNION ALL BY NAME
-SELECT * REPLACE ('codex' AS source) FROM read_conversations(source := 'codex', path := '/Users/aloksubbarao/.codex');
+SELECT * REPLACE ('codex' AS source) FROM read_conversations(source := 'codex', path := '~/.codex');
 
 -- Read every minute by the mac-metrics collector (launchd com.alok.mac-metrics, ~/Documents/mac-metrics-incubator).
 CREATE OR REPLACE VIEW agents.mac_query_activity AS
@@ -167,9 +167,12 @@ FROM quack_serve('quack:localhost:9494', token := getenv('QUACK_TOKEN'));
 FROM otlp_serve('otlp:127.0.0.1:4318', disable_auth := true);
 -- 31337 Arrow Flight (duckflight), for Airport clients. The bearer is QUACK_TOKEN; the config keeps only its sha256 and is rewritten each boot.
 -- Client: CREATE SECRET (TYPE airport, SCOPE 'grpc://127.0.0.1:31337', auth_token getenv('QUACK_TOKEN')); ATTACH 'grpc://127.0.0.1:31337' AS dev (TYPE airport);
+-- CI boots with a scratch HOME, so ensure the config dir exists (mkdir -p is a no-op on the Mac).
+-- NB: project content, not count(*): the shell pipe only runs when its output column is read.
+SELECT content FROM read_text('mkdir -p ' || getenv('HOME') || '/.duck/secrets && echo ok |') LIMIT 1;
 COPY (SELECT printf(E'[tokens.dev]\nsha256 = "%s"\nsubject = "dev"\nscopes = ["query:execute", "transaction:manage"]', sha256(getenv('QUACK_TOKEN'))))
-    TO '/Users/aloksubbarao/.duck/secrets/duckflight.toml' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '');
-FROM duckflight_flight_serve('127.0.0.1:31337', '/Users/aloksubbarao/.duck/secrets/duckflight.toml');
+    TO (getenv('HOME') || '/.duck/secrets/duckflight.toml') (FORMAT csv, HEADER false, QUOTE '', ESCAPE '');
+FROM duckflight_flight_serve('127.0.0.1:31337', getenv('HOME') || '/.duck/secrets/duckflight.toml');
 
 -- 9495: POST /sql {"sql": "..."}; POST /inbox any JSON, read it from quackapi_jobs; GET /metrics for Prometheus (/opt/homebrew/etc/prometheus.yml);
 -- POST /mcp/ is the dev MCP server: tools query and execute, each a curl to /sql through shellfs, so calls run in parallel.
