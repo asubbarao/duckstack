@@ -161,6 +161,27 @@ SELECT getenv('QUACK_INSTANCE_ID') AS instance_id, min("timestamp") OVER () AS i
        getenv('QUACK_NATIVE_LOG') AS source_log, 'query_log_observation' AS observation_kind
 FROM meta.query_log;
 
+-- Every inframe worktree's changed files against its merge base with origin/staging; filter with WHERE repo = …
+CREATE OR REPLACE VIEW branch_diffs AS
+WITH lines AS (
+    SELECT string_split(content, ' ') AS f
+    FROM read_lines('git -C /Users/aloksubbarao/inframe worktree list --porcelain |', "trim" := true)
+), wt AS (
+    SELECT f[2] AS repo FROM lines WHERE f[1] = 'worktree' AND path_exists(f[2])
+), staging AS (
+    SELECT commit_hash FROM git_log('/Users/aloksubbarao/inframe', 'origin/staging')
+), head_log AS (
+    SELECT wt.repo, l.commit_hash, l.commit_date FROM wt, git_log_each(wt.repo, 'HEAD') l
+), base AS (
+    SELECT repo, arg_max(commit_hash, commit_date) AS merge_base
+    FROM head_log SEMI JOIN staging USING (commit_hash)
+    GROUP BY repo
+)
+SELECT base.repo, base.merge_base, d.file_path, d.file_ext, d.status, d.old_path,
+       git_uri(base.repo, d.file_path, base.merge_base) AS before_uri,
+       git_uri(base.repo, d.file_path, 'HEAD') AS after_uri
+FROM base, git_diff_tree_each(base.repo, base.merge_base, 'HEAD') d;
+
 -- 9494 Quack. 4318 OTLP/HTTP into the otlp_* tables.
 FROM quack_serve('quack:localhost:9494', token := getenv('QUACK_TOKEN'));
 FROM otlp_serve('otlp:127.0.0.1:4318', disable_auth := true);
