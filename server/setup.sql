@@ -197,7 +197,8 @@ SELECT false AS allow, CASE WHEN id IS NULL THEN 202 ELSE 200 END AS status,
            json_object('content', [json_object('type', 'text', 'text', reply::VARCHAR)], 'isError', failed)))::VARCHAR AS body,
        NULL::VARCHAR AS header_name, NULL::VARCHAR AS header_value
 FROM called;
--- query_timeout_ms: quackapi's default 30 s budget 504s a commit with its hooks or a test suite run through the MCP.
-FROM quackapi_serve(9495, host := '127.0.0.1', query_timeout_ms := 3600000);
+-- query_timeout_ms: a git commit's hooks run ~60 s, past quackapi's 30 s default. Longer work runs backgrounded
+-- inside the pipe ('cmd > log 2>&1 & echo $! |') and a later read_lines reads its log.
+FROM quackapi_serve(9495, host := '127.0.0.1', query_timeout_ms := 120000);
 -- quackapi_serve switches logging off.
 CALL enable_logging(['QueryLog', 'HTTP', 'Quack'], storage := 'file', storage_path := getenv('QUACK_NATIVE_LOG'), storage_buffer_size := 0);
