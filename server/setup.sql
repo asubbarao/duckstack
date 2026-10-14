@@ -199,30 +199,82 @@ FROM tracked_branches
 JOIN branch_points USING (branch_name)
 CROSS JOIN LATERAL git_diff_tree_each(tracked_branches.repo_path, branch_points.branch_point, tracked_branches.commit_hash) changed_file;
 
--- git's added/removed line counts for every branch_diff file. read_csv takes only a literal path, so each
--- branch dispatches one `git diff --numstat <branch_point> <commit>` to /sql. Binary files report '-'.
--- One row per branch and changed file, with all of branch_diff's columns; filter with WHERE branch_name = ….
+-- Every branch_diff file with both ends' blob metadata, git's line counts and the branch's commit facts, all
+-- from duck_tails. Added lines are the tip's blame hunks owned by the branch's own commits; removed lines
+-- follow from after = before - removed + added. Matches `git diff --numstat` and `git rev-list --left-right`.
 CREATE OR REPLACE VIEW branch_numstat AS
-WITH branch_ranges AS (
-    SELECT DISTINCT branch_name, repo_path, branch_point, commit_hash FROM branch_diff
-), statements AS (
-    SELECT branch_ranges.*,
-           'SELECT * FROM read_csv($cmd$git -C ' || branch_ranges.repo_path || ' diff --numstat '
-           || branch_ranges.branch_point || ' ' || branch_ranges.commit_hash
-           || ' |$cmd$, delim := $d$\t$d$, header := false, columns := {added_lines: $t$VARCHAR$t$, removed_lines: $t$VARCHAR$t$, file_path: $t$VARCHAR$t$})' AS dispatched_sql
-    FROM branch_ranges
-), receipts AS (
-    SELECT statements.*, quackapi_post('http://127.0.0.1:9495/sql', json_object('sql', dispatched_sql)) AS receipt
-    FROM statements
-), numstat AS (
-    SELECT receipts.branch_name, receipts.receipt.status AS receipt_status, receipts.receipt.error AS receipt_error,
-           file_count.file_path, TRY_CAST(file_count.added_lines AS BIGINT) AS added_lines,
-           TRY_CAST(file_count.removed_lines AS BIGINT) AS removed_lines
-    FROM receipts
-    CROSS JOIN UNNEST(from_json(receipts.receipt.body, '[{"added_lines": "VARCHAR", "removed_lines": "VARCHAR", "file_path": "VARCHAR"}]')) AS t(file_count)
+WITH tips AS (
+    SELECT DISTINCT branch_name, repo_path, commit_hash AS tip_hash FROM branch_diff
+), staging_log AS (
+    SELECT * FROM git_log('.', 'origin/staging')
+), branch_history AS (
+    SELECT tips.branch_name, tips.tip_hash, history.* EXCLUDE (repo_path)
+    FROM tips, LATERAL git_log_each(tips.repo_path, tips.tip_hash) history
+), branch_commits AS (
+    SELECT * FROM branch_history ANTI JOIN staging_log USING (commit_hash)
+), branch_facts AS (
+    SELECT branch_name,
+           count(commit_hash) AS commits_ahead,
+           min(author_date) AS first_commit_date,
+           max(commit_date) AS last_commit_date,
+           count(DISTINCT author_email) AS author_count
+    FROM branch_commits GROUP BY branch_name
+), staging_by_branch AS (
+    SELECT tips.branch_name, staging_log.commit_hash FROM tips CROSS JOIN staging_log
+), behind AS (
+    SELECT branch_name, count(commit_hash) AS commits_behind
+    FROM staging_by_branch ANTI JOIN branch_history USING (branch_name, commit_hash)
+    GROUP BY branch_name
+), tip_commits AS (
+    SELECT branch_name, author_name AS tip_author_name, author_email AS tip_author_email,
+           commit_date AS tip_commit_date, message AS tip_message
+    FROM branch_history WHERE commit_hash = tip_hash
+), before_files AS (
+    SELECT branch_diff.branch_name, branch_diff.file_path,
+           before_read.blob_hash AS before_blob_hash, before_read.mode AS before_mode, before_read.is_text AS before_is_text,
+           before_read.encoding AS before_encoding, before_read.size_bytes AS before_size_bytes
+    FROM branch_diff, LATERAL git_read_each(branch_diff.before_uri) before_read WHERE branch_diff.status <> 'added'
+), after_files AS (
+    SELECT branch_diff.branch_name, branch_diff.file_path,
+           after_read.blob_hash AS after_blob_hash, after_read.mode AS after_mode, after_read.is_text AS after_is_text,
+           after_read.encoding AS after_encoding, after_read.size_bytes AS after_size_bytes
+    FROM branch_diff, LATERAL git_read_each(branch_diff.after_uri) after_read WHERE branch_diff.status <> 'deleted'
+), after_hunks AS (
+    SELECT branch_diff.branch_name, branch_diff.file_path, hunk.commit_hash, hunk.line_count
+    FROM branch_diff, LATERAL git_blame_hunks_each(branch_diff.after_uri) hunk WHERE branch_diff.status <> 'deleted'
+), after_lines AS (
+    SELECT after_hunks.branch_name, after_hunks.file_path,
+           sum(after_hunks.line_count) AS after_line_count,
+           sum(CASE WHEN branch_commits.commit_hash IS NOT NULL THEN after_hunks.line_count ELSE 0 END) AS added_lines
+    FROM after_hunks LEFT JOIN branch_commits USING (branch_name, commit_hash)
+    GROUP BY ALL
+), before_hunks AS (
+    SELECT branch_diff.branch_name, branch_diff.file_path, hunk.line_count
+    FROM branch_diff, LATERAL git_blame_hunks_each(branch_diff.before_uri) hunk WHERE branch_diff.status <> 'added'
+), before_lines AS (
+    SELECT branch_name, file_path, sum(line_count) AS before_line_count FROM before_hunks GROUP BY ALL
 )
-SELECT branch_diff.*, numstat.added_lines, numstat.removed_lines, numstat.receipt_status, numstat.receipt_error
-FROM branch_diff JOIN numstat USING (branch_name, file_path);
+SELECT branch_diff.*,
+       before_files.* EXCLUDE (branch_name, file_path),
+       after_files.* EXCLUDE (branch_name, file_path),
+       before_lines.before_line_count, after_lines.after_line_count,
+       coalesce(after_lines.added_lines, 0) AS added_lines,
+       coalesce(before_lines.before_line_count, 0) - (coalesce(after_lines.after_line_count, 0) - coalesce(after_lines.added_lines, 0)) AS removed_lines,
+       added_lines + removed_lines AS changed_lines,
+       added_lines - removed_lines AS net_lines,
+       coalesce(after_files.after_size_bytes, 0) - coalesce(before_files.before_size_bytes, 0) AS size_delta_bytes,
+       branch_diff.status = 'modified' AND before_files.before_mode IS DISTINCT FROM after_files.after_mode AS mode_changed,
+       branch_facts.* EXCLUDE (branch_name),
+       coalesce(behind.commits_behind, 0) AS commits_behind,
+       tip_commits.* EXCLUDE (branch_name)
+FROM branch_diff
+LEFT JOIN before_files USING (branch_name, file_path)
+LEFT JOIN after_files USING (branch_name, file_path)
+LEFT JOIN before_lines USING (branch_name, file_path)
+LEFT JOIN after_lines USING (branch_name, file_path)
+LEFT JOIN branch_facts USING (branch_name)
+LEFT JOIN behind USING (branch_name)
+LEFT JOIN tip_commits USING (branch_name);
 
 -- Definitions each branch_diff file added, removed or modified: sitting_duck parses both ends; a declaration
 -- wrapping a same-named definition (TS `const x` around its declarator) is dropped so each name counts once,
