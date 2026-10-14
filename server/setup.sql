@@ -9,11 +9,14 @@ SET GLOBAL threads = 10;
 SET GLOBAL TimeZone = 'UTC';
 SET GLOBAL http_retries = 0;
 
+-- INSTALL is a no-op once a file exists, so without this every boot reloads the first build ever downloaded.
+-- A child process updates the files before anything below loads them; offline, it prints the error and boot goes on.
+INSTALL shellfs FROM community; LOAD shellfs;
+FROM read_lines($u$/opt/homebrew/bin/duckdb -init /dev/null -csv :memory: -c "SET extension_directory = '/Users/aloksubbarao/.duck/extensions'; UPDATE EXTENSIONS;" 2>&1; true |$u$);
 INSTALL quack; LOAD quack;
 INSTALL httpfs; LOAD httpfs;
 INSTALL ducklake; LOAD ducklake;
 INSTALL cronjob FROM community; LOAD cronjob;
-INSTALL shellfs FROM community; LOAD shellfs;
 INSTALL hostfs FROM community; LOAD hostfs;
 INSTALL http_client FROM community; LOAD http_client;
 INSTALL read_lines FROM community; LOAD read_lines;
