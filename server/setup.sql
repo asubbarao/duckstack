@@ -199,13 +199,36 @@ FROM tracked_branches
 JOIN branch_points USING (branch_name)
 CROSS JOIN LATERAL git_diff_tree_each(tracked_branches.repo_path, branch_points.branch_point, tracked_branches.commit_hash) changed_file;
 
--- Every branch_diff file with both ends' blob metadata, git's line counts and the branch's commit facts, all
--- from duck_tails. Added lines are the tip's blame hunks whose commit is not on staging; removed lines follow
--- from after = before - removed + added. Matches `git diff --numstat` and `git rev-list --left-right --count`.
--- Each file's reads are correlated LATERALs, so WHERE branch_name = … blames only that branch's files; the side
--- a file lacks gets a NULL uri, because a WHERE inside the LATERAL does not stop the read.
+-- git's own line counts: one `git diff --numstat` per branch range, rendered by tera from branch_diff into one
+-- bash program and written to raw/numstat/<branch_point>/<commit_hash>.tsv. A range never changes, so only
+-- ranges without a file are rendered; rerunning these two statements picks up moved branches.
+COPY (
+    WITH ranges AS (
+        SELECT DISTINCT branch_point, commit_hash,
+               getenv('HOME') || '/.duck/raw/numstat/' || branch_point || '/' || commit_hash || '.tsv' AS numstat_path
+        FROM branch_diff
+    )
+    SELECT tera_render($tpl$set -e
+{% for r in ranges %}mkdir -p {{ root }}/{{ r.branch_point }}
+git -C {{ repo }} diff --numstat --no-renames {{ r.branch_point }} {{ r.commit_hash }} > {{ r.numstat_path }}
+{% endfor %}echo ranges={{ ranges | length }}
+$tpl$, json_object('ranges', coalesce(array_agg(ranges), []), 'root', getenv('HOME') || '/.duck/raw/numstat', 'repo', getenv('HOME') || '/inframe'), autoescape := false)
+    FROM ranges WHERE NOT path_exists(numstat_path)
+) TO '/Users/aloksubbarao/.duck/raw/numstat.bash' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '', DELIMITER '\x01');
+FROM read_lines('bash /Users/aloksubbarao/.duck/raw/numstat.bash 2>&1 |', "trim" := true);
+
+-- Every branch_diff file with git's line counts (binary files NULL), both ends' blob metadata and the
+-- branch's commit facts. Ahead/behind match `git rev-list --left-right --count origin/staging...<branch>`.
+-- A file's blob reads are correlated LATERALs, so WHERE branch_name = … reads only that branch; the side a
+-- file lacks gets a NULL uri, because a WHERE inside the LATERAL does not stop the read.
 CREATE OR REPLACE VIEW branch_numstat AS
-WITH staging_log AS (
+WITH numstat AS (
+    SELECT parse_filename(parse_dirpath(filename)) AS branch_point,
+           parse_filename(filename, true) AS commit_hash,
+           file_path, added_lines, removed_lines
+    FROM read_csv(getenv('HOME') || '/.duck/raw/numstat/*/*.tsv', delim := '\t', header := false, nullstr := '-',
+                  filename := true, columns := {added_lines: 'BIGINT', removed_lines: 'BIGINT', file_path: 'VARCHAR'})
+), staging_log AS (
     SELECT commit_hash FROM git_log('.', 'origin/staging')
 ), tips AS (
     SELECT DISTINCT branch_name, repo_path, commit_hash AS tip_hash FROM branch_diff
@@ -236,12 +259,9 @@ WITH staging_log AS (
     FROM branch_diff
 )
 SELECT sides.* EXCLUDE (before_side_uri, after_side_uri),
+       numstat.added_lines, numstat.removed_lines,
+       numstat.file_path IS NOT NULL AND numstat.added_lines IS NULL AS is_binary,
        before_files.*, after_files.*,
-       before_lines.before_line_count, after_lines.after_line_count,
-       coalesce(after_lines.added_lines, 0) AS added_lines,
-       coalesce(before_lines.before_line_count, 0) - (coalesce(after_lines.after_line_count, 0) - coalesce(after_lines.added_lines, 0)) AS removed_lines,
-       added_lines + removed_lines AS changed_lines,
-       added_lines - removed_lines AS net_lines,
        coalesce(after_files.after_size_bytes, 0) - coalesce(before_files.before_size_bytes, 0) AS size_delta_bytes,
        sides.status = 'modified' AND before_files.before_mode IS DISTINCT FROM after_files.after_mode AS mode_changed,
        branch_facts.* EXCLUDE (branch_name),
@@ -258,15 +278,7 @@ LEFT JOIN LATERAL (
            encoding AS after_encoding, size_bytes AS after_size_bytes
     FROM git_read_each(sides.after_side_uri)
 ) after_files ON true
-LEFT JOIN LATERAL (
-    SELECT sum(hunk.line_count) AS after_line_count,
-           sum(CASE WHEN hunk.commit_hash IN (SELECT commit_hash FROM staging_log) THEN 0 ELSE hunk.line_count END) AS added_lines
-    FROM git_blame_hunks_each(sides.after_side_uri) hunk
-) after_lines ON true
-LEFT JOIN LATERAL (
-    SELECT sum(hunk.line_count) AS before_line_count
-    FROM git_blame_hunks_each(sides.before_side_uri) hunk
-) before_lines ON true
+LEFT JOIN numstat USING (branch_point, commit_hash, file_path)
 LEFT JOIN branch_facts USING (branch_name)
 LEFT JOIN behind USING (branch_name)
 LEFT JOIN tip_commits USING (branch_name);
