@@ -12,7 +12,7 @@ SET GLOBAL http_retries = 0;
 -- INSTALL is a no-op once a file exists, so without this every boot reloads the first build ever downloaded.
 -- A child process updates the files before anything below loads them; offline, it prints the error and boot goes on.
 INSTALL shellfs FROM community; LOAD shellfs;
-FROM read_lines($u$/opt/homebrew/bin/duckdb -init /dev/null -csv :memory: -c "SET extension_directory = '/Users/aloksubbarao/.duck/extensions'; UPDATE EXTENSIONS;" 2>&1; true |$u$);
+SELECT content FROM read_text($u$/opt/homebrew/bin/duckdb -csv :memory: -c "SET extension_directory = '/Users/aloksubbarao/.duck/extensions'; UPDATE EXTENSIONS;" 2>&1; true |$u$);
 INSTALL quack; LOAD quack;
 INSTALL httpfs; LOAD httpfs;
 INSTALL ducklake; LOAD ducklake;
