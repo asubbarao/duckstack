@@ -4,7 +4,9 @@
 SET GLOBAL extension_directory = '/Users/aloksubbarao/.duck/extensions';
 SET GLOBAL secret_directory = '/Users/aloksubbarao/.duck/secrets';
 SET GLOBAL temp_directory = '/Users/aloksubbarao/.duck/tmp';
-SET GLOBAL memory_limit = '8GB';
+-- DuckDB's performance guide: 1-4 GB per thread. 10 threads x 1.6 GB; RSS runs 1.5-2.5 GB above this
+-- (reader/JSON allocations are untracked), and the 48 GB machine keeps ~30 GB for everything else.
+SET GLOBAL memory_limit = '16GB';
 SET GLOBAL threads = 10;
 SET GLOBAL TimeZone = 'UTC';
 SET GLOBAL http_retries = 0;
