@@ -200,78 +200,73 @@ JOIN branch_points USING (branch_name)
 CROSS JOIN LATERAL git_diff_tree_each(tracked_branches.repo_path, branch_points.branch_point, tracked_branches.commit_hash) changed_file;
 
 -- Every branch_diff file with both ends' blob metadata, git's line counts and the branch's commit facts, all
--- from duck_tails. Added lines are the tip's blame hunks owned by the branch's own commits; removed lines
--- follow from after = before - removed + added. Matches `git diff --numstat` and `git rev-list --left-right`.
+-- from duck_tails. Added lines are the tip's blame hunks whose commit is not on staging; removed lines follow
+-- from after = before - removed + added. Matches `git diff --numstat` and `git rev-list --left-right --count`.
+-- Each file's reads are correlated LATERALs, so WHERE branch_name = … blames only that branch's files; the side
+-- a file lacks gets a NULL uri, because a WHERE inside the LATERAL does not stop the read.
 CREATE OR REPLACE VIEW branch_numstat AS
-WITH tips AS (
+WITH staging_log AS (
+    SELECT commit_hash FROM git_log('.', 'origin/staging')
+), tips AS (
     SELECT DISTINCT branch_name, repo_path, commit_hash AS tip_hash FROM branch_diff
-), staging_log AS (
-    SELECT * FROM git_log('.', 'origin/staging')
 ), branch_history AS (
     SELECT tips.branch_name, tips.tip_hash, history.* EXCLUDE (repo_path)
     FROM tips, LATERAL git_log_each(tips.repo_path, tips.tip_hash) history
-), branch_commits AS (
-    SELECT * FROM branch_history ANTI JOIN staging_log USING (commit_hash)
 ), branch_facts AS (
     SELECT branch_name,
            count(commit_hash) AS commits_ahead,
            min(author_date) AS first_commit_date,
            max(commit_date) AS last_commit_date,
            count(DISTINCT author_email) AS author_count
-    FROM branch_commits GROUP BY branch_name
-), staging_by_branch AS (
-    SELECT tips.branch_name, staging_log.commit_hash FROM tips CROSS JOIN staging_log
-), behind AS (
-    SELECT branch_name, count(commit_hash) AS commits_behind
-    FROM staging_by_branch ANTI JOIN branch_history USING (branch_name, commit_hash)
+    FROM branch_history ANTI JOIN staging_log USING (commit_hash)
     GROUP BY branch_name
+), behind AS (
+    SELECT tips.branch_name, count(staging_log.commit_hash) AS commits_behind
+    FROM tips CROSS JOIN staging_log
+    ANTI JOIN branch_history USING (branch_name, commit_hash)
+    GROUP BY tips.branch_name
 ), tip_commits AS (
     SELECT branch_name, author_name AS tip_author_name, author_email AS tip_author_email,
            commit_date AS tip_commit_date, message AS tip_message
     FROM branch_history WHERE commit_hash = tip_hash
-), before_files AS (
-    SELECT branch_diff.branch_name, branch_diff.file_path,
-           before_read.blob_hash AS before_blob_hash, before_read.mode AS before_mode, before_read.is_text AS before_is_text,
-           before_read.encoding AS before_encoding, before_read.size_bytes AS before_size_bytes
-    FROM branch_diff, LATERAL git_read_each(branch_diff.before_uri) before_read WHERE branch_diff.status <> 'added'
-), after_files AS (
-    SELECT branch_diff.branch_name, branch_diff.file_path,
-           after_read.blob_hash AS after_blob_hash, after_read.mode AS after_mode, after_read.is_text AS after_is_text,
-           after_read.encoding AS after_encoding, after_read.size_bytes AS after_size_bytes
-    FROM branch_diff, LATERAL git_read_each(branch_diff.after_uri) after_read WHERE branch_diff.status <> 'deleted'
-), after_hunks AS (
-    SELECT branch_diff.branch_name, branch_diff.file_path, hunk.commit_hash, hunk.line_count
-    FROM branch_diff, LATERAL git_blame_hunks_each(branch_diff.after_uri) hunk WHERE branch_diff.status <> 'deleted'
-), after_lines AS (
-    SELECT after_hunks.branch_name, after_hunks.file_path,
-           sum(after_hunks.line_count) AS after_line_count,
-           sum(CASE WHEN branch_commits.commit_hash IS NOT NULL THEN after_hunks.line_count ELSE 0 END) AS added_lines
-    FROM after_hunks LEFT JOIN branch_commits USING (branch_name, commit_hash)
-    GROUP BY ALL
-), before_hunks AS (
-    SELECT branch_diff.branch_name, branch_diff.file_path, hunk.line_count
-    FROM branch_diff, LATERAL git_blame_hunks_each(branch_diff.before_uri) hunk WHERE branch_diff.status <> 'added'
-), before_lines AS (
-    SELECT branch_name, file_path, sum(line_count) AS before_line_count FROM before_hunks GROUP BY ALL
+), sides AS (
+    SELECT branch_diff.*,
+           CASE WHEN branch_diff.status <> 'added' THEN branch_diff.before_uri END AS before_side_uri,
+           CASE WHEN branch_diff.status <> 'deleted' THEN branch_diff.after_uri END AS after_side_uri
+    FROM branch_diff
 )
-SELECT branch_diff.*,
-       before_files.* EXCLUDE (branch_name, file_path),
-       after_files.* EXCLUDE (branch_name, file_path),
+SELECT sides.* EXCLUDE (before_side_uri, after_side_uri),
+       before_files.*, after_files.*,
        before_lines.before_line_count, after_lines.after_line_count,
        coalesce(after_lines.added_lines, 0) AS added_lines,
        coalesce(before_lines.before_line_count, 0) - (coalesce(after_lines.after_line_count, 0) - coalesce(after_lines.added_lines, 0)) AS removed_lines,
        added_lines + removed_lines AS changed_lines,
        added_lines - removed_lines AS net_lines,
        coalesce(after_files.after_size_bytes, 0) - coalesce(before_files.before_size_bytes, 0) AS size_delta_bytes,
-       branch_diff.status = 'modified' AND before_files.before_mode IS DISTINCT FROM after_files.after_mode AS mode_changed,
+       sides.status = 'modified' AND before_files.before_mode IS DISTINCT FROM after_files.after_mode AS mode_changed,
        branch_facts.* EXCLUDE (branch_name),
        coalesce(behind.commits_behind, 0) AS commits_behind,
        tip_commits.* EXCLUDE (branch_name)
-FROM branch_diff
-LEFT JOIN before_files USING (branch_name, file_path)
-LEFT JOIN after_files USING (branch_name, file_path)
-LEFT JOIN before_lines USING (branch_name, file_path)
-LEFT JOIN after_lines USING (branch_name, file_path)
+FROM sides
+LEFT JOIN LATERAL (
+    SELECT blob_hash AS before_blob_hash, mode AS before_mode, is_text AS before_is_text,
+           encoding AS before_encoding, size_bytes AS before_size_bytes
+    FROM git_read_each(sides.before_side_uri)
+) before_files ON true
+LEFT JOIN LATERAL (
+    SELECT blob_hash AS after_blob_hash, mode AS after_mode, is_text AS after_is_text,
+           encoding AS after_encoding, size_bytes AS after_size_bytes
+    FROM git_read_each(sides.after_side_uri)
+) after_files ON true
+LEFT JOIN LATERAL (
+    SELECT sum(hunk.line_count) AS after_line_count,
+           sum(CASE WHEN hunk.commit_hash IN (SELECT commit_hash FROM staging_log) THEN 0 ELSE hunk.line_count END) AS added_lines
+    FROM git_blame_hunks_each(sides.after_side_uri) hunk
+) after_lines ON true
+LEFT JOIN LATERAL (
+    SELECT sum(hunk.line_count) AS before_line_count
+    FROM git_blame_hunks_each(sides.before_side_uri) hunk
+) before_lines ON true
 LEFT JOIN branch_facts USING (branch_name)
 LEFT JOIN behind USING (branch_name)
 LEFT JOIN tip_commits USING (branch_name);
