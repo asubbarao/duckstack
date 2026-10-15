@@ -181,74 +181,61 @@ FROM due
 $$, '0 15 * * * *');
 
 -- Agent transcripts (Claude Code ~/.claude/projects, Codex ~/.codex/sessions and archived_sessions) as plain Parquet,
--- one folder per transcript: ~/.duck/lake/agent/lines/source=<claude|codex>/<key>/from-<first line>.parquet. key = the
--- path below ~/.claude (its folders kept: Desktop scratch-workspace paths overflow a 255-byte flat name); for Codex
--- the file name, since a session moves from sessions/<date>/ to archived_sessions/; .jsonl.zst -> .jsonl, since
--- Codex compresses sessions in place.
+-- one partition per transcript file: ~/.duck/lake/agent/lines/source=<s>/project=<p>/file_key=<k>/part0.parquet.
+-- Claude: project = its folder under projects/, file_key = the rest of the path. Codex: project = 'sessions',
+-- file_key = the file name, since a session moves from sessions/<date>/ to archived_sessions/. .jsonl.zst -> .jsonl:
+-- Codex compresses sessions in place. (One flat key overflows the 255-byte name limit on Desktop scratch paths.)
 -- _empty.parquet (no rows) is the store's schema and keeps the views' glob matching when the store is new. Deleting
 -- the store needs a restart, which rewrites it; the cron then refills everything.
 CREATE SCHEMA IF NOT EXISTS agent;
 SELECT content FROM read_text('mkdir -p /Users/aloksubbarao/.duck/lake/agent/lines |');
-COPY (SELECT NULL::VARCHAR AS source, NULL::VARCHAR AS file, NULL::BIGINT AS line, NULL::JSON AS record, NULL::VARCHAR AS bad,
-             NULL::VARCHAR AS session_id, NULL::VARCHAR AS agent_id, NULL::VARCHAR AS type, NULL::VARCHAR AS payload_type,
-             NULL::VARCHAR AS record_type, NULL::TIMESTAMPTZ AS ts, NULL::VARCHAR AS uuid, NULL::VARCHAR AS parent_uuid,
-             NULL::VARCHAR AS turn_id, NULL::UBIGINT AS src_bytes, NULL::TIMESTAMP AS src_modified LIMIT 0)
+COPY (SELECT NULL::VARCHAR AS source, NULL::VARCHAR AS project, NULL::VARCHAR AS file_key, NULL::VARCHAR AS file, NULL::BIGINT AS line,
+             NULL::JSON AS record, NULL::VARCHAR AS bad, NULL::VARCHAR AS session_id, NULL::VARCHAR AS agent_id, NULL::VARCHAR AS type,
+             NULL::VARCHAR AS payload_type, NULL::VARCHAR AS record_type, NULL::TIMESTAMPTZ AS ts, NULL::VARCHAR AS uuid,
+             NULL::VARCHAR AS parent_uuid, NULL::VARCHAR AS turn_id, NULL::UBIGINT AS src_bytes, NULL::TIMESTAMP AS src_modified LIMIT 0)
 TO '/Users/aloksubbarao/.duck/lake/agent/lines/_empty.parquet' (FORMAT parquet);
--- Every minute, only new lines: a transcript with no part, or grown past the src_bytes its parts recorded, gets one
--- part from its next line on. One that shrank, was compressed (renamed), or sits an hour idle with several parts is
--- re-read whole into from-1 after its folder is removed. A line without its newline yet waits for the next run.
--- Transcripts deleted from disk keep their parts. The first run reads the whole history (~1.2M lines).
--- One mkdir + COPY per transcript, self-dispatched to /sql: reads under 16 MB of text together (quackapi_post, up
--- to 32 at once), larger ones one at a time (http_post stops waiting after 10 s; the COPY still finishes).
+-- Every minute: the transcripts with no partition yet, or whose size or mtime differ from the src_bytes / src_modified
+-- their partition recorded, are read whole by ONE self-dispatched COPY (a UNION ALL of one read_lines per file) that
+-- overwrites just their partitions. The first run is the whole history; later runs are the few live sessions.
+-- A line without its newline yet waits for the next run. Transcripts deleted from disk keep their partitions.
 SELECT cron($$
 WITH found AS (
     SELECT rtrim(content, e'\n') AS path, CASE WHEN contains(path, '/.codex/') THEN 'codex' ELSE 'claude' END AS source,
-           replace(CASE source WHEN 'codex' THEN file_name(path) ELSE substr(path, strpos(path, '/.claude/') + 9) END, '.jsonl.zst', '.jsonl') AS key,
-           '/Users/aloksubbarao/.duck/lake/agent/lines/source=' || source || '/' || key AS dir,
+           CASE source WHEN 'codex' THEN 'sessions' ELSE split_part(substr(path, strpos(path, '/projects/') + 10), '/', 1) END AS project,
+           replace(CASE source WHEN 'codex' THEN file_name(path) ELSE substr(path, strpos(path, '/projects/') + 11 + strlen(project)) END,
+                   '.jsonl.zst', '.jsonl') AS file_key,
            file_size(path) AS bytes, file_last_modified(path) AS modified
     FROM read_lines($c$find /Users/aloksubbarao/.claude/projects /Users/aloksubbarao/.codex/sessions /Users/aloksubbarao/.codex/archived_sessions -type f -name '*.jsonl' -o -type f -name '*.jsonl.zst' |$c$)
 ), stored AS (
-    SELECT parse_dirpath(filename) AS dir, list(DISTINCT file) AS files, count(DISTINCT filename) AS parts,
-           max(line) AS max_line, max(src_bytes) AS src_bytes
-    FROM read_parquet('/Users/aloksubbarao/.duck/lake/agent/lines/**/*.parquet', filename := true, hive_partitioning := false) GROUP BY ALL
+    SELECT DISTINCT file, src_bytes, src_modified
+    FROM read_parquet('/Users/aloksubbarao/.duck/lake/agent/lines/**/*.parquet', hive_partitioning := false)
 ), due AS (
-    SELECT found.*, max_line, src_bytes,
-           CASE WHEN files IS NULL THEN 'new'
-                WHEN files <> [path] THEN 'reread'
-                WHEN bytes < src_bytes THEN 'reread'
-                WHEN parts > 1 AND modified < now() - INTERVAL 1 HOUR THEN 'reread'
-                WHEN bytes > src_bytes THEN 'append' END AS action,
-           CASE action WHEN 'append' THEN max_line + 1 ELSE 1 END AS first_line,
-           (bytes - CASE action WHEN 'append' THEN src_bytes ELSE 0 END) * CASE WHEN ends_with(path, '.zst') THEN 3 ELSE 1 END AS text_bytes
-    FROM found LEFT JOIN stored USING (dir)
-), statements AS (
-    SELECT path, action, first_line, text_bytes, printf($s$
-SELECT content FROM read_text($p$%s mkdir -p "%s" |$p$);
-COPY (SELECT source, file, line, record, bad, coalesce(h.sessionId, h.session_id, %s) AS session_id, h.agentId AS agent_id,
-             h.type AS type, h.payload.type AS payload_type,
-             concat_ws('/', h.type, h.payload.type, h.subtype, h.attachment.type, h.payload.item.type) AS record_type,
-             TRY_CAST(h.timestamp AS TIMESTAMPTZ) AS ts, h.uuid AS uuid, h.parentUuid AS parent_uuid,
-             coalesce(h.promptId, h.payload.turn_id, h.payload.internal_chat_message_metadata_passthrough.turn_id) AS turn_id,
-             src_bytes, src_modified
-      FROM (SELECT '%s' AS source, '%s' AS file, line_number AS line, rtrim(content, e'\n') AS text,
-                   CASE WHEN json_valid(text) THEN text::JSON END AS record, CASE WHEN record IS NULL THEN text END AS bad,
-                   json_transform(record, '{"sessionId": "VARCHAR", "session_id": "VARCHAR", "agentId": "VARCHAR", "type": "VARCHAR",
-                       "subtype": "VARCHAR", "timestamp": "VARCHAR", "uuid": "VARCHAR", "parentUuid": "VARCHAR", "promptId": "VARCHAR",
-                       "attachment": {"type": "VARCHAR"}, "payload": {"type": "VARCHAR", "turn_id": "VARCHAR", "item": {"type": "VARCHAR"},
-                       "internal_chat_message_metadata_passthrough": {"turn_id": "VARCHAR"}}}') AS h,
-                   %d::UBIGINT AS src_bytes, '%s'::TIMESTAMP AS src_modified
-            FROM read_lines('%s', lines := '%d-') WHERE ends_with(content, e'\n')))
-TO '%s/from-%d.parquet' (FORMAT parquet, ROW_GROUP_SIZE 2048)$s$,
-    CASE action WHEN 'reread' THEN printf('rm -rf "%s";', dir) ELSE '' END, dir,
-    CASE source WHEN 'codex' THEN printf('''%s''', right(replace(parse_filename(path, true), '.jsonl', ''), 36)) ELSE 'NULL' END,
-    source, path, bytes, modified, CASE WHEN ends_with(path, '.zst') THEN printf('zstd -dcq "%s" |', path) ELSE path END,
-    first_line, dir, first_line) AS sql
-    FROM due WHERE action IS NOT NULL
+    FROM found ANTI JOIN stored ON stored.file = found.path AND stored.src_bytes = found.bytes AND stored.src_modified = found.modified
 )
-SELECT path, action, first_line,
-       CASE WHEN text_bytes < 16777216 THEN (quackapi_post('http://127.0.0.1:9495/sql', json_object('sql', sql))).status END AS small,
-       CASE WHEN text_bytes >= 16777216 THEN http_post('http://127.0.0.1:9495/sql', MAP {'Content-Type': 'application/json'}, json_object('sql', sql)) ->> '$.status' END AS big
-FROM statements
+SELECT (quackapi_post('http://127.0.0.1:9495/sql', json_object('sql', tera_render($t$
+COPY (
+    SELECT source, project, file_key, file, line, record, bad,
+           coalesce(h.sessionId, h.session_id, CASE source WHEN 'codex' THEN right(replace(parse_filename(file, true), '.jsonl', ''), 36) END) AS session_id,
+           h.agentId AS agent_id, h.type AS type, h.payload.type AS payload_type,
+           concat_ws('/', h.type, h.payload.type, h.subtype, h.attachment.type, h.payload.item.type) AS record_type,
+           TRY_CAST(h.timestamp AS TIMESTAMPTZ) AS ts, h.uuid AS uuid, h.parentUuid AS parent_uuid,
+           coalesce(h.promptId, h.payload.turn_id, h.payload.internal_chat_message_metadata_passthrough.turn_id) AS turn_id,
+           src_bytes, src_modified
+    FROM (SELECT *, CASE WHEN json_valid(text) THEN text::JSON END AS record, CASE WHEN record IS NULL THEN text END AS bad,
+                 json_transform(record, '{"sessionId": "VARCHAR", "session_id": "VARCHAR", "agentId": "VARCHAR", "type": "VARCHAR",
+                     "subtype": "VARCHAR", "timestamp": "VARCHAR", "uuid": "VARCHAR", "parentUuid": "VARCHAR", "promptId": "VARCHAR",
+                     "attachment": {"type": "VARCHAR"}, "payload": {"type": "VARCHAR", "turn_id": "VARCHAR", "item": {"type": "VARCHAR"},
+                     "internal_chat_message_metadata_passthrough": {"turn_id": "VARCHAR"} } }') AS h
+          FROM ({% for f in files %}{% if not loop.first %}
+                UNION ALL {% endif %}SELECT '{{ f.source }}' AS source, '{{ f.project }}' AS project, '{{ f.file_key }}' AS file_key,
+                       '{{ f.path }}' AS file, {{ f.bytes }}::UBIGINT AS src_bytes, '{{ f.modified }}'::TIMESTAMP AS src_modified,
+                       line_number AS line, rtrim(content, e'\n') AS text
+                FROM read_lines('{% if f.zst %}zstd -dcq "{{ f.path }}" |{% else %}{{ f.path }}{% endif %}') WHERE ends_with(content, e'\n'){% endfor %})))
+TO '/Users/aloksubbarao/.duck/lake/agent/lines' (FORMAT parquet, PARTITION_BY (source, project, file_key), FILENAME_PATTERN 'part',
+    OVERWRITE_OR_IGNORE, WRITE_PARTITION_COLUMNS true, ROW_GROUP_SIZE 2048)$t$,
+    json_object('files', list({'source': source, 'project': project, 'file_key': file_key, 'path': path, 'bytes': bytes,
+                               'modified': modified, 'zst': ends_with(path, '.zst')})), autoescape := false)))).status AS status
+FROM due HAVING count(path) > 0
 $$, '0 * * * * *');
 
 -- One row per transcript line: record is the whole line as JSON (bad = a line that is not JSON); the other columns
