@@ -408,43 +408,32 @@ CALL enable_logging(['QueryLog', 'HTTP', 'Quack'], storage := 'file', storage_pa
 -- into Parquet, one partition per transcript: ~/.duck/lake/agent/project=<folder under projects/>/key=<rest of its
 -- path>/data_0.parquet, from hostfs path_split (Codex: project '.codex', key = the file name without .zst, since a session
 -- moves to archived_sessions/ and is compressed in place). Two levels: one escaped path overflows 255 bytes.
--- agent.due: transcripts with no partition, or modified later than 10 s before their partition was written (a line
--- appended while a COPY ran is caught next run), in chunks of at most 64 files / 128 MB: past
+-- Boot replaces every transcript; every 5 minutes the cron replaces those modified since yesterday (yesterday too, so a
+-- session's last lines before midnight land). Replacing is the whole mechanism: no comparison with the store.
+-- agent.transcripts: the files, in chunks of at most 64 files / 128 MB (a .zst counts 4x): past
 -- partitioned_write_max_open_files (100) a partition gets a second file that a later rewrite would not replace.
--- agent.ingest posts each chunk's COPY to /sql: read_text reads the chunk's files, each splits into numbered lines,
--- json_transform types every line with one shape for both sources (bad = a line that is not JSON), and
--- OVERWRITE_OR_IGNORE replaces each one's data_0.parquet. The run here at boot fills a new store before the views below
--- bind to it.
+-- agent.chunks: each chunk's COPY. read_text reads the chunk's files (a directory glob would read every file in it:
+-- read_text does not push a filename filter down), each splits into its numbered lines (unnest + generate_subscripts
+-- in the select list; a CROSS JOIN UNNEST carries the whole file into every line's row), json_transform types every
+-- line with one shape for both sources (bad = a line that is not JSON), and OVERWRITE_OR_IGNORE replaces each one's
+-- data_0.parquet. A run posts its chunks as one /sql body, which runs them in order: one chunk in memory at a time
+-- (posts from one column run at once, and 30 chunks together ran dev out of memory).
 CREATE SCHEMA IF NOT EXISTS agent;
-CREATE OR REPLACE VIEW agent.due AS
-WITH found AS (
-    SELECT file AS path, parse_dirpath(path) AS dir, CASE WHEN ends_with(path, '.zst') THEN '.jsonl.zst' ELSE '.jsonl' END AS ext,
-           path_split(path) AS parts, list_position(parts, 'projects') AS p,
-           CASE WHEN p IS NULL THEN '.codex' ELSE parts[p + 1] END AS project,
-           CASE WHEN p IS NULL THEN replace(file_name(path), '.zst', '') ELSE list_aggr(parts[p + 2:], 'string_agg', '/') END AS key,
-           file_size(path) AS bytes, file_last_modified(path) AS modified
-    FROM glob(['/Users/aloksubbarao/.claude/projects/*/*.jsonl', '/Users/aloksubbarao/.claude/projects/*/*/subagents/*.jsonl',
-               '/Users/aloksubbarao/.codex/sessions/*/*/*/*.jsonl', '/Users/aloksubbarao/.codex/sessions/*/*/*/*.jsonl.zst',
-               '/Users/aloksubbarao/.codex/archived_sessions/*.jsonl.zst'])
-), stored AS (   -- hive values are URL-escaped
-    SELECT url_decode(file_name(parse_dirpath(parse_dirpath(file)))[9:]) AS project, url_decode(file_name(parse_dirpath(file))[5:]) AS key,
-           file_last_modified(file) AS written
-    FROM glob('/Users/aloksubbarao/.duck/lake/agent/*/*/data_0.parquet')
-)
-SELECT path, project, key,
+CREATE OR REPLACE VIEW agent.transcripts AS
+SELECT path, project, key, recent,
        CASE ext WHEN '.jsonl.zst' THEN 'decompress+zstd:' || path ELSE path END AS src,   -- .zst through scalarfs
        greatest(sum(bytes * CASE ext WHEN '.jsonl.zst' THEN 4 ELSE 1 END) OVER w // 134217728, (row_number() OVER w - 1) // 64) AS chunk
-FROM found ANTI JOIN stored ON stored.project = found.project AND stored.key = found.key AND stored.written - INTERVAL 10 SECOND > found.modified
-WINDOW w AS (ORDER BY modified, path);
--- One COPY per chunk: read_text reads the chunk's files (a directory glob would read every file in it: read_text does
--- not push a filename filter down) and each splits into its numbered lines: unnest + generate_subscripts in the select
--- list (a CROSS JOIN UNNEST carries the whole file into every line's row). project / key come from agent.due itself.
--- All chunks go in one /sql body, which runs its statements in order: one chunk in memory at a time (posts from one
--- column run at once, and a backfill's 30 chunks together ran dev out of memory). Chunks a run does not reach are due
--- next run.
-CREATE OR REPLACE VIEW agent.ingest AS
-SELECT string_agg(files, ', ') AS files, quackapi_post('http://127.0.0.1:9495/sql', json_object('sql', string_agg(stmt, e';\n' ORDER BY chunk))).status AS status
-FROM (SELECT chunk, string_agg(path, ', ') AS files, printf($s$
+FROM (SELECT file AS path, CASE WHEN ends_with(path, '.zst') THEN '.jsonl.zst' ELSE '.jsonl' END AS ext,
+             path_split(path) AS parts, list_position(parts, 'projects') AS p,
+             CASE WHEN p IS NULL THEN '.codex' ELSE parts[p + 1] END AS project,
+             CASE WHEN p IS NULL THEN replace(file_name(path), '.zst', '') ELSE list_aggr(parts[p + 2:], 'string_agg', '/') END AS key,
+             file_size(path) AS bytes, file_last_modified(path) AS modified, modified >= current_date - INTERVAL 1 DAY AS recent
+      FROM glob(['/Users/aloksubbarao/.claude/projects/*/*.jsonl', '/Users/aloksubbarao/.claude/projects/*/*/subagents/*.jsonl',
+                 '/Users/aloksubbarao/.codex/sessions/*/*/*/*.jsonl', '/Users/aloksubbarao/.codex/sessions/*/*/*/*.jsonl.zst',
+                 '/Users/aloksubbarao/.codex/archived_sessions/*.jsonl.zst']))
+WINDOW w AS (PARTITION BY recent ORDER BY modified, path);
+CREATE OR REPLACE VIEW agent.chunks AS
+SELECT recent, chunk, printf($s$
 COPY (
     SELECT project, key, file, line, record, bad, j,
            coalesce(j.sessionId, j.session_id, CASE project WHEN '.codex' THEN right(replace(key, '.jsonl', ''), 36) END) AS session_id,
@@ -474,13 +463,14 @@ COPY (
                                "aggregated_output": "JSON", "stdout": "JSON"}}}') AS j
           FROM (SELECT d.project, d.key, d.path AS file, unnest(t.parts) AS text, generate_subscripts(t.parts, 1) AS line
                 FROM (SELECT filename, string_split(content, e'\n')[:-2] AS parts FROM read_text([%s])) t   -- [:-2]: after the last newline
-                JOIN agent.due d ON d.src = t.filename))
+                JOIN agent.transcripts d ON d.src = t.filename))
 ) TO '/Users/aloksubbarao/.duck/lake/agent' (FORMAT parquet, PARTITION_BY (project, key), OVERWRITE_OR_IGNORE, ROW_GROUP_SIZE 2048)
 $s$, string_agg(printf($q$'%s'$q$, src), ', ')) AS stmt
-      FROM agent.due GROUP BY chunk)
-HAVING string_agg(files, ', ') IS NOT NULL;
-FROM agent.ingest;
-SELECT cron('FROM agent.ingest', '0 * * * * *');
+FROM agent.transcripts GROUP BY recent, chunk;
+SELECT quackapi_post('http://127.0.0.1:9495/sql', json_object('sql', string_agg(stmt, e';\n' ORDER BY recent, chunk))).status
+FROM agent.chunks;
+SELECT cron($$SELECT quackapi_post('http://127.0.0.1:9495/sql', json_object('sql', string_agg(stmt, e';\n' ORDER BY chunk))).status
+FROM agent.chunks WHERE recent$$, '0 */5 * * * *');
 
 -- One row per transcript line: record = the whole line, j = it typed, plus its top-level fields.
 CREATE OR REPLACE VIEW agent.lines AS
