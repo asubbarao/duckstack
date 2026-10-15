@@ -406,40 +406,47 @@ FROM quackapi_serve(9495, host := '127.0.0.1', query_timeout_ms := 120000);
 CALL enable_logging(['QueryLog', 'HTTP', 'Quack'], storage := 'file', storage_path := getenv('QUACK_NATIVE_LOG'), storage_buffer_size := 0);
 
 -- Agent transcripts (Claude Code ~/.claude/projects, Codex ~/.codex/sessions and archived_sessions), typed once at ingest
--- into Parquet, one partition per transcript: ~/.duck/lake/agent/dir=<its folder>/key=<its name>/data_0.parquet (Codex: dir
--- '.codex' and the name without .zst, since a session moves to archived_sessions/ and is compressed in place).
+-- into Parquet, one partition per transcript: ~/.duck/lake/agent/project=<folder under projects/>/key=<rest of its
+-- path>/data_0.parquet, from hostfs path_split (Codex: project '.codex', key = the file name without .zst, since a session
+-- moves to archived_sessions/ and is compressed in place). Two levels: one escaped path overflows 255 bytes.
 -- agent.due: transcripts with no partition, or modified later than 10 s before their partition was written (a line
--- appended while a COPY ran is caught next run). agent.ingest posts one COPY of exactly those files to /sql:
--- read_ndjson_objects reads them (.zst too), json_transform types every line with one shape for both sources, and
--- OVERWRITE_OR_IGNORE replaces each one's data_0.parquet. At most 64 files / 128 MB a run: past
--- partitioned_write_max_open_files (100) a partition gets a second file that a later run would not replace. A new store
--- fills in ~30 runs; the run here at boot gives the views below a store to bind to. line = the line's place in its file.
+-- appended while a COPY ran is caught next run), in chunks of at most 64 files / 128 MB: past
+-- partitioned_write_max_open_files (100) a partition gets a second file that a later rewrite would not replace.
+-- agent.ingest posts each chunk's COPY to /sql: read_ndjson_objects globs the chunk's directories (.zst too) and keeps
+-- its files, json_transform types every line with one shape for both sources, and OVERWRITE_OR_IGNORE replaces each
+-- one's data_0.parquet. The run here at boot fills a new store before the views below bind to it.
+-- line = the line's place in its file.
 CREATE SCHEMA IF NOT EXISTS agent;
 CREATE OR REPLACE VIEW agent.due AS
 WITH found AS (
-    SELECT file AS path, CASE WHEN contains(path, '/.codex/') THEN '.codex' ELSE parse_dirpath(path) END AS dir,
-           replace(file_name(path), '.zst', '') AS key, file_size(path) AS bytes, file_last_modified(path) AS modified
+    SELECT file AS path, parse_dirpath(path) AS dir, CASE WHEN ends_with(path, '.zst') THEN '.jsonl.zst' ELSE '.jsonl' END AS ext,
+           path_split(path) AS parts, list_position(parts, 'projects') AS p,
+           CASE WHEN p IS NULL THEN '.codex' ELSE parts[p + 1] END AS project,
+           CASE WHEN p IS NULL THEN replace(file_name(path), '.zst', '') ELSE list_aggr(parts[p + 2:], 'string_agg', '/') END AS key,
+           file_size(path) AS bytes, file_last_modified(path) AS modified
     FROM glob(['/Users/aloksubbarao/.claude/projects/*/*.jsonl', '/Users/aloksubbarao/.claude/projects/*/*/subagents/*.jsonl',
                '/Users/aloksubbarao/.codex/sessions/*/*/*/*.jsonl', '/Users/aloksubbarao/.codex/sessions/*/*/*/*.jsonl.zst',
                '/Users/aloksubbarao/.codex/archived_sessions/*.jsonl.zst'])
 ), stored AS (   -- hive values are URL-escaped
-    SELECT url_decode(file_name(parse_dirpath(parse_dirpath(file)))[5:]) AS dir, url_decode(file_name(parse_dirpath(file))[5:]) AS key,
+    SELECT url_decode(file_name(parse_dirpath(parse_dirpath(file)))[9:]) AS project, url_decode(file_name(parse_dirpath(file))[5:]) AS key,
            file_last_modified(file) AS written
     FROM glob('/Users/aloksubbarao/.duck/lake/agent/*/*/data_0.parquet')
 )
-FROM found ANTI JOIN stored ON stored.dir = found.dir AND stored.key = found.key AND stored.written - INTERVAL 10 SECOND > found.modified
-QUALIFY sum(bytes) OVER (ORDER BY modified, path) - bytes < 134217728 AND row_number() OVER (ORDER BY modified, path) <= 64;
+SELECT path, dir, ext, project, key, greatest(sum(bytes) OVER w // 134217728, (row_number() OVER w - 1) // 64) AS chunk
+FROM found ANTI JOIN stored ON stored.project = found.project AND stored.key = found.key AND stored.written - INTERVAL 10 SECOND > found.modified
+WINDOW w AS (ORDER BY modified, path);
+-- One COPY per chunk, posted in order: the reader globs the chunk's directories and keeps its files (the filename filter
+-- is pushed into the reader, which opens only those). project / key come from agent.due itself.
 CREATE OR REPLACE VIEW agent.ingest AS
-SELECT string_agg(path, ', ') AS files, quackapi_post('http://127.0.0.1:9495/sql', json_object('sql', printf($s$
+SELECT chunk, string_agg(path, ', ') AS files, quackapi_post('http://127.0.0.1:9495/sql', json_object('sql', printf($s$
 SET preserve_insertion_order = true;   -- rn follows the files' own order; /sql's connection is shared, so set back below
 COPY (
-    SELECT dir, key, file, line, record, j,
-           coalesce(j.sessionId, j.session_id, CASE dir WHEN '.codex' THEN right(replace(key, '.jsonl', ''), 36) END) AS session_id,
+    SELECT d.project, d.key, file, line, record, j,
+           coalesce(j.sessionId, j.session_id, CASE d.project WHEN '.codex' THEN right(replace(d.key, '.jsonl', ''), 36) END) AS session_id,
            j.agentId AS agent_id, j.type, j.payload.type AS payload_type, TRY_CAST(j.timestamp AS TIMESTAMPTZ) AS ts,
            coalesce(j.promptId, j.payload.turn_id, j.payload.internal_chat_message_metadata_passthrough.turn_id) AS turn_id,
            CASE json_type(record, '$.message.content') WHEN 'VARCHAR' THEN record ->> '$.message.content' END AS message_text
-    FROM (SELECT CASE WHEN contains(filename, '/.codex/') THEN '.codex' ELSE parse_dirpath(filename) END AS dir,
-                 replace(file_name(filename), '.zst', '') AS key, filename AS file, row_number() OVER (PARTITION BY filename ORDER BY rn) AS line,
+    FROM (SELECT filename AS file, row_number() OVER (PARTITION BY filename ORDER BY rn) AS line,
                  json AS record, json_transform(json, '{
                   "type": "VARCHAR", "subtype": "VARCHAR", "timestamp": "VARCHAR", "sessionId": "VARCHAR", "session_id": "VARCHAR",
                   "agentId": "VARCHAR", "promptId": "VARCHAR", "requestId": "VARCHAR", "cwd": "VARCHAR", "gitBranch": "VARCHAR", "version": "VARCHAR",
@@ -460,22 +467,24 @@ COPY (
                       "item": {"id": "VARCHAR", "type": "VARCHAR", "tool": "VARCHAR", "server": "VARCHAR", "status": "VARCHAR", "exit_code": "BIGINT",
                                "arguments": "JSON", "command": "JSON", "changes": "JSON", "prompt": "JSON", "result": "JSON", "error": "JSON",
                                "aggregated_output": "JSON", "stdout": "JSON"}}}') AS j
-          FROM (SELECT *, row_number() OVER () AS rn FROM read_ndjson_objects([%s], filename := true, ignore_errors := true)))
-) TO '/Users/aloksubbarao/.duck/lake/agent' (FORMAT parquet, PARTITION_BY (dir, key), OVERWRITE_OR_IGNORE, ROW_GROUP_SIZE 2048);
+          FROM (SELECT *, row_number() OVER () AS rn FROM read_ndjson_objects([%s], filename := true, ignore_errors := true)
+                WHERE filename IN (%s)))
+    JOIN agent.due d ON d.path = file
+) TO '/Users/aloksubbarao/.duck/lake/agent' (FORMAT parquet, PARTITION_BY (project, key), OVERWRITE_OR_IGNORE, ROW_GROUP_SIZE 2048);
 SET preserve_insertion_order = false
-$s$, string_agg(printf($q$'%s'$q$, path), ', ')))).status AS status
-FROM agent.due HAVING string_agg(path, ', ') IS NOT NULL;
+$s$, string_agg(DISTINCT printf($q$'%s/*%s'$q$, dir, ext), ', '), string_agg(printf($q$'%s'$q$, path), ', ')))).status AS status
+FROM agent.due GROUP BY chunk ORDER BY chunk;
 FROM agent.ingest;
 SELECT cron('FROM agent.ingest', '0 * * * * *');
 
 -- One row per transcript line: record = the whole line, j = it typed, plus its top-level fields.
 CREATE OR REPLACE VIEW agent.lines AS
-SELECT CASE dir WHEN '.codex' THEN 'codex' ELSE 'claude' END AS source, * EXCLUDE (dir, key)
+SELECT CASE project WHEN '.codex' THEN 'codex' ELSE 'claude' END AS source, * EXCLUDE (project, key)
 FROM read_parquet('/Users/aloksubbarao/.duck/lake/agent/*/*/data_0.parquet', hive_partitioning := true);
 -- The same view in the lake, for any process that attaches it.
 CREATE SCHEMA IF NOT EXISTS lake.agent;
 CREATE OR REPLACE VIEW lake.agent.lines AS
-SELECT CASE dir WHEN '.codex' THEN 'codex' ELSE 'claude' END AS source, * EXCLUDE (dir, key)
+SELECT CASE project WHEN '.codex' THEN 'codex' ELSE 'claude' END AS source, * EXCLUDE (project, key)
 FROM read_parquet('/Users/aloksubbarao/.duck/lake/agent/*/*/data_0.parquet', hive_partitioning := true);
 -- One row per tool call with its result: the next result line with the same call id in the same file. level 'model' =
 -- a call the model issued (Claude tool_use; Codex function_call / custom_tool_call / tool_search_call); 'nested' = Codex
