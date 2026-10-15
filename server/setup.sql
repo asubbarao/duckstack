@@ -194,7 +194,8 @@ SELECT * REPLACE ('codex' AS source) FROM read_conversations(source := 'codex', 
 CREATE OR REPLACE VIEW agent.tool_calls AS FROM read_parquet('/Users/aloksubbarao/.duck/claude_tool_calls/tool_calls.parquet');
 SELECT cron($$
 SELECT content FROM read_lines($cmd$D=/Users/aloksubbarao/.duck/claude_tool_calls; mkdir -p $D/tmp && cd $D && rm -rf lines.next tool_calls.next.parquet && {
-reader() { duckdb :memory: -init /dev/null -bail -csv <<'READER'
+reader() { duckdb :memory: -bail -csv <<'READER'
+.bail on
 LOAD shellfs; LOAD hostfs; LOAD read_lines;
 SET threads = getenv('WIDTH');
 WITH readers AS (
@@ -243,7 +244,8 @@ BODY
 READER
 }
 SCOPE=small WIDTH=8 reader > small.receipts && SCOPE=big WIDTH=1 reader > big.receipts &&
-duckdb :memory: -init /dev/null -bail <<'BUILD'
+duckdb :memory: -bail <<'BUILD'
+.bail on
 LOAD sitting_duck; LOAD hostfs; LOAD read_lines;
 SET memory_limit = '5GB'; SET threads = 4; SET preserve_insertion_order = false; SET temp_directory = '/Users/aloksubbarao/.duck/claude_tool_calls/tmp';
 SELECT error('reader piece failed: ' || content) FROM read_lines('/Users/aloksubbarao/.duck/claude_tool_calls/*.receipts') WHERE contains(content, 'detail');
