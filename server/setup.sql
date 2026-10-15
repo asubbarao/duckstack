@@ -409,18 +409,17 @@ SELECT source, file, session_id, agent_id, contains(file, '/subagents/') AS is_s
 FROM agent.lines WHERE type IN ('user', 'session_meta')
 QUALIFY row_number() OVER (PARTITION BY file ORDER BY line) = 1;
 
--- One row per tool call, from agent.stream; WHERE source and ts as needed (source reaches the reader, so
--- source = 'claude' skips the Codex read). A call's first copy wins across resumed transcripts. programs is
--- what the bash ran, including commands inside shellfs pipes in SQL; functions is what the SQL called.
-CREATE OR REPLACE VIEW agent.tool_calls AS
-WITH call AS (
-    SELECT source, tool_use_id, arg_min({'session_id': session_id, 'transcript': file_name, 'ts': timestamp::TIMESTAMPTZ, 'tool': tool_name, 'input': tool_input::JSON}, timestamp) AS c
-    FROM agent.stream WHERE message_type = 'assistant' AND tool_use_id IS NOT NULL GROUP BY source, tool_use_id
-), result AS (
-    SELECT source, tool_use_id, arg_min({'content': message_content, 'failed': json_extract_string(raw_event, '$.message.content[0].is_error') = 'true'}, timestamp) AS r
-    FROM agent.stream WHERE message_type = 'tool_result' GROUP BY source, tool_use_id
+-- One row per tool call over agent.tool_calls, with what it ran: programs is what the bash ran, including commands
+-- inside shellfs pipes in SQL; functions is what the SQL called. Always filter source and ts: the filter reaches the
+-- store scan, so only those calls are parsed (unfiltered over all history it took 75 s and 13 GB). Resumed/forked
+-- transcripts repeat calls; agent.copies (kind = 'tool_call', first_seen) marks the first copy.
+CREATE OR REPLACE VIEW agent.tool_call_analysis AS
+WITH c AS (
+    SELECT source, call_id, level, session_id, file AS transcript, ts, tool_name AS tool, input::JSON AS input,
+           result::VARCHAR AS result, result_bytes, is_error AS failed
+    FROM agent.tool_calls
 ), parsed AS (
-    SELECT source, c.session_id, c.transcript, c.ts, c.tool, c.input,
+    SELECT source, call_id, c.level, c.session_id, c.transcript, c.ts, c.tool, c.input,
            c.input ->> 'command' AS command,
            coalesce(c.input ->> 'sql', c.input ->> 'statement') AS sql,
            parse_ast_list(sql, 'sql') AS sql_ast,
@@ -429,9 +428,9 @@ WITH call AS (
            list_transform(list_filter(literals, lambda s: ends_with(rtrim(s), '|')), lambda s: rtrim(rtrim(s), '|')) AS pipes,
            list_distinct(flatten(list_transform(list_prepend(command, pipes), lambda p: list_transform(list_filter(parse_ast_list(p, 'bash'), lambda n: n.type = 'command_name'), lambda n: n.peek)))) AS programs,
            list_distinct(list_transform(list_filter(sql_ast, lambda n: n.type = 'invocation'), lambda n: lower(n.name))) AS functions,
-           CASE WHEN r.failed THEN r.content END AS error,
-           strlen(r.content) AS result_bytes
-    FROM call LEFT JOIN result USING (source, tool_use_id)
+           CASE WHEN c.failed THEN c.result END AS error,
+           c.result_bytes
+    FROM c
 )
 SELECT * EXCLUDE (command, sql, sql_ast, literals, pipes) FROM parsed;
 
