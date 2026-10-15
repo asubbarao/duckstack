@@ -230,6 +230,23 @@ Verbatim source: `~/.duck/catalog/2026-09-15.md`. Breaking one is a procedural f
   connection; `.mode trash` is required on stdio; markdown cells with newlines split rows in
   a6b8648.
 - launchd: a changed plist needs `bootout` + `bootstrap`; `kickstart -k` reruns the old one.
+- **Splitting on newlines — the methods differ** (measured on dev, DuckDB 1.5.6, 2026-10-14, input
+  `e'a\r\nb\n\nc\n'`: a CRLF line, an empty line, a trailing newline):
+
+  | method | result | `\r` | empty line | after trailing `\n` |
+  |---|---|---|---|---|
+  | `string_split(v, e'\n')` | `a\r`, `b`, ``, `c`, `` | kept | kept | extra empty element |
+  | `string_split_regex(v, '\r?\n')` | `a`, `b`, ``, `c`, `` | removed | kept | extra empty element |
+  | `string_split_regex(v, '\s+')` | `a`, `b`, `c`, `` | removed | dropped (merged) | extra empty element |
+  | `read_lines` (community) | `a\r\n`, `b\n`, `\n`, `c\n` | kept, with the `\n` | kept | no extra row |
+
+  `chr()` with code 10 is the same character as `e'\n'`; write `e'\n'`. The house hook blocks `chr()`
+  for codes 10 and 34 and allows code 39 only as `CONCAT(chr(39), col, chr(39))`; a double quote needs
+  no escape inside a single-quoted string. **Files:** `read_lines` (line numbers, no phantom last row),
+  then `rtrim(content, e'\r\n')` — every line keeps its terminator, which is why paths from
+  `read_lines('find … |')` need the trim. **Strings:** `string_split_regex(s, '\r?\n')` after
+  `rtrim(s, e'\r\n')` (or drop an empty last element). `'\s+'` is word-splitting, not line-splitting.
+  `read_text` does not decompress `.zst`; `read_json`/`read_ndjson` do.
 - Codex `workspace-write` mounts `.git` read-only: its runs cannot branch or commit.
 
 ## 7. Which skill
