@@ -492,19 +492,21 @@ CREATE OR REPLACE VIEW lake.agent.lines AS
 SELECT CASE project WHEN '.codex' THEN 'codex' ELSE 'claude' END AS source, * EXCLUDE (project, key)
 FROM read_parquet('/Users/aloksubbarao/.duck/lake/agent/*/*/data_0.parquet', hive_partitioning := true);
 -- One row per tool call with its result: the next result line with the same call id in the same file. level 'model' =
--- a call the model issued (Claude tool_use; Codex function_call / custom_tool_call / tool_search_call); 'nested' = Codex
--- work inside a model call (one completed item is its own result), parent_call_id = the model call before it. turn_id =
+-- a call the model issued (Claude tool_use; Codex function_call / custom_tool_call / tool_search_call), paired with an
+-- output, never with the completed item that shares its id; 'nested' = Codex work inside a model call (one completed item
+-- is its own result), parent_call_id = the model call before it. turn_id =
 -- the last turn marker at or before the call; Codex response_id = the next usage record's. is_error: Claude's flag;
 -- Codex nested from the item's status / exit code; Codex model calls NULL. error = the whole result of a failed call; any
 -- other result body is agent.lines at (file, result_line). est_tokens = (input + result bytes) / 4.
 CREATE OR REPLACE VIEW agent.tool_calls AS
 WITH ev AS (
-    SELECT source, file, line, ts, session_id, agent_id, j.message.id AS response_id, b.type = 'tool_use' AS is_call,
+    SELECT source, file, line, ts, session_id, agent_id, 'model' AS level, j.message.id AS response_id, b.type = 'tool_use' AS is_call,
            b.type = 'tool_result' AS is_result, coalesce(b.id, b.tool_use_id) AS call_id, b.name AS tool_name, b.input,
            strlen(b.content::VARCHAR) AS result_bytes, b.is_error, CASE WHEN b.is_error THEN b.content END AS error
     FROM agent.lines CROSS JOIN UNNEST(j.message.content) AS u(b) WHERE b.type IN ('tool_use', 'tool_result')
     UNION ALL BY NAME
-    SELECT source, file, line, ts, session_id, ends_with(payload_type, '_call') AS is_call, ends_with(payload_type, '_output') AS is_result,
+    SELECT source, file, line, ts, session_id, 'model' AS level, ends_with(payload_type, '_call') AS is_call,
+           ends_with(payload_type, '_output') AS is_result,
            j.payload.call_id, j.payload.name AS tool_name, j.payload.namespace, coalesce(TRY_CAST(j.payload.arguments AS JSON), j.payload.input) AS input,
            strlen(j.payload.output::VARCHAR) AS result_bytes
     FROM agent.lines
@@ -518,18 +520,18 @@ WITH ev AS (
            j.payload.completed_at_ms - j.payload.started_at_ms AS item_ms
     FROM (SELECT *, j.payload.item AS i FROM agent.lines WHERE payload_type = 'item_completed')
     WHERE i.type IN ('CommandExecution', 'McpToolCall', 'FileChange', 'DynamicToolCall', 'CollabAgentToolCall', 'Extension', 'ImageView', 'SubAgentActivity')
-), model AS (FROM ev WHERE is_call AND level IS NULL
+), model AS (FROM ev WHERE is_call AND level = 'model'
 ), turns AS (SELECT file, line, turn_id FROM agent.lines WHERE turn_id IS NOT NULL
 ), usage AS (SELECT file, line, j.payload.response_id FROM agent.lines WHERE type = 'token_usage_record'
 )
-SELECT c.source, coalesce(c.level, 'model') AS level, c.session_id, c.agent_id, t.turn_id, c.file, c.line, c.ts,
+SELECT c.source, c.level, c.session_id, c.agent_id, t.turn_id, c.file, c.line, c.ts,
        coalesce(c.response_id, u.response_id) AS response_id, c.call_id, p.call_id AS parent_call_id, c.tool_name, c.namespace, c.input,
        strlen(c.input::VARCHAR) AS input_bytes, r.line AS result_line, r.ts AS result_ts, r.result_bytes,
        (coalesce(input_bytes, 0) + coalesce(r.result_bytes, 0)) // 4 AS est_tokens, r.is_error, r.error,
        coalesce(c.item_ms, date_diff('millisecond', c.ts, r.ts)) AS duration_ms
 FROM (FROM ev WHERE is_call) c
 ANTI JOIN model m ON c.level = 'nested' AND m.file = c.file AND m.call_id = c.call_id   -- a model call's own completion item
-ASOF LEFT JOIN (FROM ev WHERE is_result) r ON r.file = c.file AND r.call_id = c.call_id AND r.line >= c.line
+ASOF LEFT JOIN (FROM ev WHERE is_result) r ON r.file = c.file AND r.call_id = c.call_id AND r.level = c.level AND r.line >= c.line
 ASOF LEFT JOIN model p ON c.level = 'nested' AND p.file = c.file AND p.line < c.line
 ASOF LEFT JOIN turns t ON t.file = c.file AND t.line <= c.line
 ASOF LEFT JOIN usage u ON u.file = c.file AND u.line > c.line;
