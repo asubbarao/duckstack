@@ -295,6 +295,9 @@ SELECT false AS allow, CASE WHEN id IS NULL THEN 202 ELSE 200 END AS status,
 FROM called;
 -- query_timeout_ms: a git commit's hooks run ~60 s, past quackapi's 30 s default. Longer work runs backgrounded
 -- inside the pipe ('cmd > log 2>&1 & echo $! |') and a later read_lines reads its log.
+-- Response cap 64 MiB (default 16): one transcript line reaches 21 MB; 32 parallel replies stay under 2 GiB.
+-- Bigger self-dispatch reads write Parquet on dev and return a count.
+SET GLOBAL quackapi_max_response_bytes = 67108864;
 FROM quackapi_serve(9495, host := '127.0.0.1', query_timeout_ms := 120000);
 -- quackapi_serve switches logging off.
 CALL enable_logging(['QueryLog', 'HTTP', 'Quack'], storage := 'file', storage_path := getenv('QUACK_NATIVE_LOG'), storage_buffer_size := 0);
