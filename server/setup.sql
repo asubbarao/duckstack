@@ -406,7 +406,7 @@ FROM quackapi_serve(9495, host := '127.0.0.1', query_timeout_ms := 120000);
 CALL enable_logging(['QueryLog', 'HTTP', 'Quack'], storage := 'file', storage_path := getenv('QUACK_NATIVE_LOG'), storage_buffer_size := 0);
 
 -- Agent transcripts (Claude Code ~/.claude/projects, Codex ~/.codex/sessions and archived_sessions), typed once at ingest
--- into Parquet, one partition per transcript: lake/agent/lines/dir=<its folder>/key=<its name>/data_0.parquet (Codex: dir
+-- into Parquet, one partition per transcript: ~/.duck/lake/agent/dir=<its folder>/key=<its name>/data_0.parquet (Codex: dir
 -- '.codex' and the name without .zst, since a session moves to archived_sessions/ and is compressed in place).
 -- agent.due: transcripts with no partition, or modified later than 10 s before their partition was written (a line
 -- appended while a COPY ran is caught next run). agent.ingest posts one COPY of exactly those files to /sql:
@@ -425,7 +425,7 @@ WITH found AS (
 ), stored AS (   -- hive values are URL-escaped
     SELECT url_decode(file_name(parse_dirpath(parse_dirpath(file)))[5:]) AS dir, url_decode(file_name(parse_dirpath(file))[5:]) AS key,
            file_last_modified(file) AS written
-    FROM glob('/Users/aloksubbarao/.duck/lake/agent/lines/*/*/data_0.parquet')
+    FROM glob('/Users/aloksubbarao/.duck/lake/agent/*/*/data_0.parquet')
 )
 FROM found ANTI JOIN stored ON stored.dir = found.dir AND stored.key = found.key AND stored.written - INTERVAL 10 SECOND > found.modified
 QUALIFY sum(bytes) OVER (ORDER BY modified, path) - bytes < 134217728 AND row_number() OVER (ORDER BY modified, path) <= 64;
@@ -461,7 +461,7 @@ COPY (
                                "arguments": "JSON", "command": "JSON", "changes": "JSON", "prompt": "JSON", "result": "JSON", "error": "JSON",
                                "aggregated_output": "JSON", "stdout": "JSON"}}}') AS j
           FROM (SELECT *, row_number() OVER () AS rn FROM read_ndjson_objects([%s], filename := true, ignore_errors := true)))
-) TO '/Users/aloksubbarao/.duck/lake/agent/lines' (FORMAT parquet, PARTITION_BY (dir, key), OVERWRITE_OR_IGNORE, ROW_GROUP_SIZE 2048);
+) TO '/Users/aloksubbarao/.duck/lake/agent' (FORMAT parquet, PARTITION_BY (dir, key), OVERWRITE_OR_IGNORE, ROW_GROUP_SIZE 2048);
 SET preserve_insertion_order = false
 $s$, string_agg(printf($q$'%s'$q$, path), ', ')))).status AS status
 FROM agent.due HAVING string_agg(path, ', ') IS NOT NULL;
@@ -471,12 +471,12 @@ SELECT cron('FROM agent.ingest', '0 * * * * *');
 -- One row per transcript line: record = the whole line, j = it typed, plus its top-level fields.
 CREATE OR REPLACE VIEW agent.lines AS
 SELECT CASE dir WHEN '.codex' THEN 'codex' ELSE 'claude' END AS source, * EXCLUDE (dir, key)
-FROM read_parquet('/Users/aloksubbarao/.duck/lake/agent/lines/*/*/data_0.parquet', hive_partitioning := true);
+FROM read_parquet('/Users/aloksubbarao/.duck/lake/agent/*/*/data_0.parquet', hive_partitioning := true);
 -- The same view in the lake, for any process that attaches it.
 CREATE SCHEMA IF NOT EXISTS lake.agent;
 CREATE OR REPLACE VIEW lake.agent.lines AS
 SELECT CASE dir WHEN '.codex' THEN 'codex' ELSE 'claude' END AS source, * EXCLUDE (dir, key)
-FROM read_parquet('/Users/aloksubbarao/.duck/lake/agent/lines/*/*/data_0.parquet', hive_partitioning := true);
+FROM read_parquet('/Users/aloksubbarao/.duck/lake/agent/*/*/data_0.parquet', hive_partitioning := true);
 -- One row per tool call with its result: the next result line with the same call id in the same file. level 'model' =
 -- a call the model issued (Claude tool_use; Codex function_call / custom_tool_call / tool_search_call); 'nested' = Codex
 -- work inside a model call (one completed item is its own result), parent_call_id = the model call before it. turn_id =
