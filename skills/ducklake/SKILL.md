@@ -24,8 +24,10 @@ older helpers named `to_lake`, are not DuckLake catalogs.
 the `agents.ext_*` views on dev derive from them. Write to the qualified lake target.
 FTS, vectors and process snapshots remain rebuildable working state.
 
-Agent conversations are not copied into the lake: `agent.stream` on dev reads
-agent_data's `read_conversations()` live (see `/duckstack:agent-stream`).
+Agent transcripts are plain Parquet beside the lake, not lake tables:
+`~/.duck/lake/agent/lines/source=<s>/project=<p>/file_key=<k>/part0.parquet`, one partition per
+transcript file, overwritten by setup.sql's minute cron when the file changes. `agent.lines` on dev and the lake view `lake.agent.lines` read it.
+OpenTelemetry from Claude Code and Codex streams into `lake.otel.otlp_*` (`otlp_serve`).
 
 ## Checked derived tables
 
@@ -55,7 +57,9 @@ SELECT id,ts,message_role FROM lake.agent.stream AT (VERSION => 12) LIMIT 4;
 
 DuckLake versions record committed lake state; they do not replace business-effective
 timestamps or observation dates. CTAS inside DuckLake preserves prior snapshots.
-No automatic snapshot expiration or file cleanup is enabled by this integration.
+`otlp_serve` runs `CHECKPOINT lake` after its commits and sets the lake-wide `expire_older_than` /
+`delete_older_than` to its `maintenance_retention_ms` (30 days in setup.sql): snapshots of every lake
+table older than that are expired, and untracked files under the data path that old are deleted.
 
 ## Isolation and eventual publication
 
