@@ -11,7 +11,7 @@ WITH t AS (
     SEMI JOIN agent.copies ON copies.kind = 'tool_call' AND copies.first_seen AND copies.source = tool_call_analysis.source AND copies.id = call_id AND copies.file = transcript
     WHERE tool_call_analysis.source = 'claude' AND ts >= now() - INTERVAL 30 DAY
     WINDOW w AS (PARTITION BY session_id, transcript ORDER BY ts))
-SELECT rule, count(ts) AS blocks, histogram(next_tool) AS next_tool,
+SELECT rule, count(ts) AS blocks, histogram(next_tool)::VARCHAR AS next_tool,
        sum((next_rule IS NOT DISTINCT FROM rule)::INT) AS next_blocked_same_rule, sum((next_error IS NULL)::INT) AS next_succeeded
 FROM t WHERE rule IS NOT NULL GROUP BY rule ORDER BY blocks DESC;
 
