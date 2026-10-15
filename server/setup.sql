@@ -188,93 +188,31 @@ SELECT * REPLACE ('claude-desktop' AS source) FROM read_conversations(source := 
 UNION ALL BY NAME
 SELECT * REPLACE ('codex' AS source) FROM read_conversations(source := 'codex', path := '/Users/aloksubbarao/.codex');
 
--- Claude tool calls, last 30 days, one row per call; `calls` is what the bash or SQL ran (sitting_duck).
--- The hourly cron rebuilds the Parquet in throwaway clients: the reader self-dispatches one statement per
--- transcript piece to /sql, then a build parses the calls. One mv swaps it in, so the file always exists at boot.
-CREATE OR REPLACE VIEW agent.tool_calls AS FROM read_parquet('/Users/aloksubbarao/.duck/claude_tool_calls/tool_calls.parquet');
-SELECT cron($$
-SELECT content FROM read_lines($cmd$D=/Users/aloksubbarao/.duck/claude_tool_calls; mkdir -p $D/tmp && cd $D && rm -rf lines.next tool_calls.next.parquet && {
-reader() { duckdb :memory: -bail -csv <<'READER'
-.bail on
-LOAD shellfs; LOAD hostfs; LOAD read_lines;
-SET threads = getenv('WIDTH');
-WITH readers AS (
-    SELECT DISTINCT '.' || substr(function_name, 6) AS ext, function_name AS catalog_reader
-    FROM duckdb_functions() WHERE function_type = 'table' AND starts_with(function_name, 'read_')),
-found AS (SELECT rtrim(content, e'\n') AS path, file_extension(path) AS ext FROM read_lines($c$find /Users/aloksubbarao/.claude/projects -type f -name *.jsonl -mtime -30 |$c$)),
-entries AS (
-    SELECT path, ext, parse_dirpath(path) AS parent, file_name(path) AS name,
-           parse_filename(path, true) AS stem, path_split(path) AS parts, len(parts) AS depth, path_type(path) AS type,
-           file_size(path) AS bytes, file_last_modified(path) AS modified,
-           CASE WHEN ends_with(name, '.jsonl.zst') THEN 'read_lines_zstd' WHEN ends_with(name, '.jsonl') THEN 'read_lines'
-                ELSE coalesce(catalog_reader, 'read_blob') END AS reader,
-           bytes * CASE reader WHEN 'read_lines_zstd' THEN 3 ELSE 1 END AS text_bytes,
-           CASE reader
-             WHEN 'read_lines'      THEN printf($s$SELECT '%s' AS file, line_number AS line, content FROM read_lines('%s')$s$, path, path)
-             WHEN 'read_lines_zstd' THEN printf($s$SELECT '%s' AS file, line_number AS line, content FROM read_lines('zstd -dcq "%s" |')$s$, path, path)
-             ELSE printf($s$SELECT '%s' AS file, 1 AS line, to_json(r)::VARCHAR AS content FROM %s('%s') r$s$, path, reader, path) END AS sql_statement
-    FROM found LEFT JOIN readers USING (ext)),
-dirs AS (
-    SELECT (sum(text_bytes) OVER (PARTITION BY parent ORDER BY path) - text_bytes) // 67108864 AS piece, entries.*
-    FROM entries),
-statements AS (
-    SELECT parent, piece, printf($s$COPY (SELECT '%s' AS scope, file, line, '%s' AS parent, %d AS piece,
-       CASE WHEN contains(file, '/.codex/') THEN 'codex' ELSE 'claude' END AS source,
-       CASE WHEN json_valid(content) THEN content::JSON END AS record,
-       CASE WHEN NOT json_valid(content) THEN content END AS bad,
-       coalesce(record ->> 'sessionId', CASE source WHEN 'codex' THEN right(replace(parse_filename(file, true), '.jsonl', ''), 36) END) AS session_id,
-       record ->> 'type' AS type, record -> 'payload' ->> 'type' AS payload_type, record ->> 'timestamp' AS timestamp,
-       record ->> 'uuid' AS uuid, record ->> 'parentUuid' AS parent_uuid,
-       coalesce(record -> 'message' ->> 'role', record -> 'payload' ->> 'role') AS role,
-       coalesce(record -> 'message' ->> 'model', record -> 'payload' ->> 'model') AS model,
-       record -> 'message' ->> 'id' AS message_id,
-       coalesce(record -> 'message' -> 'usage', record -> 'payload' -> 'info' -> 'last_token_usage') AS usage,
-       coalesce(record -> 'payload' ->> 'name', json_extract_string(record, '$.message.content[*].name')::VARCHAR) AS tool_name,
-       coalesce(record -> 'payload' ->> 'call_id', json_extract_string(record, '$.message.content[*].id')::VARCHAR) AS tool_id
-    FROM (%s)) TO '/Users/aloksubbarao/.duck/claude_tool_calls/lines.next'
-    (FORMAT parquet, PARTITION_BY (scope), OVERWRITE_OR_IGNORE, FILENAME_PATTERN 'piece_%s_{i}', ROW_GROUP_SIZE 2048)$s$,
-           getenv('SCOPE'), parent, piece, string_agg(sql_statement, ' UNION ALL ' ORDER BY path), md5(parent || piece)) AS sql
-    FROM dirs GROUP BY parent, piece
-    HAVING CASE getenv('SCOPE') WHEN 'small' THEN sum(text_bytes) <= 67108864 WHEN 'big' THEN sum(text_bytes) > 67108864 END)
-SELECT parent, piece, l.content AS receipt
-FROM statements CROSS JOIN LATERAL read_lines_lateral(printf($c$curl -sS -H content-type:application/json --data-binary @- http://127.0.0.1:9495/sql <<'BODY'
-%s
-BODY
-|$c$, json_object('sql', sql)::VARCHAR)) l;
-READER
-}
-SCOPE=small WIDTH=8 reader > small.receipts && SCOPE=big WIDTH=1 reader > big.receipts &&
-duckdb :memory: -bail <<'BUILD'
-.bail on
-LOAD sitting_duck; LOAD hostfs; LOAD read_lines;
-SET memory_limit = '5GB'; SET threads = 4; SET preserve_insertion_order = false; SET temp_directory = '/Users/aloksubbarao/.duck/claude_tool_calls/tmp';
-SELECT error('reader piece failed: ' || content) FROM read_lines('/Users/aloksubbarao/.duck/claude_tool_calls/*.receipts') WHERE contains(content, 'detail');
-COPY (
-WITH l AS (SELECT file, session_id, timestamp::TIMESTAMPTZ AS ts, type, record FROM read_parquet('/Users/aloksubbarao/.duck/claude_tool_calls/lines.next/*/*.parquet', hive_partitioning := true) WHERE type IN ('assistant', 'user') AND timestamp::TIMESTAMPTZ >= now() - INTERVAL 30 DAY),
-blocks AS (SELECT file, session_id, ts, type, unnest(from_json(json_extract(record, '$.message.content'), '["JSON"]')) AS b FROM l WHERE json_type(json_extract(record, '$.message.content')) = 'ARRAY'),
-uses AS (SELECT json_extract_string(b, '$.id') AS call_id, arg_min({'file': file, 'session_id': session_id, 'ts': ts, 'name': json_extract_string(b, '$.name'), 'input': json_extract(b, '$.input')}, ts) AS u FROM blocks WHERE type = 'assistant' AND json_extract_string(b, '$.type') = 'tool_use' GROUP BY call_id),
-results AS (SELECT json_extract_string(b, '$.tool_use_id') AS call_id, arg_min({'is_error': coalesce(json_extract_string(b, '$.is_error')::BOOLEAN, false), 'bytes': strlen(json_extract(b, '$.content')::VARCHAR)}, ts) AS r FROM blocks WHERE type = 'user' AND json_extract_string(b, '$.type') = 'tool_result' GROUP BY call_id),
-keyed AS (SELECT u.*, r.is_error, r.bytes AS result_bytes,
-    CASE WHEN json_extract_string(u.input, '$.command') IS NOT NULL THEN 'command' WHEN json_extract_string(u.input, '$.sql') IS NOT NULL THEN 'sql' WHEN json_extract_string(u.input, '$.statement') IS NOT NULL THEN 'statement'
-         WHEN json_extract_string(u.input, '$.file_path') IS NOT NULL THEN 'file_path' WHEN json_extract_string(u.input, '$.path') IS NOT NULL THEN 'path' WHEN json_extract_string(u.input, '$.url') IS NOT NULL THEN 'url'
-         WHEN json_extract_string(u.input, '$.pattern') IS NOT NULL THEN 'pattern' WHEN json_extract_string(u.input, '$.query') IS NOT NULL THEN 'query' WHEN json_extract_string(u.input, '$.prompt') IS NOT NULL THEN 'prompt'
-         WHEN json_extract_string(u.input, '$.message') IS NOT NULL THEN 'message' WHEN json_extract_string(u.input, '$.skill') IS NOT NULL THEN 'skill' END AS code_key
-  FROM uses LEFT JOIN results USING (call_id)),
-parsed AS (SELECT session_id,
-    CASE WHEN starts_with(file_name(file), 'agent-') THEN replace(replace(file_name(file), 'agent-', ''), '.jsonl', '') ELSE 'main' END AS agent,
-    ts,
-    CASE WHEN starts_with(name, 'mcp__') THEN string_split(name, '__')[2] || '.' || string_split(name, '__')[3] ELSE name END AS tool,
-    CASE code_key WHEN 'command' THEN 'bash' WHEN 'sql' THEN 'sql' WHEN 'statement' THEN 'sql' WHEN 'file_path' THEN 'path' WHEN 'path' THEN 'path' WHEN 'url' THEN 'url' ELSE CASE WHEN code_key IS NULL THEN 'json' ELSE 'text' END END AS lang,
-    coalesce(json_extract_string(input, '$.' || code_key), input::VARCHAR) AS code,
-    CASE WHEN code_key IS NULL THEN input ELSE json_merge_patch(input, json_object(code_key, NULL)) END AS args,
-    CASE lang WHEN 'bash' THEN list_distinct(list_transform(list_filter(parse_ast_list(code, 'bash'), lambda n: n.type = 'command_name'), lambda n: n.peek))
-              WHEN 'sql' THEN list_distinct(list_transform(list_filter(parse_ast_list(code, 'sql'), lambda n: n.type = 'invocation'), lambda n: lower(n.name))) END AS calls,
-    is_error, result_bytes FROM keyed)
-SELECT * FROM parsed ORDER BY ts
-) TO '/Users/aloksubbarao/.duck/claude_tool_calls/tool_calls.next.parquet' (FORMAT parquet);
-BUILD
-} > run.log 2>&1 && mv tool_calls.next.parquet tool_calls.parquet && rm -rf lines && mv lines.next lines; echo "exit=$?" |$cmd$)
-$$, '0 20 * * * *');
+-- One row per tool call, from agent.stream; WHERE source and ts as needed (source reaches the reader, so
+-- source = 'claude' skips the Codex read). A call's first copy wins across resumed transcripts. programs is
+-- what the bash ran, including commands inside shellfs pipes in SQL; functions is what the SQL called.
+CREATE OR REPLACE VIEW agent.tool_calls AS
+WITH call AS (
+    SELECT source, tool_use_id, arg_min({'session_id': session_id, 'transcript': file_name, 'ts': timestamp::TIMESTAMPTZ, 'tool': tool_name, 'input': tool_input::JSON}, timestamp) AS c
+    FROM agent.stream WHERE message_type = 'assistant' AND tool_use_id IS NOT NULL GROUP BY source, tool_use_id
+), result AS (
+    SELECT source, tool_use_id, arg_min({'content': message_content, 'failed': json_extract_string(raw_event, '$.message.content[0].is_error') = 'true'}, timestamp) AS r
+    FROM agent.stream WHERE message_type = 'tool_result' GROUP BY source, tool_use_id
+), parsed AS (
+    SELECT source, c.session_id, c.transcript, c.ts, c.tool, c.input,
+           c.input ->> 'command' AS command,
+           coalesce(c.input ->> 'sql', c.input ->> 'statement') AS sql,
+           parse_ast_list(sql, 'sql') AS sql_ast,
+           list_transform(list_filter(sql_ast, lambda n: n.type = 'literal'),
+                          lambda n: CASE WHEN starts_with(n.name, '$') THEN string_split(n.name, '$' || string_split(n.name, '$')[2] || '$')[2] ELSE trim(n.name, $q$'$q$) END) AS literals,
+           list_transform(list_filter(literals, lambda s: ends_with(rtrim(s), '|')), lambda s: rtrim(rtrim(s), '|')) AS pipes,
+           list_distinct(flatten(list_transform(list_prepend(command, pipes), lambda p: list_transform(list_filter(parse_ast_list(p, 'bash'), lambda n: n.type = 'command_name'), lambda n: n.peek)))) AS programs,
+           list_distinct(list_transform(list_filter(sql_ast, lambda n: n.type = 'invocation'), lambda n: lower(n.name))) AS functions,
+           CASE WHEN r.failed THEN r.content END AS error,
+           strlen(r.content) AS result_bytes
+    FROM call LEFT JOIN result USING (source, tool_use_id)
+)
+SELECT * EXCLUDE (command, sql, sql_ast, literals, pipes) FROM parsed;
 
 -- Read every minute by the mac-metrics collector (launchd com.alok.mac-metrics, ~/Documents/mac-metrics-incubator).
 CREATE OR REPLACE VIEW agents.mac_query_activity AS
@@ -495,4 +433,3 @@ SET GLOBAL quackapi_max_response_bytes = 67108864;
 FROM quackapi_serve(9495, host := '127.0.0.1', query_timeout_ms := 120000);
 -- quackapi_serve switches logging off.
 CALL enable_logging(['QueryLog', 'HTTP', 'Quack'], storage := 'file', storage_path := getenv('QUACK_NATIVE_LOG'), storage_buffer_size := 0);
-
