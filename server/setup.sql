@@ -299,6 +299,8 @@ CREATE OR REPLACE ROUTE metrics GET '/metrics' AS SELECT text FROM meta.promethe
 -- EXPLAIN (ANALYZE, FORMAT json) through Quack, keeps the profile as ~/.duck/logs/profiles/<UTC time>.json (a COPY
 -- dispatched to /sql), and answers one HTML page: headline metrics, time per operator type, and the operator tree in
 -- preorder with each node's share of operator time. jsonata walks the children; the EXPLAIN_ANALYZE wrapper is skipped.
+-- Thousands separators come from printf('%,d'): dev's catalog has a two-argument main.format(fmt, val) macro that
+-- shadows DuckDB's format('{:,}', n) and fails on numbers.
 SELECT content FROM read_text('mkdir -p /Users/aloksubbarao/.duck/logs/profiles |');
 CREATE OR REPLACE ROUTE profile GET '/profile' AS
 WITH run AS (
@@ -323,7 +325,7 @@ WITH run AS (
 ), phase AS (
     SELECT profile, path, saved_status, name, sum(seconds) AS seconds, sum(part) AS part, count(idx) AS nodes,
            list({idx: idx, name: name, indent: depth * 18, seconds: printf('%.6f', seconds), pct: printf('%.1f%%', part * 100),
-                 card: format('{:,}', card), est: coalesce(est, '?'), scanned: format('{:,}', scanned), extra: coalesce(extra, []), hot: part >= 0.25}) AS members
+                 card: printf('%,d', card), est: coalesce(est, '?'), scanned: printf('%,d', scanned), extra: coalesce(extra, []), hot: part >= 0.25}) AS members
     FROM share GROUP BY ALL
 )
 SELECT tera_render($t$<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
@@ -364,7 +366,7 @@ the query ran {{ latency }} s end to end. {% if saved == "200" %}Profile saved t
     'nodes', list_sort(flatten(list(members))),
     'cards', [{t: 'Latency', v: printf('%.4f s', (profile ->> 'latency')::DOUBLE)},
               {t: 'Operator CPU', v: printf('%.4f s', sum(seconds))},
-              {t: 'Rows scanned', v: format('{:,}', (profile ->> 'cumulative_rows_scanned')::BIGINT)},
+              {t: 'Rows scanned', v: printf('%,d', (profile ->> 'cumulative_rows_scanned')::BIGINT)},
               {t: 'Read', v: format_bytes((profile ->> 'total_bytes_read')::BIGINT)},
               {t: 'Written', v: format_bytes((profile ->> 'total_bytes_written')::BIGINT)},
               {t: 'Peak buffer memory', v: format_bytes((profile ->> 'system_peak_buffer_memory')::BIGINT)},
