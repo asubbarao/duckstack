@@ -1,9 +1,9 @@
 -- Dev DuckDB. launchd runs `duckdb -bail ~/.duck/db/dev.duckdb -init setup.sql` and keeps stdin open.
 -- Dev boots ~/.duck/deploy/server/setup.sql, the duckdb-skills branch `deploy`. A save here changes nothing until
 -- it is committed and the branch moved: git branch -f deploy <commit>; the watcher restarts dev within 30 s.
-SET GLOBAL extension_directory = '/Users/aloksubbarao/.duck/extensions';
-SET GLOBAL secret_directory = '/Users/aloksubbarao/.duck/secrets';
-SET GLOBAL temp_directory = '/Users/aloksubbarao/.duck/tmp';
+SET GLOBAL extension_directory = '~/.duck/extensions';
+SET GLOBAL secret_directory = '~/.duck/secrets';
+SET GLOBAL temp_directory = '~/.duck/tmp';
 -- DuckDB's performance guide: 1-4 GB per thread. 10 threads x 1.6 GB; RSS runs 1.5-2.5 GB above this
 -- (reader/JSON allocations are untracked), and the 48 GB machine keeps ~30 GB for everything else.
 SET GLOBAL memory_limit = '16GB';
@@ -14,7 +14,7 @@ SET GLOBAL http_retries = 0;
 -- INSTALL is a no-op once a file exists, so without this every boot reloads the first build ever downloaded.
 -- A child process updates the files before anything below loads them; offline, it prints the error and boot goes on.
 INSTALL shellfs FROM community; LOAD shellfs;
-SELECT content FROM read_text($u$/opt/homebrew/bin/duckdb -csv :memory: -c "SET extension_directory = '/Users/aloksubbarao/.duck/extensions'; UPDATE EXTENSIONS;" 2>&1; true |$u$);
+SELECT content FROM read_text($u$/opt/homebrew/bin/duckdb -csv :memory: -c "SET extension_directory = '~/.duck/extensions'; UPDATE EXTENSIONS;" 2>&1; true |$u$);
 INSTALL quack; LOAD quack;
 INSTALL httpfs; LOAD httpfs;
 INSTALL ducklake; LOAD ducklake;
@@ -46,8 +46,8 @@ INSTALL fts; LOAD fts;
 -- Dev works in the inframe checkout: duck_tails calls take '.' or no path at all.
 FROM cd(getenv('HOME') || '/inframe');
 
-ATTACH IF NOT EXISTS 'ducklake:/Users/aloksubbarao/.duck/lake/duckstack/catalog.ducklake' AS lake
-    (DATA_PATH '/Users/aloksubbarao/.duck/lake/duckstack/data/', DATA_INLINING_ROW_LIMIT 0);
+ATTACH IF NOT EXISTS 'ducklake:~/.duck/lake/duckstack/catalog.ducklake' AS lake
+    (DATA_PATH '~/.duck/lake/duckstack/data/', DATA_INLINING_ROW_LIMIT 0);
 
 CALL enable_logging(['QueryLog', 'HTTP', 'Quack'], storage := 'file', storage_path := getenv('QUACK_NATIVE_LOG'), storage_buffer_size := 0);
 SELECT cron('CHECKPOINT', '45 */5 * * * *');
@@ -66,7 +66,7 @@ SELECT time_bucket(INTERVAL 1 MINUTE, started_at) AS minute, count(started_at) A
        max(duration_ms) AS max_ms, sum(duration_ms) / 1000.0 AS wall_seconds
 FROM meta.remote_query_history GROUP BY ALL;
 CREATE OR REPLACE VIEW meta.server_events AS
-FROM read_json('/Users/aloksubbarao/.duck/logs/server-events*.jsonl', format := 'newline_delimited', union_by_name := true);
+FROM read_json('~/.duck/logs/server-events*.jsonl', format := 'newline_delimited', union_by_name := true);
 -- GET /metrics: Prometheus text, computed per scrape.
 CREATE OR REPLACE VIEW meta.prometheus_metrics AS
 WITH q AS (
@@ -154,11 +154,11 @@ $$, '0 15 * * * *');
 
 CREATE SCHEMA IF NOT EXISTS agent;
 CREATE OR REPLACE VIEW agent.stream AS
-SELECT * REPLACE ('claude' AS source) FROM read_conversations(source := 'claude', path := '/Users/aloksubbarao/.claude')
+SELECT * REPLACE ('claude' AS source) FROM read_conversations(source := 'claude', path := '~/.claude')
 UNION ALL BY NAME
-SELECT * REPLACE ('claude-desktop' AS source) FROM read_conversations(source := 'claude-desktop', path := '/Users/aloksubbarao/Library/Application Support/Claude')
+SELECT * REPLACE ('claude-desktop' AS source) FROM read_conversations(source := 'claude-desktop', path := '~/Library/Application Support/Claude')
 UNION ALL BY NAME
-SELECT * REPLACE ('codex' AS source) FROM read_conversations(source := 'codex', path := '/Users/aloksubbarao/.codex');
+SELECT * REPLACE ('codex' AS source) FROM read_conversations(source := 'codex', path := '~/.codex');
 
 -- Read every minute by the mac-metrics collector (launchd com.alok.mac-metrics, ~/Documents/mac-metrics-incubator).
 CREATE OR REPLACE VIEW agents.mac_query_activity AS
