@@ -76,31 +76,33 @@ WHERE severity = 'error';
 -- when: a retro on agent behaviour: the same brief went to several Claude/Codex sessions and the question is which
 --   of them ran the repo flow (Skill calls), asked the user anything (AskUserQuestion), wrote Linear, opened a PR.
 --   Scope is the sessions whose own user turn contains a phrase from the brief; every tool call of those sessions
---   stays in, flagged with CASE, never filtered. Main thread only (is_sub_agent IS DISTINCT FROM true).
--- uses: agent.stream (dev DuckDB, agent_data)
--- returns: one row per (system, session_id): cwds VARCHAR[] (every working directory seen), first_ts VARCHAR
+--   stays in, flagged with CASE, never filtered. Main thread only (agent_id IS NULL: no Claude subagent files; each
+--   Codex thread is its own session).
+-- uses: agent.messages, agent.tool_calls, agent.sessions (dev DuckDB, the transcript store; was agent.stream until 2026-10-15)
+-- returns: one row per (source, session_id): cwds VARCHAR[] (every working directory seen), first_ts VARCHAR
 --   (local time of the first tool call), skills VARCHAR[] (distinct Skill names called), n_ask_user, n_linear_writes,
 --   n_pr_creates, n_design_doc_writes BIGINT (sums of 0/1 flags), n_tools BIGINT (len of all tool calls).
--- tested: the 2026-10-07 "Usage limits for Projects" brief: 2 Claude + 9 Codex sessions, zero flow-skill calls.
+-- tested: the 2026-10-07 "Usage limits for Projects" brief: 2 Claude + 9 Codex sessions, zero flow-skill calls
+--   (agent.stream version; this agent.* version is not re-run yet).
 WITH topic AS (
-  SELECT DISTINCT session_id FROM agent.stream
-  WHERE ts >= now() - INTERVAL <n> DAY AND message_role = 'user' AND tool_use_id IS NULL AND contains(message_content, '<phrase from the brief>')
+  SELECT DISTINCT session_id FROM agent.messages
+  WHERE ts >= now() - INTERVAL <n> DAY AND role = 'user' AND contains(text, '<phrase from the brief>')
 ), calls AS (
-  SELECT s.* EXCLUDE (raw_event, metadata, tool_data),
-         CASE WHEN s.tool_name = 'Skill' THEN s.tool_input ->> '$.skill' END AS skill_name,
-         CASE WHEN s.tool_name = 'AskUserQuestion' THEN 1 ELSE 0 END AS is_ask_user,
-         CASE WHEN contains(s.tool_name, 'save_issue') THEN 1 WHEN contains(s.tool_name, 'save_project') THEN 1 ELSE 0 END AS is_linear_write,
-         CASE WHEN contains(s.tool_input, 'gh pr create') THEN 1 ELSE 0 END AS is_pr_create,
-         CASE WHEN contains(s.tool_input, '<design doc file name>') AND s.tool_name IN ('Write', 'Edit', 'apply_patch', 'shell', 'Bash') THEN 1 ELSE 0 END AS is_design_doc_write
-  FROM agent.stream s JOIN topic USING (session_id)
-  WHERE s.tool_name IS NOT NULL AND s.is_sub_agent IS DISTINCT FROM true
+  SELECT t.source, t.session_id, t.ts, t.tool_name, s.cwd,
+         CASE WHEN t.tool_name = 'Skill' THEN t.input ->> '$.skill' END AS skill_name,
+         CASE WHEN t.tool_name = 'AskUserQuestion' THEN 1 ELSE 0 END AS is_ask_user,
+         CASE WHEN contains(t.tool_name, 'save_issue') THEN 1 WHEN contains(t.tool_name, 'save_project') THEN 1 ELSE 0 END AS is_linear_write,
+         CASE WHEN contains(t.input::VARCHAR, 'gh pr create') THEN 1 ELSE 0 END AS is_pr_create,
+         CASE WHEN contains(t.input::VARCHAR, '<design doc file name>') AND t.tool_name IN ('Write', 'Edit', 'apply_patch', 'shell', 'Bash', 'exec_command') THEN 1 ELSE 0 END AS is_design_doc_write
+  FROM agent.tool_calls t JOIN topic USING (session_id) LEFT JOIN agent.sessions s USING (file)
+  WHERE t.level = 'model' AND t.agent_id IS NULL
 )
-SELECT system, session_id, array_agg(DISTINCT cwd) AS cwds,
+SELECT source, session_id, array_agg(DISTINCT cwd) AS cwds,
        strftime(list_aggregate(array_agg(ts), 'min') AT TIME ZONE 'America/Los_Angeles', '%m-%d %H:%M') AS first_ts,
        array_agg(DISTINCT skill_name) FILTER (WHERE skill_name IS NOT NULL) AS skills,
        sum(is_ask_user) AS n_ask_user, sum(is_linear_write) AS n_linear_writes, sum(is_pr_create) AS n_pr_creates,
        sum(is_design_doc_write) AS n_design_doc_writes, len(array_agg(tool_name)) AS n_tools
-FROM calls GROUP BY system, session_id ORDER BY first_ts LIMIT 25;
+FROM calls GROUP BY source, session_id ORDER BY first_ts LIMIT 25;
 
 
 -- ## How do each author's PRs look against the /ship fingerprint? (Claude Fable 5.1, 2026-10-08)
