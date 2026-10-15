@@ -404,7 +404,6 @@ SET GLOBAL quackapi_max_response_bytes = 67108864;
 FROM quackapi_serve(9495, host := '127.0.0.1', query_timeout_ms := 120000);
 -- quackapi_serve switches logging off.
 CALL enable_logging(['QueryLog', 'HTTP', 'Quack'], storage := 'file', storage_path := getenv('QUACK_NATIVE_LOG'), storage_buffer_size := 0);
-
 -- Agent transcripts (Claude Code ~/.claude/projects, Codex ~/.codex/sessions and archived_sessions), typed once at ingest
 -- into Parquet, one partition per transcript: ~/.duck/lake/agent/project=<folder under projects/>/key=<rest of its
 -- path>/data_0.parquet, from hostfs path_split (Codex: project '.codex', key = the file name without .zst, since a session
@@ -412,10 +411,10 @@ CALL enable_logging(['QueryLog', 'HTTP', 'Quack'], storage := 'file', storage_pa
 -- agent.due: transcripts with no partition, or modified later than 10 s before their partition was written (a line
 -- appended while a COPY ran is caught next run), in chunks of at most 64 files / 128 MB: past
 -- partitioned_write_max_open_files (100) a partition gets a second file that a later rewrite would not replace.
--- agent.ingest posts each chunk's COPY to /sql: read_ndjson_objects globs the chunk's directories (.zst too) and keeps
--- its files, json_transform types every line with one shape for both sources, and OVERWRITE_OR_IGNORE replaces each
--- one's data_0.parquet. The run here at boot fills a new store before the views below bind to it.
--- line = the line's place in its file.
+-- agent.ingest posts each chunk's COPY to /sql: read_text reads the chunk's files, each splits into numbered lines,
+-- json_transform types every line with one shape for both sources (bad = a line that is not JSON), and
+-- OVERWRITE_OR_IGNORE replaces each one's data_0.parquet. The run here at boot fills a new store before the views below
+-- bind to it.
 CREATE SCHEMA IF NOT EXISTS agent;
 CREATE OR REPLACE VIEW agent.due AS
 WITH found AS (
@@ -432,22 +431,24 @@ WITH found AS (
            file_last_modified(file) AS written
     FROM glob('/Users/aloksubbarao/.duck/lake/agent/*/*/data_0.parquet')
 )
-SELECT path, dir, ext, project, key, greatest(sum(bytes) OVER w // 134217728, (row_number() OVER w - 1) // 64) AS chunk
+SELECT path, project, key,
+       CASE ext WHEN '.jsonl.zst' THEN 'decompress+zstd:' || path ELSE path END AS src,   -- .zst through scalarfs
+       greatest(sum(bytes) OVER w // 134217728, (row_number() OVER w - 1) // 64) AS chunk
 FROM found ANTI JOIN stored ON stored.project = found.project AND stored.key = found.key AND stored.written - INTERVAL 10 SECOND > found.modified
 WINDOW w AS (ORDER BY modified, path);
--- One COPY per chunk, posted in order: the reader globs the chunk's directories and keeps its files (the filename filter
--- is pushed into the reader, which opens only those). project / key come from agent.due itself.
+-- One COPY per chunk: read_text reads the chunk's files (a directory glob would read every file in it: read_text does
+-- not push a filename filter down) and each splits into its numbered lines: unnest + generate_subscripts in the select
+-- list (a CROSS JOIN UNNEST carries the whole file into every line's row). project / key come from agent.due itself.
 CREATE OR REPLACE VIEW agent.ingest AS
 SELECT chunk, string_agg(path, ', ') AS files, quackapi_post('http://127.0.0.1:9495/sql', json_object('sql', printf($s$
-SET preserve_insertion_order = true;   -- rn follows the files' own order; /sql's connection is shared, so set back below
 COPY (
-    SELECT d.project, d.key, file, line, record, j,
-           coalesce(j.sessionId, j.session_id, CASE d.project WHEN '.codex' THEN right(replace(d.key, '.jsonl', ''), 36) END) AS session_id,
+    SELECT project, key, file, line, record, bad, j,
+           coalesce(j.sessionId, j.session_id, CASE project WHEN '.codex' THEN right(replace(key, '.jsonl', ''), 36) END) AS session_id,
            j.agentId AS agent_id, j.type, j.payload.type AS payload_type, TRY_CAST(j.timestamp AS TIMESTAMPTZ) AS ts,
            coalesce(j.promptId, j.payload.turn_id, j.payload.internal_chat_message_metadata_passthrough.turn_id) AS turn_id,
            CASE json_type(record, '$.message.content') WHEN 'VARCHAR' THEN record ->> '$.message.content' END AS message_text
-    FROM (SELECT filename AS file, row_number() OVER (PARTITION BY filename ORDER BY rn) AS line,
-                 json AS record, json_transform(json, '{
+    FROM (SELECT project, key, file, line, CASE WHEN json_valid(text) THEN text::JSON END AS record,
+                 CASE WHEN record IS NULL THEN text END AS bad, json_transform(record, '{
                   "type": "VARCHAR", "subtype": "VARCHAR", "timestamp": "VARCHAR", "sessionId": "VARCHAR", "session_id": "VARCHAR",
                   "agentId": "VARCHAR", "promptId": "VARCHAR", "requestId": "VARCHAR", "cwd": "VARCHAR", "gitBranch": "VARCHAR", "version": "VARCHAR",
                   "message": {"id": "VARCHAR", "model": "VARCHAR", "stop_reason": "VARCHAR",
@@ -467,12 +468,11 @@ COPY (
                       "item": {"id": "VARCHAR", "type": "VARCHAR", "tool": "VARCHAR", "server": "VARCHAR", "status": "VARCHAR", "exit_code": "BIGINT",
                                "arguments": "JSON", "command": "JSON", "changes": "JSON", "prompt": "JSON", "result": "JSON", "error": "JSON",
                                "aggregated_output": "JSON", "stdout": "JSON"}}}') AS j
-          FROM (SELECT *, row_number() OVER () AS rn FROM read_ndjson_objects([%s], filename := true, ignore_errors := true)
-                WHERE filename IN (%s)))
-    JOIN agent.due d ON d.path = file
-) TO '/Users/aloksubbarao/.duck/lake/agent' (FORMAT parquet, PARTITION_BY (project, key), OVERWRITE_OR_IGNORE, ROW_GROUP_SIZE 2048);
-SET preserve_insertion_order = false
-$s$, string_agg(DISTINCT printf($q$'%s/*%s'$q$, dir, ext), ', '), string_agg(printf($q$'%s'$q$, path), ', ')))).status AS status
+          FROM (SELECT d.project, d.key, d.path AS file, unnest(t.parts) AS text, generate_subscripts(t.parts, 1) AS line
+                FROM (SELECT filename, string_split(content, e'\n')[:-2] AS parts FROM read_text([%s])) t   -- [:-2]: after the last newline
+                JOIN agent.due d ON d.src = t.filename))
+) TO '/Users/aloksubbarao/.duck/lake/agent' (FORMAT parquet, PARTITION_BY (project, key), OVERWRITE_OR_IGNORE, ROW_GROUP_SIZE 2048)
+$s$, string_agg(printf($q$'%s'$q$, src), ', ')))).status AS status
 FROM agent.due GROUP BY chunk ORDER BY chunk;
 FROM agent.ingest;
 SELECT cron('FROM agent.ingest', '0 * * * * *');
