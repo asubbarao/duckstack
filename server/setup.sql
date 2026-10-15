@@ -180,13 +180,247 @@ $t$, json_object('url', url), autoescape := false))) ->> '$.status' AS status
 FROM due
 $$, '0 15 * * * *');
 
+-- Agent transcripts (Claude Code ~/.claude/projects, Codex ~/.codex/sessions and archived_sessions) as plain Parquet,
+-- one folder per transcript: ~/.duck/lake/agent/lines/source=<claude|codex>/<key>/from-<first line>.parquet. key = the
+-- path below ~/.claude (its folders kept: Desktop scratch-workspace paths overflow a 255-byte flat name); for Codex
+-- the file name, since a session moves from sessions/<date>/ to archived_sessions/; .jsonl.zst -> .jsonl, since
+-- Codex compresses sessions in place.
+-- _empty.parquet (no rows) is the store's schema and keeps the views' glob matching when the store is new. Deleting
+-- the store needs a restart, which rewrites it; the cron then refills everything.
 CREATE SCHEMA IF NOT EXISTS agent;
-CREATE OR REPLACE VIEW agent.stream AS
-SELECT * REPLACE ('claude' AS source) FROM read_conversations(source := 'claude', path := '/Users/aloksubbarao/.claude')
-UNION ALL BY NAME
-SELECT * REPLACE ('claude-desktop' AS source) FROM read_conversations(source := 'claude-desktop', path := '/Users/aloksubbarao/Library/Application Support/Claude')
-UNION ALL BY NAME
-SELECT * REPLACE ('codex' AS source) FROM read_conversations(source := 'codex', path := '/Users/aloksubbarao/.codex');
+SELECT content FROM read_text('mkdir -p /Users/aloksubbarao/.duck/lake/agent/lines |');
+COPY (SELECT NULL::VARCHAR AS source, NULL::VARCHAR AS file, NULL::BIGINT AS line, NULL::JSON AS record, NULL::VARCHAR AS bad,
+             NULL::VARCHAR AS session_id, NULL::VARCHAR AS agent_id, NULL::VARCHAR AS type, NULL::VARCHAR AS payload_type,
+             NULL::VARCHAR AS record_type, NULL::TIMESTAMPTZ AS ts, NULL::VARCHAR AS uuid, NULL::VARCHAR AS parent_uuid,
+             NULL::VARCHAR AS turn_id, NULL::UBIGINT AS src_bytes, NULL::TIMESTAMP AS src_modified LIMIT 0)
+TO '/Users/aloksubbarao/.duck/lake/agent/lines/_empty.parquet' (FORMAT parquet);
+-- Every minute, only new lines: a transcript with no part, or grown past the src_bytes its parts recorded, gets one
+-- part from its next line on. One that shrank, was compressed (renamed), or sits an hour idle with several parts is
+-- re-read whole into from-1 after its folder is removed. A line without its newline yet waits for the next run.
+-- Transcripts deleted from disk keep their parts. The first run reads the whole history (~1.2M lines).
+-- One mkdir + COPY per transcript, self-dispatched to /sql: reads under 16 MB of text together (quackapi_post, up
+-- to 32 at once), larger ones one at a time (http_post stops waiting after 10 s; the COPY still finishes).
+SELECT cron($$
+WITH found AS (
+    SELECT rtrim(content, e'\n') AS path, CASE WHEN contains(path, '/.codex/') THEN 'codex' ELSE 'claude' END AS source,
+           replace(CASE source WHEN 'codex' THEN file_name(path) ELSE substr(path, strpos(path, '/.claude/') + 9) END, '.jsonl.zst', '.jsonl') AS key,
+           '/Users/aloksubbarao/.duck/lake/agent/lines/source=' || source || '/' || key AS dir,
+           file_size(path) AS bytes, file_last_modified(path) AS modified
+    FROM read_lines($c$find /Users/aloksubbarao/.claude/projects /Users/aloksubbarao/.codex/sessions /Users/aloksubbarao/.codex/archived_sessions -type f -name '*.jsonl' -o -type f -name '*.jsonl.zst' |$c$)
+), stored AS (
+    SELECT parse_dirpath(filename) AS dir, list(DISTINCT file) AS files, count(DISTINCT filename) AS parts,
+           max(line) AS max_line, max(src_bytes) AS src_bytes
+    FROM read_parquet('/Users/aloksubbarao/.duck/lake/agent/lines/**/*.parquet', filename := true, hive_partitioning := false) GROUP BY ALL
+), due AS (
+    SELECT found.*, max_line, src_bytes,
+           CASE WHEN files IS NULL THEN 'new'
+                WHEN files <> [path] THEN 'reread'
+                WHEN bytes < src_bytes THEN 'reread'
+                WHEN parts > 1 AND modified < now() - INTERVAL 1 HOUR THEN 'reread'
+                WHEN bytes > src_bytes THEN 'append' END AS action,
+           CASE action WHEN 'append' THEN max_line + 1 ELSE 1 END AS first_line,
+           (bytes - CASE action WHEN 'append' THEN src_bytes ELSE 0 END) * CASE WHEN ends_with(path, '.zst') THEN 3 ELSE 1 END AS text_bytes
+    FROM found LEFT JOIN stored USING (dir)
+), statements AS (
+    SELECT path, action, first_line, text_bytes, printf($s$
+SELECT content FROM read_text($p$%s mkdir -p "%s" |$p$);
+COPY (SELECT source, file, line, record, bad, coalesce(h.sessionId, h.session_id, %s) AS session_id, h.agentId AS agent_id,
+             h.type AS type, h.payload.type AS payload_type,
+             concat_ws('/', h.type, h.payload.type, h.subtype, h.attachment.type, h.payload.item.type) AS record_type,
+             TRY_CAST(h.timestamp AS TIMESTAMPTZ) AS ts, h.uuid AS uuid, h.parentUuid AS parent_uuid,
+             coalesce(h.promptId, h.payload.turn_id, h.payload.internal_chat_message_metadata_passthrough.turn_id) AS turn_id,
+             src_bytes, src_modified
+      FROM (SELECT '%s' AS source, '%s' AS file, line_number AS line, rtrim(content, e'\n') AS text,
+                   CASE WHEN json_valid(text) THEN text::JSON END AS record, CASE WHEN record IS NULL THEN text END AS bad,
+                   json_transform(record, '{"sessionId": "VARCHAR", "session_id": "VARCHAR", "agentId": "VARCHAR", "type": "VARCHAR",
+                       "subtype": "VARCHAR", "timestamp": "VARCHAR", "uuid": "VARCHAR", "parentUuid": "VARCHAR", "promptId": "VARCHAR",
+                       "attachment": {"type": "VARCHAR"}, "payload": {"type": "VARCHAR", "turn_id": "VARCHAR", "item": {"type": "VARCHAR"},
+                       "internal_chat_message_metadata_passthrough": {"turn_id": "VARCHAR"}}}') AS h,
+                   %d::UBIGINT AS src_bytes, '%s'::TIMESTAMP AS src_modified
+            FROM read_lines('%s', lines := '%d-') WHERE ends_with(content, e'\n')))
+TO '%s/from-%d.parquet' (FORMAT parquet, ROW_GROUP_SIZE 2048)$s$,
+    CASE action WHEN 'reread' THEN printf('rm -rf "%s";', dir) ELSE '' END, dir,
+    CASE source WHEN 'codex' THEN printf('''%s''', right(replace(parse_filename(path, true), '.jsonl', ''), 36)) ELSE 'NULL' END,
+    source, path, bytes, modified, CASE WHEN ends_with(path, '.zst') THEN printf('zstd -dcq "%s" |', path) ELSE path END,
+    first_line, dir, first_line) AS sql
+    FROM due WHERE action IS NOT NULL
+)
+SELECT path, action, first_line,
+       CASE WHEN text_bytes < 16777216 THEN (quackapi_post('http://127.0.0.1:9495/sql', json_object('sql', sql))).status END AS small,
+       CASE WHEN text_bytes >= 16777216 THEN http_post('http://127.0.0.1:9495/sql', MAP {'Content-Type': 'application/json'}, json_object('sql', sql)) ->> '$.status' END AS big
+FROM statements
+$$, '0 * * * * *');
+
+-- One row per transcript line: record is the whole line as JSON (bad = a line that is not JSON); the other columns
+-- are its top-level fields. union_by_name: a column added to the parts later shows up without a schema change.
+CREATE OR REPLACE VIEW agent.lines AS
+FROM read_parquet('/Users/aloksubbarao/.duck/lake/agent/lines/**/*.parquet', union_by_name := true, hive_partitioning := false);
+-- The same view in the lake, for any process that attaches it.
+CREATE SCHEMA IF NOT EXISTS lake.agent;
+CREATE OR REPLACE VIEW lake.agent.lines AS
+FROM read_parquet('/Users/aloksubbarao/.duck/lake/agent/lines/**/*.parquet', union_by_name := true, hive_partitioning := false);
+-- Claude message.content, one row per block (a string content is one text block); response_id = message.id.
+CREATE OR REPLACE VIEW agent.blocks AS
+WITH m AS (
+    SELECT file, line, session_id, agent_id, ts, json_transform(record, '{"requestId": "VARCHAR",
+             "message": {"id": "VARCHAR", "role": "VARCHAR", "model": "VARCHAR", "content": "JSON"}}') AS j
+    FROM agent.lines WHERE source = 'claude' AND type IN ('user', 'assistant'))
+SELECT file, line, session_id, agent_id, ts, j.message.role AS role, j.message.id AS response_id, j.requestId AS request_id,
+       j.message.model AS model, b.idx, b.block
+FROM m CROSS JOIN UNNEST(from_json(CASE json_type(j.message.content) WHEN 'ARRAY' THEN j.message.content
+                                        ELSE json_array(json_object('type', 'text', 'text', j.message.content ->> '$')) END,
+         '[{"type": "VARCHAR", "id": "VARCHAR", "name": "VARCHAR", "input": "JSON", "tool_use_id": "VARCHAR", "content": "JSON",
+            "is_error": "BOOLEAN", "text": "VARCHAR", "thinking": "VARCHAR", "signature": "VARCHAR"}]')) WITH ORDINALITY AS b(block, idx);
+-- Codex payload fields the views below read, parsed once.
+CREATE OR REPLACE VIEW agent.codex_items AS
+SELECT file, line, session_id, ts, type, payload_type, turn_id,
+       json_transform(record, '{"payload": {"call_id": "VARCHAR", "name": "VARCHAR", "namespace": "VARCHAR", "arguments": "VARCHAR",
+         "input": "VARCHAR", "output": "JSON", "response_id": "VARCHAR", "model": "VARCHAR", "role": "VARCHAR", "content": "JSON",
+         "summary": "JSON", "encrypted_content": "VARCHAR", "started_at_ms": "BIGINT", "completed_at_ms": "BIGINT",
+         "usage": {"input_tokens": "BIGINT", "cached_input_tokens": "BIGINT", "cache_write_input_tokens": "BIGINT", "output_tokens": "BIGINT", "reasoning_output_tokens": "BIGINT"},
+         "info": {"last_token_usage": {"input_tokens": "BIGINT", "cached_input_tokens": "BIGINT", "cache_write_input_tokens": "BIGINT", "output_tokens": "BIGINT", "reasoning_output_tokens": "BIGINT"}},
+         "item": {"id": "VARCHAR", "type": "VARCHAR", "tool": "VARCHAR", "server": "VARCHAR", "status": "VARCHAR", "exit_code": "BIGINT",
+                  "command": "JSON", "arguments": "JSON", "changes": "JSON", "prompt": "VARCHAR", "result": "JSON", "error": "JSON",
+                  "aggregated_output": "VARCHAR", "stdout": "VARCHAR"}}}').payload AS p
+FROM agent.lines WHERE source = 'codex' AND type IN ('response_item', 'event_msg', 'token_usage_record', 'turn_context');
+-- One row per API response. Claude: the last line of each message.id in a file (usage repeats on every block line).
+-- Codex: token_usage_record; older files without it fall back to token_count last_token_usage (never the cumulative
+-- totals). total_input_tokens is comparable across sources (Claude input + cache read + cache write; Codex input
+-- already includes cached). Resumed/forked copies of a response are marked by agent.copies.
+CREATE OR REPLACE VIEW agent.usage AS
+WITH marks AS (SELECT file, line, turn_id FROM agent.lines WHERE turn_id IS NOT NULL
+), claude AS (
+    SELECT file, line, session_id, agent_id, ts, j.message.id AS response_id, j.requestId AS request_id, j.message.model AS model,
+           j.message.stop_reason AS stop_reason, j.message.usage AS t
+    FROM (SELECT *, json_transform(record, '{"requestId": "VARCHAR", "message": {"id": "VARCHAR", "model": "VARCHAR", "stop_reason": "VARCHAR",
+            "usage": {"input_tokens": "BIGINT", "cache_read_input_tokens": "BIGINT", "cache_creation_input_tokens": "BIGINT",
+                      "output_tokens": "BIGINT", "output_tokens_details": {"thinking_tokens": "BIGINT"}}}}') AS j
+          FROM agent.lines WHERE source = 'claude' AND type = 'assistant')
+    QUALIFY row_number() OVER (PARTITION BY file, response_id ORDER BY line DESC) = 1
+), records AS (SELECT file, line, session_id, ts, p.response_id, p.usage AS t FROM agent.codex_items WHERE type = 'token_usage_record'
+), codex AS (
+    FROM records
+    UNION ALL BY NAME
+    SELECT file, line, session_id, ts, NULL AS response_id, p.info.last_token_usage AS t FROM agent.codex_items
+    ANTI JOIN records USING (file) WHERE payload_type = 'token_count' AND p.info.last_token_usage IS NOT NULL
+), codex_model AS (SELECT file, line, p.model AS model FROM agent.codex_items WHERE type = 'turn_context'
+), u AS (
+    SELECT 'claude' AS source, file, line, session_id, agent_id, ts, response_id, request_id, model, stop_reason,
+           t.input_tokens + t.cache_read_input_tokens + t.cache_creation_input_tokens AS total_input_tokens,
+           t.cache_read_input_tokens AS cache_read_tokens, t.cache_creation_input_tokens AS cache_write_tokens,
+           t.output_tokens, t.output_tokens_details.thinking_tokens AS reasoning_tokens
+    FROM claude
+    UNION ALL
+    SELECT 'codex', c.file, c.line, session_id, NULL, ts, response_id, NULL, m.model, NULL,
+           t.input_tokens, t.cached_input_tokens, t.cache_write_input_tokens, t.output_tokens, t.reasoning_output_tokens
+    FROM codex c ASOF LEFT JOIN codex_model m ON c.file = m.file AND c.line >= m.line)
+SELECT u.*, k.turn_id FROM u ASOF LEFT JOIN marks k ON u.file = k.file AND u.line >= k.line;
+-- One row per tool call, paired with its result (same file, next result with the same call id). level 'model' = a call
+-- the model issued (Claude tool_use; Codex function_call / custom_tool_call / tool_search_call); 'nested' = Codex work
+-- done inside a model call (item_completed whose id is not a call id), parent_call_id = the model call before it.
+-- response_id joins agent.usage (Claude message.id; Codex the token_usage_record after the call). is_error: Claude's
+-- flag; Codex only from a matched item's status/exit code, else NULL. est_tokens = (input + result bytes) / 4.
+CREATE OR REPLACE VIEW agent.tool_calls AS
+WITH marks AS (SELECT file, line, turn_id FROM agent.lines WHERE turn_id IS NOT NULL
+), c_call AS (
+    SELECT 'claude' AS source, file, line, session_id, agent_id, ts, block.id AS call_id, block.name AS tool_name,
+           NULL::VARCHAR AS namespace, block.input AS input, response_id
+    FROM agent.blocks WHERE block.type = 'tool_use'
+), c_result AS (
+    SELECT file, line AS result_line, ts AS result_ts, block.tool_use_id AS call_id, block.content AS result, block.is_error AS is_error
+    FROM agent.blocks WHERE block.type = 'tool_result'
+), x_resp AS (SELECT file, line, p.response_id FROM agent.codex_items WHERE type = 'token_usage_record'
+), x_call AS (
+    SELECT 'codex' AS source, c.file, c.line, session_id, NULL::VARCHAR AS agent_id, ts, p.call_id, p.name AS tool_name,
+           p.namespace, coalesce(TRY_CAST(p.arguments AS JSON), to_json(p.input)) AS input, r.response_id
+    FROM agent.codex_items c ASOF LEFT JOIN x_resp r ON c.file = r.file AND c.line < r.line
+    WHERE payload_type IN ('function_call', 'custom_tool_call', 'tool_search_call')
+), x_item AS (
+    SELECT file, line, session_id, ts, p.item AS i, p.completed_at_ms - p.started_at_ms AS duration_ms
+    FROM agent.codex_items
+    WHERE payload_type = 'item_completed'
+      AND p.item.type IN ('CommandExecution', 'McpToolCall', 'FileChange', 'DynamicToolCall', 'CollabAgentToolCall', 'Extension', 'ImageView')
+), x_result AS (
+    SELECT o.file, o.line AS result_line, o.ts AS result_ts, o.p.call_id, o.p.output AS result,
+           i.i.status <> 'completed' AS is_error, to_json(i.i) AS result_detail
+    FROM agent.codex_items o ASOF LEFT JOIN x_item i ON o.file = i.file AND o.p.call_id = i.i.id AND o.line > i.line
+    WHERE o.payload_type IN ('function_call_output', 'custom_tool_call_output', 'tool_search_output')
+), x_nested AS (
+    SELECT 'codex' AS source, n.file, n.line, n.session_id, NULL::VARCHAR AS agent_id, n.ts, n.i.id AS call_id,
+           coalesce(n.i.tool, n.i.type) AS tool_name, coalesce(n.i.server, n.i.type) AS namespace,
+           coalesce(n.i.arguments, n.i.command, n.i.changes, to_json(n.i.prompt)) AS input, p.response_id,
+           p.call_id AS parent_call_id, n.line AS result_line, n.ts AS result_ts,
+           coalesce(n.i.result, n.i.error, to_json(n.i.aggregated_output), to_json(n.i.stdout)) AS result,
+           CASE n.i.status WHEN 'completed' THEN coalesce(n.i.exit_code, 0) <> 0 ELSE true END AS is_error,
+           to_json(n.i) AS result_detail, n.duration_ms
+    FROM x_item n ASOF LEFT JOIN x_call p ON n.file = p.file AND n.line > p.line
+    ANTI JOIN x_call m ON m.file = n.file AND m.call_id = n.i.id
+), calls AS (   -- ASOF: a file can hold the same call twice (copied history); each pairs with the next result
+    SELECT 'model' AS level, c.*, r.* EXCLUDE (file, call_id), date_diff('millisecond', c.ts, r.result_ts) AS duration_ms
+    FROM c_call c ASOF LEFT JOIN c_result r ON c.file = r.file AND c.call_id = r.call_id AND c.line < r.result_line
+    UNION ALL BY NAME
+    SELECT 'model' AS level, c.*, r.* EXCLUDE (file, call_id), date_diff('millisecond', c.ts, r.result_ts) AS duration_ms
+    FROM x_call c ASOF LEFT JOIN x_result r ON c.file = r.file AND c.call_id = r.call_id AND c.line < r.result_line
+    UNION ALL BY NAME
+    SELECT 'nested' AS level, * FROM x_nested
+), keyed AS (   -- the turn, found on narrow keys so input/result are not carried through the ASOF
+    SELECT c.file, c.line, c.call_id, k.turn_id
+    FROM (SELECT file, line, call_id FROM c_call UNION ALL SELECT file, line, call_id FROM x_call
+          UNION ALL SELECT file, line, call_id FROM x_nested) c
+    ASOF LEFT JOIN marks k ON c.file = k.file AND c.line >= k.line)
+SELECT c.source, c.level, c.session_id, c.agent_id, keyed.turn_id, c.file, c.line, c.ts, c.response_id, c.call_id,
+       c.parent_call_id, c.tool_name, c.namespace, c.input, strlen(c.input::VARCHAR) AS input_bytes, c.result_line, c.result_ts,
+       c.result, strlen(c.result::VARCHAR) AS result_bytes, (coalesce(input_bytes, 0) + coalesce(result_bytes, 0)) // 4 AS est_tokens,
+       c.is_error, c.duration_ms, c.result_detail
+FROM calls c JOIN keyed USING (file, line, call_id);
+-- Resumed/forked sessions copy earlier lines into a new file, so a call or response appears in several files.
+-- first_seen marks the earliest copy: sum tokens and bytes WHERE first_seen. The only view that spans files.
+CREATE OR REPLACE VIEW agent.copies AS
+SELECT 'tool_call' AS kind, source, call_id AS id, file, line,
+       row_number() OVER (PARTITION BY source, call_id ORDER BY ts, file, line) = 1 AS first_seen
+FROM agent.tool_calls
+UNION ALL
+SELECT 'response', source, response_id, file, line, row_number() OVER (PARTITION BY source, response_id ORDER BY ts, file, line) = 1
+FROM agent.usage WHERE response_id IS NOT NULL;
+-- Visible text: Claude text blocks; Codex message / agent_message content parts.
+CREATE OR REPLACE VIEW agent.messages AS
+SELECT 'claude' AS source, file, line, idx, session_id, agent_id, ts, role, block.text AS text FROM agent.blocks WHERE block.type = 'text'
+UNION ALL
+SELECT 'codex', file, line, b.idx, session_id, NULL, ts, coalesce(p.role, 'agent'), b.part.text
+FROM agent.codex_items CROSS JOIN UNNEST(from_json(p.content, '[{"type": "VARCHAR", "text": "VARCHAR"}]')) WITH ORDINALITY AS b(part, idx)
+WHERE payload_type IN ('message', 'agent_message');
+-- Claude thinking blocks (text empty when redacted); Codex reasoning summary parts. Encrypted bodies stay in record.
+CREATE OR REPLACE VIEW agent.thinking AS
+SELECT 'claude' AS source, file, line, idx, session_id, agent_id, ts, response_id, block.thinking AS text, strlen(block.signature) AS opaque_bytes
+FROM agent.blocks WHERE block.type IN ('thinking', 'redacted_thinking')
+UNION ALL
+SELECT 'codex', file, line, s.idx, session_id, NULL, ts, NULL, s.part.text, strlen(p.encrypted_content)
+FROM agent.codex_items CROSS JOIN UNNEST(coalesce(nullif(from_json(p.summary, '[{"text": "VARCHAR"}]'), []), [NULL])) WITH ORDINALITY AS s(part, idx)
+WHERE payload_type = 'reasoning';
+-- What Claude's harness injected (Codex has no attachment records).
+CREATE OR REPLACE VIEW agent.attachments AS
+SELECT file, line, session_id, agent_id, ts, record_type, record ->> '$.attachment.type' AS kind,
+       record ->> '$.attachment.hookEvent' AS hook_event, record ->> '$.attachment.toolUseID' AS tool_use_id,
+       record -> '$.attachment' AS attachment, record -> '$.rendered' AS rendered
+FROM agent.lines WHERE source = 'claude' AND type = 'attachment';
+-- Every line the views above do not read, whole record kept (Claude system/*, queue and session-state records;
+-- Codex session_meta, turn_context, task and compaction events, ...).
+CREATE OR REPLACE VIEW agent.system_events AS
+SELECT source, file, line, session_id, ts, turn_id, record_type, record
+FROM agent.lines
+WHERE type NOT IN ('user', 'assistant', 'attachment', 'token_usage_record')
+  AND coalesce(payload_type, '') NOT IN ('message', 'agent_message', 'reasoning', 'function_call', 'custom_tool_call', 'tool_search_call',
+        'function_call_output', 'custom_tool_call_output', 'tool_search_output', 'token_count', 'item_completed');
+-- One row per transcript file (a Claude subagent file or a Codex thread is its own row): its first user or
+-- session_meta line. Titles are ai-title / custom-title records in agent.system_events.
+CREATE OR REPLACE VIEW agent.sessions AS
+SELECT source, file, session_id, agent_id, contains(file, '/subagents/') AS is_subagent, ts AS started_at,
+       coalesce(record ->> '$.cwd', record ->> '$.payload.cwd') AS cwd,
+       coalesce(record ->> '$.gitBranch', record ->> '$.payload.git.branch') AS git_branch,
+       coalesce(record ->> '$.version', record ->> '$.payload.cli_version') AS version,
+       record ->> '$.payload.parent_thread_id' AS parent_session_id, record ->> '$.payload.forked_from_id' AS forked_from_id
+FROM agent.lines WHERE type IN ('user', 'session_meta')
+QUALIFY row_number() OVER (PARTITION BY file ORDER BY line) = 1;
 
 -- One row per tool call, from agent.stream; WHERE source and ts as needed (source reaches the reader, so
 -- source = 'claude' skips the Codex read). A call's first copy wins across resumed transcripts. programs is
@@ -311,12 +545,17 @@ FROM before_definitions FULL JOIN after_definitions
  AND after_definitions.file_path = before_definitions.file_path
  AND after_definitions.qualified_name = before_definitions.qualified_name;
 
--- 9494 Quack. 4318 OTLP/HTTP into the otlp_* tables.
+-- 9494 Quack. 4318 OTLP/HTTP into the lake: otlp_serve creates lake.otel.otlp_* (logs, traces, metrics_sum, _gauge,
+-- _histogram, _exp_histogram) and commits buffered rows about every 5 s; otlp_stop() commits them, a kill drops them.
+-- After its commits it runs CHECKPOINT lake, and it sets the lake's GLOBAL expire_older_than / delete_older_than to
+-- maintenance_retention_ms (default 15 min): every lake table's snapshots older than that are expired. 30 days here.
 FROM quack_serve('quack:localhost:9494', token := getenv('QUACK_TOKEN'));
-FROM otlp_serve('otlp:127.0.0.1:4318', disable_auth := true);
+CREATE SCHEMA IF NOT EXISTS lake.otel;
+FROM otlp_serve('otlp:127.0.0.1:4318', catalog := 'lake', schema := 'otel', disable_auth := true, maintenance_retention_ms := 2592000000);
 
 -- 9495: POST /sql {"sql": "..."}; POST /inbox any JSON, read it from quackapi_jobs; GET /metrics for Prometheus (/opt/homebrew/etc/prometheus.yml);
 -- POST /mcp/ is the dev MCP server: tools query and execute, each a curl to /sql through shellfs, so calls run in parallel.
+-- The inbox queue (quackapi_jobs) lives in dev.duckdb: jobs still queued are lost when the file is reset.
 CREATE QUEUE inbox;
 CREATE OR REPLACE ROUTE sql POST '/sql' AS SELECT * FROM quack_query('quack:localhost:9494', $sql, token := getenv('QUACK_TOKEN'));
 CREATE OR REPLACE ROUTE inbox POST '/inbox' STATUS 201 AS SELECT quackapi_enqueue('inbox', $body::JSON) AS id;
