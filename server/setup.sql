@@ -433,14 +433,18 @@ WITH found AS (
 )
 SELECT path, project, key,
        CASE ext WHEN '.jsonl.zst' THEN 'decompress+zstd:' || path ELSE path END AS src,   -- .zst through scalarfs
-       greatest(sum(bytes) OVER w // 134217728, (row_number() OVER w - 1) // 64) AS chunk
+       greatest(sum(bytes * CASE ext WHEN '.jsonl.zst' THEN 4 ELSE 1 END) OVER w // 134217728, (row_number() OVER w - 1) // 64) AS chunk
 FROM found ANTI JOIN stored ON stored.project = found.project AND stored.key = found.key AND stored.written - INTERVAL 10 SECOND > found.modified
 WINDOW w AS (ORDER BY modified, path);
 -- One COPY per chunk: read_text reads the chunk's files (a directory glob would read every file in it: read_text does
 -- not push a filename filter down) and each splits into its numbered lines: unnest + generate_subscripts in the select
 -- list (a CROSS JOIN UNNEST carries the whole file into every line's row). project / key come from agent.due itself.
+-- All chunks go in one /sql body, which runs its statements in order: one chunk in memory at a time (posts from one
+-- column run at once, and a backfill's 30 chunks together ran dev out of memory). Chunks a run does not reach are due
+-- next run.
 CREATE OR REPLACE VIEW agent.ingest AS
-SELECT chunk, string_agg(path, ', ') AS files, quackapi_post('http://127.0.0.1:9495/sql', json_object('sql', printf($s$
+SELECT string_agg(files, ', ') AS files, quackapi_post('http://127.0.0.1:9495/sql', json_object('sql', string_agg(stmt, e';\n' ORDER BY chunk))).status AS status
+FROM (SELECT chunk, string_agg(path, ', ') AS files, printf($s$
 COPY (
     SELECT project, key, file, line, record, bad, j,
            coalesce(j.sessionId, j.session_id, CASE project WHEN '.codex' THEN right(replace(key, '.jsonl', ''), 36) END) AS session_id,
@@ -472,8 +476,9 @@ COPY (
                 FROM (SELECT filename, string_split(content, e'\n')[:-2] AS parts FROM read_text([%s])) t   -- [:-2]: after the last newline
                 JOIN agent.due d ON d.src = t.filename))
 ) TO '/Users/aloksubbarao/.duck/lake/agent' (FORMAT parquet, PARTITION_BY (project, key), OVERWRITE_OR_IGNORE, ROW_GROUP_SIZE 2048)
-$s$, string_agg(printf($q$'%s'$q$, src), ', ')))).status AS status
-FROM agent.due GROUP BY chunk ORDER BY chunk;
+$s$, string_agg(printf($q$'%s'$q$, src), ', ')) AS stmt
+      FROM agent.due GROUP BY chunk)
+HAVING string_agg(files, ', ') IS NOT NULL;
 FROM agent.ingest;
 SELECT cron('FROM agent.ingest', '0 * * * * *');
 
