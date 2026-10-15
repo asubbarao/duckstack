@@ -25,8 +25,8 @@ the `agents.ext_*` views on dev derive from them. Write to the qualified lake ta
 FTS, vectors and process snapshots remain rebuildable working state.
 
 Agent transcripts are plain Parquet beside the lake, not lake tables:
-`~/.duck/lake/agent/lines/source=<claude|codex>/<transcript>/from-<line>.parquet`, appended every
-minute by setup.sql's cron. `agent.lines` on dev and the lake view `lake.agent.lines` read it.
+`~/.duck/lake/agent/lines/source=<s>/project=<p>/file_key=<k>/part0.parquet`, one partition per
+transcript file, overwritten by setup.sql's minute cron when the file changes. `agent.lines` on dev and the lake view `lake.agent.lines` read it.
 OpenTelemetry from Claude Code and Codex streams into `lake.otel.otlp_*` (`otlp_serve`).
 
 ## Checked derived tables
