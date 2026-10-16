@@ -140,6 +140,16 @@ rollback removed the fixture. The replica's 9511 listener and database file are 
 its persisted rows could not be checked. Its schema now creates the unique index; existing
 duplicates would fail index creation visibly rather than being silently discarded.
 
+Duplicate checks (run the second on the replica, not dev):
+
+```sql
+SELECT url, fetched_at, len(array_agg(response)) AS copies
+FROM lake.agents.ext_fetch GROUP BY url, fetched_at HAVING copies > 1;
+
+SELECT run_started, table_name, len(array_agg(run_id)) AS copies
+FROM pull_log GROUP BY run_started, table_name HAVING copies > 1;
+```
+
 [review.sql](review.sql) applies native SQL parsing and Sitting Duck to the actual server,
 replica, crawl and inline-example programs. It also opens dollar-quoted cron/boot SQL.
 Whole-file native parsing succeeds for pull, reads, crawl and the four inline examples.
