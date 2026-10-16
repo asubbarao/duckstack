@@ -50,19 +50,12 @@ INSTALL fts; LOAD fts;
 SELECT content FROM read_text('mkdir -p ' || getenv('HOME') || '/inframe && echo ok |') LIMIT 1;
 FROM cd(getenv('HOME') || '/inframe');
 
-ATTACH IF NOT EXISTS 'ducklake:~/.duck/lake/duckstack/catalog.ducklake' AS lake (DATA_INLINING_ROW_LIMIT 0);
-
 CALL enable_logging(['QueryLog', 'HTTP', 'Quack'], storage := 'file', storage_path := getenv('QUACK_NATIVE_LOG'), storage_buffer_size := 0);
 
 -- Extension docs: lake.agents.ext_fetch keeps every fetch (url, fetched_at, response {status, body}); agents.ext_docs is
 -- each fetch with its page as markdown (a community page carries the extension's whole function reference). Daily, the
 -- community list and every extension page it links are fetched again: one curl per url, four /sql bodies run in order.
 CREATE SCHEMA IF NOT EXISTS agents;
-CREATE OR REPLACE VIEW agents.ext_docs AS
-SELECT urlpattern_extract('https://duckdb.org/community_extensions/extensions/:name.html', url, 'name') AS extension, url, fetched_at,
-       response ->> 'status' AS status,
-       duck_blocks_to_md(html_to_duck_blocks((response ->> 'body')::HTML)) AS markdown
-FROM lake.agents.ext_fetch;
 SELECT cron($$
 WITH urls AS (
     SELECT 'https://duckdb.org/community_extensions/list_of_extensions' AS url
@@ -177,13 +170,8 @@ FROM before_definitions FULL JOIN after_definitions
  AND after_definitions.file_path = before_definitions.file_path
  AND after_definitions.qualified_name = before_definitions.qualified_name;
 
--- 9494 Quack. 4318 OTLP/HTTP into the lake: otlp_serve creates lake.otel.otlp_* (logs, traces, metrics_sum, _gauge,
--- _histogram, _exp_histogram) and commits buffered rows about every 5 s; otlp_stop() commits them, a kill drops them.
--- After its commits it runs CHECKPOINT lake, and it sets the lake's GLOBAL expire_older_than / delete_older_than to
--- maintenance_retention_ms (default 15 min): every lake table's snapshots older than that are expired. 30 days here.
+-- 9494 Quack.
 FROM quack_serve('quack:localhost:9494', token := getenv('QUACK_TOKEN'));
-CREATE SCHEMA IF NOT EXISTS lake.otel;
-FROM otlp_serve('otlp:127.0.0.1:4318', catalog := 'lake', schema := 'otel', disable_auth := true, maintenance_retention_ms := 2592000000);
 
 -- 9495: POST /sql {"sql": "..."}; POST /inbox any JSON, read it from quackapi_jobs; GET /profile?sql=…;
 -- POST /mcp/ is the dev MCP server: tools query and execute, each a native JSON post to /sql, collected and unnested as receipts.
@@ -283,3 +271,20 @@ SELECT quackapi_post('http://127.0.0.1:9495/sql', json_object('sql', printf($s$C
 SELECT * FROM read_parquet([%s], union_by_name := true) SEMI JOIN agent.entries e ON e.path = transcript$s$, files))).status
 FROM (SELECT string_agg('$q$' || path || '$q$', ', ') AS files FROM agent.entries WHERE reader = 'read_parquet' AND NOT starts_with(name, 'tmp_'))
 WHERE files IS NOT NULL$$, '0 */5 * * * *');
+
+-- The lake sits on top of the work: attached last, in one post, so a lake failure fails this post and dev keeps serving.
+-- The catalog holds its own data path. 4318 OTLP/HTTP into the lake: otlp_serve creates lake.otel.otlp_* (logs, traces,
+-- metrics_sum, _gauge, _histogram, _exp_histogram) and commits buffered rows about every 5 s; otlp_stop() commits them, a
+-- kill drops them. After its commits it runs CHECKPOINT lake, and it sets the lake's GLOBAL expire_older_than /
+-- delete_older_than to maintenance_retention_ms (default 15 min): every lake table's snapshots older than that are
+-- expired. 30 days here. agents.ext_docs is each fetch in lake.agents.ext_fetch with its page as markdown.
+SELECT quackapi_post('http://127.0.0.1:9495/sql', json_object('sql', $lake$
+ATTACH IF NOT EXISTS 'ducklake:~/.duck/lake/duckstack/catalog.ducklake' AS lake (DATA_INLINING_ROW_LIMIT 0);
+CREATE SCHEMA IF NOT EXISTS lake.otel;
+FROM otlp_serve('otlp:127.0.0.1:4318', catalog := 'lake', schema := 'otel', disable_auth := true, maintenance_retention_ms := 2592000000);
+CREATE OR REPLACE VIEW agents.ext_docs AS
+SELECT urlpattern_extract('https://duckdb.org/community_extensions/extensions/:name.html', url, 'name') AS extension, url, fetched_at,
+       response ->> 'status' AS status,
+       duck_blocks_to_md(html_to_duck_blocks((response ->> 'body')::HTML)) AS markdown
+FROM lake.agents.ext_fetch
+$lake$)).status;
