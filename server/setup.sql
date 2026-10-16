@@ -399,6 +399,6 @@ SELECT cron($$SELECT quackapi_post('http://127.0.0.1:9495/sql', json_object('sql
 FROM agent.ingest WHERE modified >= current_date - INTERVAL 1 DAY GROUP BY hash(path) % 4$$, '0 */5 * * * *');
 -- Every stored transcript whose source still exists (a Codex session compressed or archived leaves its old copy behind).
 CREATE OR REPLACE VIEW agent.lines AS
-SELECT * FROM (SELECT *, split_part(filename, '/.duck/lake/agent', 2)[:-9] AS source
+SELECT * FROM (SELECT *, split_part(filename, '/.duck/lake/agent', 2)[:-9] AS transcript   -- Claude records have their own source
                FROM read_parquet('~/.duck/lake/agent/**/*.parquet', union_by_name := true, filename := true))
-SEMI JOIN agent.entries e ON e.path = source;
+SEMI JOIN agent.entries e ON e.path = transcript;
