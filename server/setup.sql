@@ -50,39 +50,11 @@ FROM cd(getenv('HOME') || '/inframe');
 ATTACH IF NOT EXISTS 'ducklake:/Users/aloksubbarao/.duck/lake/duckstack/catalog.ducklake' AS lake
     (DATA_PATH '/Users/aloksubbarao/.duck/lake/duckstack/data/', DATA_INLINING_ROW_LIMIT 0);
 
-CALL enable_logging(['QueryLog', 'HTTP', 'Quack', 'Metrics'], storage := 'file', storage_path := getenv('QUACK_NATIVE_LOG'), storage_buffer_size := 0);
--- Profiling is per connection (enable_profiling cannot be SET GLOBAL), so each connection that should report runs this
--- CALL itself: this boot connection and the CHECKPOINT cron below. Every profiled statement then logs one 'Metrics' row
--- per metric (meta.query_metrics); 'no_output' prints nothing. Quack and quackapi request connections start with
--- profiling off. ROWS_RETURNED stays out: on DuckDB 1.5.6 it is NULL, and a NULL metric in a JSON profile
--- (EXPLAIN (ANALYZE, FORMAT json)) is an internal error that invalidates the database.
-CALL enable_profiling(format := 'no_output', coverage := 'all',
-     metrics := ['LATENCY', 'CPU_TIME', 'BLOCKED_THREAD_TIME', 'RESULT_SET_SIZE', 'CUMULATIVE_ROWS_SCANNED', 'SYSTEM_PEAK_BUFFER_MEMORY',
-                 'SYSTEM_PEAK_TEMP_DIR_SIZE', 'TOTAL_MEMORY_ALLOCATED', 'TOTAL_BYTES_READ', 'TOTAL_BYTES_WRITTEN', 'CHECKPOINT_LATENCY', 'WRITE_TO_WAL_LATENCY']);
-SELECT cron($$CALL enable_profiling(format := 'no_output', coverage := 'all',
-     metrics := ['LATENCY', 'CPU_TIME', 'BLOCKED_THREAD_TIME', 'RESULT_SET_SIZE', 'CUMULATIVE_ROWS_SCANNED', 'SYSTEM_PEAK_BUFFER_MEMORY',
-                 'SYSTEM_PEAK_TEMP_DIR_SIZE', 'TOTAL_MEMORY_ALLOCATED', 'TOTAL_BYTES_READ', 'TOTAL_BYTES_WRITTEN', 'CHECKPOINT_LATENCY', 'WRITE_TO_WAL_LATENCY']);
-CHECKPOINT$$, '45 */5 * * * *');
+CALL enable_logging(['QueryLog', 'HTTP', 'Quack'], storage := 'file', storage_path := getenv('QUACK_NATIVE_LOG'), storage_buffer_size := 0);
 
 -- Queries and Quack requests, from DuckDB's own log; the launchd wrapper's lifecycle events.
 CREATE SCHEMA IF NOT EXISTS meta;
 CREATE OR REPLACE VIEW meta.query_log AS SELECT * EXCLUDE (type, message), message AS query FROM duckdb_logs WHERE type = 'QueryLog';
--- One row per profiled statement: its QueryLog row and the profiler's query-level metrics (seconds and bytes).
--- A statement logs one 'Metrics' row per metric, keyed like its QueryLog row by (connection_id, query_id).
-CREATE OR REPLACE VIEW meta.query_metrics AS
-WITH metric AS (
-    SELECT connection_id, query_id, parse_duckdb_log_message('Metrics', message) AS m FROM duckdb_logs WHERE type = 'Metrics'
-), per_query AS (
-    SELECT connection_id, query_id, map_from_entries(list((m.metric, m.value))) AS v FROM metric GROUP BY ALL
-)
-SELECT q.timestamp, q.connection_id, q.query_id, q.query,
-       v['LATENCY']::DOUBLE AS latency_s, v['CPU_TIME']::DOUBLE AS cpu_s, v['BLOCKED_THREAD_TIME']::DOUBLE AS blocked_thread_s,
-       v['RESULT_SET_SIZE']::UBIGINT AS result_bytes, v['CUMULATIVE_ROWS_SCANNED']::UBIGINT AS rows_scanned,
-       v['SYSTEM_PEAK_BUFFER_MEMORY']::UBIGINT AS peak_buffer_bytes, v['SYSTEM_PEAK_TEMP_DIR_SIZE']::UBIGINT AS peak_temp_bytes,
-       v['TOTAL_MEMORY_ALLOCATED']::UBIGINT AS allocated_bytes, v['TOTAL_BYTES_READ']::UBIGINT AS bytes_read,
-       v['TOTAL_BYTES_WRITTEN']::UBIGINT AS bytes_written, v['CHECKPOINT_LATENCY']::DOUBLE AS checkpoint_s,
-       v['WRITE_TO_WAL_LATENCY']::DOUBLE AS wal_write_s, v AS metrics
-FROM meta.query_log q JOIN per_query USING (connection_id, query_id);
 CREATE OR REPLACE VIEW meta.quack_events AS
 SELECT * EXCLUDE (message), unnest(parse_duckdb_log_message('Quack', message)) FROM duckdb_logs WHERE type = 'Quack';
 CREATE OR REPLACE VIEW meta.remote_query_history AS
@@ -404,43 +376,30 @@ SET GLOBAL quackapi_max_response_bytes = 67108864;
 FROM quackapi_serve(9495, host := '127.0.0.1', query_timeout_ms := 120000);
 -- quackapi_serve switches logging off.
 CALL enable_logging(['QueryLog', 'HTTP', 'Quack'], storage := 'file', storage_path := getenv('QUACK_NATIVE_LOG'), storage_buffer_size := 0);
--- Agent transcripts (Claude Code ~/.claude/projects, Codex ~/.codex/sessions and archived_sessions), typed once at ingest
--- into Parquet, one partition per transcript: ~/.duck/lake/agent/project=<folder under projects/>/key=<rest of its
--- path>/data_0.parquet, from hostfs path_split (Codex: project '.codex', key = the file name without .zst, since a session
--- moves to archived_sessions/ and is compressed in place). Two levels: one escaped path overflows 255 bytes.
--- Boot replaces every transcript; every 5 minutes the cron replaces those modified since yesterday (yesterday too, so a
--- session's last lines before midnight land). Replacing is the whole mechanism: no comparison with the store.
--- agent.transcripts: the files, in chunks of at most 64 files / 128 MB (a .zst counts 4x): past
--- partitioned_write_max_open_files (100) a partition gets a second file that a later rewrite would not replace.
--- agent.chunks: each chunk's COPY. read_text reads the chunk's files (a directory glob would read every file in it:
--- read_text does not push a filename filter down), each splits into its numbered lines (unnest + generate_subscripts
--- in the select list; a CROSS JOIN UNNEST carries the whole file into every line's row), json_transform types every
--- line with one shape for both sources (bad = a line that is not JSON), and OVERWRITE_OR_IGNORE replaces each one's
--- data_0.parquet. A run posts its chunks as one /sql body, which runs them in order: one chunk in memory at a time
--- (posts from one column run at once, and 30 chunks together ran dev out of memory).
+-- Agent transcripts (Claude Code ~/.claude/projects, Codex ~/.codex), typed once into Parquet, one partition per
+-- transcript: ~/.duck/lake/agent/project=<folder under projects/>/key=<rest of its path>/data_0.parquet (Codex: project
+-- '.codex', key = the file name without .zst: a session moves to archived_sessions/ and is compressed in place).
+-- agent.files: one find, hostfs columns on its rows.
 CREATE SCHEMA IF NOT EXISTS agent;
-CREATE OR REPLACE VIEW agent.transcripts AS
-SELECT path, project, key, recent,
-       CASE ext WHEN '.jsonl.zst' THEN 'decompress+zstd:' || path ELSE path END AS src,   -- .zst through scalarfs
-       greatest(sum(bytes * CASE ext WHEN '.jsonl.zst' THEN 4 ELSE 1 END) OVER w // 134217728, (row_number() OVER w - 1) // 64) AS chunk
-FROM (SELECT file AS path, CASE WHEN ends_with(path, '.zst') THEN '.jsonl.zst' ELSE '.jsonl' END AS ext,
-             path_split(path) AS parts, list_position(parts, 'projects') AS p,
-             CASE WHEN p IS NULL THEN '.codex' ELSE parts[p + 1] END AS project,
-             CASE WHEN p IS NULL THEN replace(file_name(path), '.zst', '') ELSE list_aggr(parts[p + 2:], 'string_agg', '/') END AS key,
-             file_size(path) AS bytes, file_last_modified(path) AS modified, modified >= current_date - INTERVAL 1 DAY AS recent
-      FROM glob(['/Users/aloksubbarao/.claude/projects/*/*.jsonl', '/Users/aloksubbarao/.claude/projects/*/*/subagents/*.jsonl',
-                 '/Users/aloksubbarao/.codex/sessions/*/*/*/*.jsonl', '/Users/aloksubbarao/.codex/sessions/*/*/*/*.jsonl.zst',
-                 '/Users/aloksubbarao/.codex/archived_sessions/*.jsonl.zst']))
-WINDOW w AS (PARTITION BY recent ORDER BY modified, path);
-CREATE OR REPLACE VIEW agent.chunks AS
-SELECT recent, chunk, printf($s$
+CREATE OR REPLACE VIEW agent.files AS
+SELECT path, parse_dirpath(path) AS parent, file_name(path) AS name, path_split(path) AS parts, file_size(path) AS bytes,
+       file_last_modified(path) AS modified
+FROM (SELECT rtrim(content, e'\n') AS path
+      FROM read_lines($c$find ~/.claude/projects ~/.codex/sessions ~/.codex/archived_sessions -type f -name '*.jsonl*' |$c$));
+-- One COPY per transcript: read_text (.zst through scalarfs's decompress+zstd:), its lines numbered (unnest +
+-- generate_subscripts in the select list: a CROSS JOIN UNNEST carries the whole file into every line's row), every line
+-- typed by one shape (bad = a line that is not JSON), OVERWRITE_OR_IGNORE replacing its data_0.parquet. Boot replaces
+-- every transcript, the cron every 5 minutes those modified since yesterday (so a session's last lines before midnight
+-- land), each run as 4 /sql bodies that run their statements in order: 4 files in memory at a time.
+CREATE OR REPLACE VIEW agent.ingest AS
+SELECT path, modified, printf($s$
 COPY (
-    SELECT project, key, file, line, record, bad, j,
+    SELECT '%s' AS project, '%s' AS key, '%s' AS file, line, record, bad, j,
            coalesce(j.sessionId, j.session_id, CASE project WHEN '.codex' THEN right(replace(key, '.jsonl', ''), 36) END) AS session_id,
            j.agentId AS agent_id, j.type, j.payload.type AS payload_type, TRY_CAST(j.timestamp AS TIMESTAMPTZ) AS ts,
            coalesce(j.promptId, j.payload.turn_id, j.payload.internal_chat_message_metadata_passthrough.turn_id) AS turn_id,
            CASE json_type(record, '$.message.content') WHEN 'VARCHAR' THEN record ->> '$.message.content' END AS message_text
-    FROM (SELECT project, key, file, line, CASE WHEN json_valid(text) THEN text::JSON END AS record,
+    FROM (SELECT line, CASE WHEN json_valid(text) THEN text::JSON END AS record,
                  CASE WHEN record IS NULL THEN text END AS bad, json_transform(record, '{
                   "type": "VARCHAR", "subtype": "VARCHAR", "timestamp": "VARCHAR", "sessionId": "VARCHAR", "session_id": "VARCHAR",
                   "agentId": "VARCHAR", "promptId": "VARCHAR", "requestId": "VARCHAR", "cwd": "VARCHAR", "gitBranch": "VARCHAR", "version": "VARCHAR",
@@ -461,21 +420,20 @@ COPY (
                       "item": {"id": "VARCHAR", "type": "VARCHAR", "tool": "VARCHAR", "server": "VARCHAR", "status": "VARCHAR", "exit_code": "BIGINT",
                                "arguments": "JSON", "command": "JSON", "changes": "JSON", "prompt": "JSON", "result": "JSON", "error": "JSON",
                                "aggregated_output": "JSON", "stdout": "JSON"}}}') AS j
-          FROM (SELECT d.project, d.key, d.path AS file, unnest(t.parts) AS text, generate_subscripts(t.parts, 1) AS line
-                FROM (SELECT filename, string_split(content, e'\n')[:-2] AS parts FROM read_text([%s])) t   -- [:-2]: after the last newline
-                JOIN agent.transcripts d ON d.src = t.filename))
-) TO '/Users/aloksubbarao/.duck/lake/agent' (FORMAT parquet, PARTITION_BY (project, key), OVERWRITE_OR_IGNORE, ROW_GROUP_SIZE 2048)
-$s$, string_agg(printf($q$'%s'$q$, src), ', ')) AS stmt
-FROM agent.transcripts GROUP BY recent, chunk;
-SELECT quackapi_post('http://127.0.0.1:9495/sql', json_object('sql', string_agg(stmt, e';\n' ORDER BY recent, chunk))).status
-FROM agent.chunks;
-SELECT cron($$SELECT quackapi_post('http://127.0.0.1:9495/sql', json_object('sql', string_agg(stmt, e';\n' ORDER BY chunk))).status
-FROM agent.chunks WHERE recent$$, '0 */5 * * * *');
+          FROM (SELECT unnest(parts) AS text, generate_subscripts(parts, 1) AS line
+                FROM (SELECT string_split(content, e'\n')[:-2] AS parts FROM read_text('%s'))))   -- [:-2]: after the last newline
+) TO '~/.duck/lake/agent' (FORMAT parquet, PARTITION_BY (project, key), OVERWRITE_OR_IGNORE, ROW_GROUP_SIZE 2048)
+$s$, coalesce(parts[p + 1], '.codex'), CASE WHEN p IS NULL THEN replace(name, '.zst', '') ELSE list_aggr(parts[p + 2:], 'string_agg', '/') END,
+     path, CASE WHEN ends_with(name, '.zst') THEN 'decompress+zstd:' || path ELSE path END) AS stmt
+FROM (SELECT *, list_position(parts, 'projects') AS p FROM agent.files);
+SELECT quackapi_post('http://127.0.0.1:9495/sql', json_object('sql', string_agg(stmt, e';\n'))).status FROM agent.ingest GROUP BY hash(path) % 4;
+SELECT cron($$SELECT quackapi_post('http://127.0.0.1:9495/sql', json_object('sql', string_agg(stmt, e';\n'))).status
+FROM agent.ingest WHERE modified >= current_date - INTERVAL 1 DAY GROUP BY hash(path) % 4$$, '0 */5 * * * *');
 
 -- One row per transcript line: record = the whole line, j = it typed, plus its top-level fields.
 CREATE OR REPLACE VIEW agent.lines AS
 SELECT CASE project WHEN '.codex' THEN 'codex' ELSE 'claude' END AS source, * EXCLUDE (project, key)
-FROM read_parquet('/Users/aloksubbarao/.duck/lake/agent/*/*/data_0.parquet', hive_partitioning := true);
+FROM read_parquet('~/.duck/lake/agent/*/*/data_0.parquet', hive_partitioning := true);
 -- The same view in the lake, for any process that attaches it.
 CREATE SCHEMA IF NOT EXISTS lake.agent;
 CREATE OR REPLACE VIEW lake.agent.lines AS
