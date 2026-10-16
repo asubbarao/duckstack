@@ -221,16 +221,15 @@ CALL enable_logging(['QueryLog', 'HTTP', 'Quack'], storage := 'file', storage_pa
 -- Agent transcripts (Claude Code ~/.claude/projects, Codex ~/.codex), read natively, one Parquet per transcript at its own
 -- path under ~/.duck/lake/agent.
 -- agent.entries: PR #1576's entries shape over one find: hostfs columns, the file's reader and the statement that reads
--- it. read_json infers every field and type from the file, three levels deep (Claude's message.role / model / id typed;
--- anything deeper, tool inputs and results among it, stays JSON). Objects with over 200 distinct keys become MAPs: keyed
--- by tool-call id or file path, they would otherwise be thousands of columns (a 445K-character type that ran dev out of
--- memory on one 326 MB transcript); Codex's payload, a union of event types, is MAP(VARCHAR, JSON). maximum_object_size
--- 32 MB fits the largest line (~21 MB); the reader's buffers are twice it per thread.
+-- it. read_json types the top-level fields and keeps every nested object (message, payload, toolUseResult, ...) as one
+-- JSON column (maximum_depth 1): inferred deeper, the same field is a STRUCT in one file and a MAP in another, which
+-- union_by_name cannot merge. maximum_object_size 32 MB fits the largest line (~21 MB); the reader's buffers are twice
+-- it per thread.
 CREATE SCHEMA IF NOT EXISTS agent;
 CREATE OR REPLACE VIEW agent.entries AS
 SELECT path, parse_dirpath(path) AS parent, file_name(path) AS name, file_extension(path) AS ext, file_size(path) AS bytes,
        file_last_modified(path) AS modified, 'read_json' AS reader,
-       printf($s$SELECT * FROM read_json('%s', format := 'newline_delimited', maximum_depth := 3, sample_size := -1,
+       printf($s$SELECT * FROM read_json('%s', format := 'newline_delimited', maximum_depth := 1, sample_size := -1,
            maximum_object_size := 33554432, ignore_errors := true)$s$, path) AS sql_statement,
        '~/.duck/lake/agent' || path || '.parquet' AS stored
 FROM (SELECT rtrim(content, e'\n') AS path
