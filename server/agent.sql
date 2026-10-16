@@ -18,6 +18,9 @@ SELECT path, parse_dirpath(path) AS parent, file_name(path) AS name, parse_filen
             ELSE parent || '/' || stem END AS session
 FROM (SELECT rtrim(content, e'\n') AS path
       FROM read_lines($c$for d in ~/.claude/projects ~/.codex/sessions ~/.codex/archived_sessions ~/.duck/lake/agent; do [ -d "$d" ] && find "$d" -type f \( -name '*.jsonl*' -o -name '*.parquet' \); done; true |$c$));
+-- agent.titles: Codex thread names from ~/.codex/session_index.jsonl; id is the session id in the rollout file name.
+CREATE OR REPLACE VIEW agent.titles AS
+SELECT id, thread_name AS title, updated_at::TIMESTAMPTZ AS updated_at FROM read_json(getenv('HOME') || '/.codex/session_index.jsonl', format := 'newline_delimited');
 -- Each session with a file newer than its stored copy (or none stored) is copied whole, one post per session; the posts
 -- of one SELECT run at the same time. Boot and the 5-minute cron run the same two statements: an empty store takes
 -- 980 sessions (3.6 GB, ~45 s; posts that fail are retried by the next run), a 5-minute run the few active sessions
