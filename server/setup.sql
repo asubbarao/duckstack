@@ -1,9 +1,9 @@
 -- Dev DuckDB. launchd runs `duckdb -bail ~/.duck/db/dev.duckdb -init setup.sql` and keeps stdin open.
 -- Dev boots ~/.duck/deploy/server/setup.sql, the duckdb-skills branch `deploy`. A save here changes nothing until
 -- it is committed and the branch moved: git branch -f deploy <commit>; the watcher restarts dev within 30 s.
-SET GLOBAL extension_directory = '/Users/aloksubbarao/.duck/extensions';
-SET GLOBAL secret_directory = '/Users/aloksubbarao/.duck/secrets';
-SET GLOBAL temp_directory = '/Users/aloksubbarao/.duck/tmp';
+SET GLOBAL extension_directory = '~/.duck/extensions';
+SET GLOBAL secret_directory = '~/.duck/secrets';
+SET GLOBAL temp_directory = '~/.duck/tmp';
 -- DuckDB's performance guide: 1-4 GB per thread. 10 threads x 1.6 GB; RSS runs 1.5-2.5 GB above this
 -- (reader/JSON allocations are untracked), and the 48 GB machine keeps ~30 GB for everything else.
 SET GLOBAL memory_limit = '16GB';
@@ -14,7 +14,9 @@ SET GLOBAL http_retries = 0;
 -- INSTALL is a no-op once a file exists, so without this every boot reloads the first build ever downloaded.
 -- A child process updates the files before anything below loads them; offline, it prints the error and boot goes on.
 INSTALL shellfs FROM community; LOAD shellfs;
-SELECT content FROM read_text($u$/opt/homebrew/bin/duckdb -csv :memory: -c "SET extension_directory = '/Users/aloksubbarao/.duck/extensions'; UPDATE EXTENSIONS;" 2>&1; true |$u$);
+SELECT content FROM read_text($u$duckdb -csv :memory: -c "SET extension_directory = '~/.duck/extensions'; UPDATE EXTENSIONS;" 2>&1; true |$u$);
+-- DuckLake creates its catalog file but not the folders above it.
+SELECT content FROM read_text('mkdir -p ~/.duck/lake/duckstack/data |');
 INSTALL quack; LOAD quack;
 INSTALL httpfs; LOAD httpfs;
 INSTALL ducklake; LOAD ducklake;
@@ -47,8 +49,8 @@ INSTALL fts; LOAD fts;
 -- Dev works in the inframe checkout: duck_tails calls take '.' or no path at all.
 FROM cd(getenv('HOME') || '/inframe');
 
-ATTACH IF NOT EXISTS 'ducklake:/Users/aloksubbarao/.duck/lake/duckstack/catalog.ducklake' AS lake
-    (DATA_PATH '/Users/aloksubbarao/.duck/lake/duckstack/data/', DATA_INLINING_ROW_LIMIT 0);
+ATTACH IF NOT EXISTS 'ducklake:~/.duck/lake/duckstack/catalog.ducklake' AS lake
+    (DATA_PATH '~/.duck/lake/duckstack/data/', DATA_INLINING_ROW_LIMIT 0);
 
 CALL enable_logging(['QueryLog', 'HTTP', 'Quack'], storage := 'file', storage_path := getenv('QUACK_NATIVE_LOG'), storage_buffer_size := 0);
 
