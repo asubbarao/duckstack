@@ -225,6 +225,8 @@ CALL enable_logging(['QueryLog', 'HTTP', 'Quack'], storage := 'file', storage_pa
 -- (maximum_depth 1, map inference off): the same shape in every folder. Map inference on turns a folder's ~170 top-level
 -- fields into one MAP; inferred deeper, a field is a STRUCT in one folder and a MAP in another, which union_by_name cannot
 -- merge. maximum_object_size 32 MB fits the largest line (~21 MB); the reader's buffers are twice it per thread.
+-- Nothing here errors on a machine without transcripts: glob() lists an empty set where find exits 1, so nothing is
+-- copied and agent.lines is never posted (read_parquet fails on an empty file list and takes no subquery).
 CREATE SCHEMA IF NOT EXISTS agent;
 CREATE OR REPLACE VIEW agent.entries AS
 SELECT path, parse_dirpath(path) AS parent, file_name(path) AS name, file_extension(path) AS ext, file_size(path) AS bytes,
@@ -233,15 +235,23 @@ SELECT path, parse_dirpath(path) AS parent, file_name(path) AS name, file_extens
 COPY (SELECT * FROM read_json('%s/*.jsonl*', format := 'newline_delimited', maximum_depth := 1, map_inference_threshold := -1, sample_size := -1,
       maximum_object_size := 33554432, ignore_errors := true, union_by_name := true, filename := 'transcript')) TO '%s' (FORMAT parquet)$s$,
               parse_dirpath(stored), parent, stored) AS sql_statement
-FROM (SELECT rtrim(content, e'\n') AS path
-      FROM read_lines($c$find ~/.claude/projects ~/.codex/sessions ~/.codex/archived_sessions -type f -name '*.jsonl*' |$c$));
+FROM (SELECT file AS path FROM glob('~/.claude/projects/**/*.jsonl*')
+      UNION ALL SELECT file FROM glob('~/.codex/*sessions/**/*.jsonl*'));
 -- One post per folder; the posts of one SELECT run at the same time. Boot copies every folder (111, 3.9 GB: 21 s);
--- every 5 minutes the cron replaces the folders holding a file modified since yesterday.
+-- every 5 minutes the cron replaces the folders holding a file modified since yesterday. A replaced file is written as
+-- tmp_<name> and renamed, so agent.lines, posted after the copies with the stored files' literal list, never reads a
+-- partial file. It keeps the lines whose transcript still exists (a session archived out of a folder leaves its old copy).
 SELECT quackapi_post('http://127.0.0.1:9495/sql', json_object('sql', sql_statement)).status
 FROM (SELECT DISTINCT parent, sql_statement FROM agent.entries);
+SELECT quackapi_post('http://127.0.0.1:9495/sql', json_object('sql', printf($s$CREATE OR REPLACE VIEW agent.lines AS
+SELECT * FROM read_parquet([%s], union_by_name := true) SEMI JOIN agent.entries e ON e.path = transcript$s$, files))).status
+FROM (SELECT string_agg('$q$' || file || '$q$', ', ') AS files FROM glob('~/.duck/lake/agent/**/*.parquet')
+      WHERE NOT starts_with(file_name(file), 'tmp_'))
+WHERE files IS NOT NULL;
 SELECT cron($$SELECT quackapi_post('http://127.0.0.1:9495/sql', json_object('sql', sql_statement)).status
-FROM (SELECT DISTINCT parent, sql_statement FROM agent.entries WHERE modified >= current_date - INTERVAL 1 DAY)$$, '0 */5 * * * *');
--- Every stored line whose transcript still exists (a Codex session archived out of a folder leaves its old copy behind).
-CREATE OR REPLACE VIEW agent.lines AS
-SELECT * FROM read_parquet('~/.duck/lake/agent/**/*.parquet', union_by_name := true)
-SEMI JOIN agent.entries e ON e.path = transcript;
+FROM (SELECT DISTINCT parent, sql_statement FROM agent.entries WHERE modified >= current_date - INTERVAL 1 DAY);
+SELECT quackapi_post('http://127.0.0.1:9495/sql', json_object('sql', printf($s$CREATE OR REPLACE VIEW agent.lines AS
+SELECT * FROM read_parquet([%s], union_by_name := true) SEMI JOIN agent.entries e ON e.path = transcript$s$, files))).status
+FROM (SELECT string_agg('$q$' || file || '$q$', ', ') AS files FROM glob('~/.duck/lake/agent/**/*.parquet')
+      WHERE NOT starts_with(file_name(file), 'tmp_'))
+WHERE files IS NOT NULL$$, '0 */5 * * * *');
