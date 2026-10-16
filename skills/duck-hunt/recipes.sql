@@ -53,33 +53,12 @@ SELECT job_id,
          x -> {k: string_split(x, ' ')[1], v: rtrim(string_split(x, ' ')[2], 's')::DOUBLE})) AS phase_s
 FROM d;
 
--- backend_shard_balance — is pytest-split actually balancing execution cost, rather than only test count?
--- worker_seconds sums the xdist-worker gaps; observed_wall_seconds is the first-to-last result span.
--- verified 2026-09-30, inframe staging run 36274924301: shard walls 350.0 s, 359.3 s, 468.7 s.
-CREATE OR REPLACE VIEW backend_shard_balance AS
-SELECT job_id,
-       len(array_agg(nodeid)) AS tests,
-       list_sum(array_agg(ms) FILTER (WHERE ms IS NOT NULL)) / 1000.0 AS worker_seconds,
-       date_diff('millisecond', min(ts), max(ts)) / 1000.0 AS observed_wall_seconds,
-       max(ms) / 1000.0 AS slowest_test_seconds
-FROM pytest_xdist_tests
-GROUP BY job_id;
-
--- frontend_shard_balance — did Vitest's file-count sharding balance measured cost?
--- Join the file-level work to Vitest's own wall/phase summary; equal file counts can hide expensive shards.
--- verified 2026-09-30, inframe staging run 36274924301: 208-211 files but 340.9-431.4 s walls.
-CREATE OR REPLACE VIEW frontend_shard_balance AS
-WITH files AS (
-  SELECT job_id,
-         len(array_agg(file)) AS files,
-         list_sum(array_agg(n_tests)) AS tests,
-         list_sum(array_agg(file_ms)) / 1000.0 AS file_seconds,
-         max(file_ms) / 1000.0 AS slowest_file_seconds
-  FROM vitest_files
-  GROUP BY job_id)
-SELECT f.*, p.wall_s, p.phase_s
-FROM files f
-JOIN vitest_phases p USING (job_id);
+-- Shard balance — is pytest-split or Vitest's file-count sharding balancing cost? The rows already answer it:
+--   SUMMARIZE SELECT ts, ms FROM pytest_xdist_tests WHERE job_id = <job>;   -- ts min..max is the shard's wall span,
+--                                                                          -- ms max the slowest test, count the tests
+--   SUMMARIZE SELECT n_tests, file_ms FROM vitest_files WHERE job_id = <job>;  -- vitest_phases has Vitest's own wall
+-- verified 2026-09-30, inframe staging run 36274924301: backend walls 350.0 s, 359.3 s, 468.7 s; frontend 208-211 files
+-- but 340.9-431.4 s walls.
 
 -- gha_steps — when did each step start, and how long did it run, from the log alone? A step opens with
 -- "##[group]Run <command>" and ends where the next one opens, or at "Post job cleanup." for the last one.
@@ -121,16 +100,19 @@ WHERE ref_file <> '';
 -- pattern_id is renumbered on every call: never join on it; fingerprint is the cross-run key.
 -- verified 2026-09-23: 1 cluster, 5 jobs, 3 runs.
 CREATE OR REPLACE VIEW failure_clusters AS
-SELECT fingerprint, array_agg(DISTINCT job_id) AS job_ids, len(job_ids) AS n_jobs, array_agg(message)[1] AS example
-FROM gha_errors GROUP BY fingerprint ORDER BY n_jobs DESC;
+SELECT fingerprint, list(DISTINCT job_id ORDER BY job_id) AS job_ids, list(DISTINCT message ORDER BY message) AS messages
+FROM gha_errors GROUP BY fingerprint;
 
 -- recurring_diagnostics — which lint finding recurs across jobs (and so across runs)? Keyed on rule + file,
 -- because a diagnostic's line moves between commits. Join job_id to the jobs API for run and branch.
 -- verified 2026-09-23: noArrayIndexKey and noNonNullAssertion recur in all 3 failed Frontend Checks logs.
 CREATE OR REPLACE VIEW recurring_diagnostics AS
-SELECT rule, file, array_agg(DISTINCT job_id) AS job_ids, len(job_ids) AS n_jobs,
-       array_agg(line ORDER BY job_id) AS lines, bool_or(is_error) AS ever_error
-FROM biome_diagnostics GROUP BY rule, file HAVING len(array_agg(DISTINCT job_id)) > 1 ORDER BY n_jobs DESC, rule;
+WITH recurring AS (
+  SELECT DISTINCT a.rule, a.file FROM biome_diagnostics a JOIN biome_diagnostics b
+    ON a.rule = b.rule AND a.file = b.file AND a.job_id <> b.job_id
+)
+SELECT rule, file, list(DISTINCT job_id ORDER BY job_id) AS job_ids, list(line ORDER BY job_id) AS lines, bool_or(is_error) AS ever_error
+FROM biome_diagnostics JOIN recurring USING (rule, file) GROUP BY rule, file;
 
 -- DuckDB extension CI (extension-ci-tools). These read only the lines carrying their own literal marker
 -- (read_lines, ~0.2 s over 80 MB), then parse that text with parse_duck_hunt_log: the regexp: reader over
@@ -142,7 +124,7 @@ FROM biome_diagnostics GROUP BY rule, file HAVING len(array_agg(DISTINCT job_id)
 -- verified 2026-09-26 on 81 DuckDB-extension job logs (duckdb-pdf, quackapi, community-extensions): 65 rows, 25 jobs.
 CREATE OR REPLACE VIEW sqllogictest_failures AS
 WITH marked AS (
-  SELECT file_path, string_agg(content, chr(10) ORDER BY line_number) AS text
+  SELECT file_path, string_agg(content, E'\n' ORDER BY line_number) AS text
   FROM read_lines('raw/joblog-*.txt') WHERE contains(content, ': FAILED:') GROUP BY file_path)
 SELECT string_split(parse_filename(m.file_path, true), '-')[2]::BIGINT AS job_id, e.ref_file AS test_file, e.ref_line AS test_line
 FROM marked m, LATERAL parse_duck_hunt_log(m.text, 'regexp:\S+Z (?P<file>test/\S+?\.test)[:(](?P<line>\d+)\)?: FAILED:') e
@@ -153,7 +135,7 @@ WHERE e.ref_file <> '';
 -- verified 2026-09-26: 65 rows; pdf_redact.test:82 "Wrong result in query!".
 CREATE OR REPLACE VIEW sqllogictest_failure_kinds AS
 WITH marked AS (
-  SELECT file_path, string_agg(content, chr(10) ORDER BY line_number) AS text
+  SELECT file_path, string_agg(content, E'\n' ORDER BY line_number) AS text
   FROM read_lines('raw/joblog-*.txt') WHERE contains(content, ' (test/') GROUP BY file_path)
 SELECT string_split(parse_filename(m.file_path, true), '-')[2]::BIGINT AS job_id, e.message AS kind, e.ref_file AS test_file, e.ref_line AS test_line
 FROM marked m, LATERAL parse_duck_hunt_log(m.text, 'regexp:\S+Z (?:##\[error\])?(?P<message>[A-Z][^(]*?) \((?P<file>test/\S+?\.test):(?P<line>\d+)\)') e
@@ -164,7 +146,7 @@ WHERE e.ref_file <> '';
 -- verified 2026-09-26: 53 rows over 51 jobs; parser_tools Windows "test_release_internal] Error 127".
 CREATE OR REPLACE VIEW make_errors AS
 WITH marked AS (
-  SELECT file_path, string_agg(content, chr(10) ORDER BY line_number) AS text
+  SELECT file_path, string_agg(content, E'\n' ORDER BY line_number) AS text
   FROM read_lines('raw/joblog-*.txt') WHERE contains(content, '] Error ') GROUP BY file_path)
 SELECT string_split(parse_filename(m.file_path, true), '-')[2]::BIGINT AS job_id, e.ref_file AS make_target, e.message AS exit_code
 FROM marked m, LATERAL parse_duck_hunt_log(m.text, 'regexp:\S+Z make(?:\[\d+\])?: \*\*\* \[(?P<file>[^\]]+)\] Error (?P<message>\d+)') e
@@ -175,7 +157,7 @@ WHERE e.ref_file <> '';
 -- verified 2026-09-26: poppler headers "‘std::span’ has not been declared" (C++17 build, C++20 header), MSVC fmt 'stdext'.
 CREATE OR REPLACE VIEW compile_errors AS
 WITH marked AS (
-  SELECT file_path, string_agg(content, chr(10) ORDER BY line_number) AS text
+  SELECT file_path, string_agg(content, E'\n' ORDER BY line_number) AS text
   FROM read_lines('raw/joblog-*.txt') WHERE contains(content, ': error') GROUP BY file_path)
 SELECT string_split(parse_filename(m.file_path, true), '-')[2]::BIGINT AS job_id, e.ref_file AS src_file, e.message
 FROM marked m, LATERAL parse_duck_hunt_log(m.text,
@@ -186,7 +168,7 @@ WHERE e.ref_file <> '';
 -- verified 2026-09-26: 20 of the readable failed jobs were only this (duckdb-pdf, quackapi, duckdb-quack).
 CREATE OR REPLACE VIEW format_diffs AS
 WITH marked AS (
-  SELECT file_path, string_agg(content, chr(10) ORDER BY line_number) AS text
+  SELECT file_path, string_agg(content, E'\n' ORDER BY line_number) AS text
   FROM read_lines('raw/joblog-*.txt') WHERE contains(content, 'Found differences in file') GROUP BY file_path)
 SELECT string_split(parse_filename(m.file_path, true), '-')[2]::BIGINT AS job_id, e.ref_file AS src_file
 FROM marked m, LATERAL parse_duck_hunt_log(m.text, 'regexp:\S+Z Found differences in file (?P<file>\S+)') e
