@@ -18,6 +18,7 @@ SET GLOBAL http_retries = 0;
 INSTALL shellfs FROM community; LOAD shellfs;
 SELECT content FROM read_text($u$/opt/homebrew/bin/duckdb -csv :memory: -c "SET extension_directory = '~/.duck/extensions'; UPDATE EXTENSIONS;" 2>&1; true |$u$);
 .read server/extensions.sql
+.read server/macros.sql
 CALL enable_logging(['QueryLog', 'HTTP', 'Quack', 'Metrics'], storage := 'file', storage_path := getenv('QUACK_NATIVE_LOG'), storage_buffer_size := 0);
 .read server/profile.sql
 .read server/docs.sql

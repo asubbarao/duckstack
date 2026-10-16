@@ -22,7 +22,7 @@ FROM read_text($cmd$curl -sSL --fail --max-time 30 '{{ url }}' |$cmd$);
 $t$, c::JSON, autoescape := false) AS sql
     FROM batches c
 ), posted AS (
-    SELECT array_agg(quackapi_post('http://127.0.0.1:9495/sql', json_object('sql', sql)::VARCHAR)) AS receipts FROM statements
+    SELECT array_agg(selfdispatch(sql)) AS receipts FROM statements
 )
 SELECT r.* FROM posted CROSS JOIN UNNEST(receipts) AS t(r)
 $$, '0 15 3 * * *');
