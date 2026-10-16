@@ -47,32 +47,19 @@
 --   read_csv  -> header-derived columns `code VARCHAR, active VARCHAR`; all_varchar preserves `001`.
 --   read_lines -> `line_number, content, byte_offset, file_path`; `"trim"` removes line endings.
 
-WITH calls AS (
-  SELECT 'json' AS label, json_object(
-    'reader', {'name': 'read_json', 'parameters': [
-      {'name': 'format', 'value': $v$'newline_delimited'$v$},
-      {'name': 'maximum_depth', 'value': '-1'}]},
-    'stages', [{'command': 'printf', 'args': [$a$'%s\n'$a$, $a$'{"id":1,"ok":true}'$a$], 'flags': []}],
-    'sql_tag', 'json_pipe', 'row_limit', 100) AS context
-  UNION ALL
-  SELECT 'csv', json_object(
-    'reader', {'name': 'read_csv', 'parameters': [
-      {'name': 'header', 'value': 'true'},
-      {'name': 'all_varchar', 'value': 'true'}]},
-    'stages', [{'command': 'printf', 'args': [$a$'code,active\n001,true\n'$a$], 'flags': []}],
-    'sql_tag', 'csv_pipe', 'row_limit', 100)
-  UNION ALL
-  SELECT 'lines', json_object(
-    'reader', {'name': 'read_lines', 'parameters': [{'name': '"trim"', 'value': 'true'}]},
-    'stages', [{'command': 'printf', 'args': [$a$'alpha\nbeta\n'$a$], 'flags': []}],
-    'sql_tag', 'lines_pipe', 'row_limit', 100)
+-- Current inline command/params form. Native-file and pipeline cases: ../../self-dispatch/references/inline.sql.
+WITH source AS (
+    SELECT 'find' AS command, ['/private/tmp', '-maxdepth', '0', '-type', 'd'] AS args,
+           {'header': false, 'all_varchar': true} AS params
+), c AS (
+    SELECT * REPLACE (list_transform(args, arg -> quote_literal(arg)) AS args) FROM source
 ), rendered AS (
-  SELECT label, tera_render(
-    'shell_reader.tera', context, autoescape := false,
-    template_path := '/Users/aloksubbarao/duckdb-skills/skills/tera/references/*.tera'
-  ) AS statement
-  FROM calls
+    SELECT tera_render($t$
+SELECT * FROM read_csv($cmd${{ command }} {{ args | join(sep=" ") }} |$cmd$
+{% for name, value in params %}, {{ name }} := {{ value }}{% endfor %})
+$t$, c::JSON, autoescape := false) AS sql FROM c
+), posted AS (
+    SELECT array_agg(selfdispatch(sql)) AS receipts
+    FROM rendered
 )
-SELECT label, is_parsable(statement) AS parsable, len(statement) AS statement_chars, statement
-FROM rendered
-ORDER BY label;
+SELECT r.* FROM posted CROSS JOIN UNNEST(receipts) AS t(r);

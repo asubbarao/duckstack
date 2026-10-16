@@ -8,6 +8,9 @@ description: >
 
 # Parser tools
 
+[Verified code-analysis queries](../query/references/code-analysis.sql) cover file validation,
+statement inspection, AST call locations and native Git review. Run one SELECT at a time.
+
 Read `/duckstack:duck` first. The selected dev server has `parser_tools` available. Keep this
 as analysis of SQL text: `SELECT`s only, no execution of the parsed statements, no `regexp_*`,
 and no keyword `LIKE` scan pretending to be a parser.
@@ -145,7 +148,8 @@ The starting claims are correct: `is_parsable(text)` distinguishes the two SQL b
 - Verified 2026-09-29: **table functions are invisible to the parser facts.** For a query with
   `FROM read_duck_hunt_log('x', 'gcc_text')`, `parse_function_names`, `parse_functions` and `parse_tables`
   (scalar and table form) return only the scalar functions (`left`, `starts_with`) and no table at all. To
-  know which extension a query calls, read a tag or the text; the parser will not tell you.
+  locate reader invocations, use Sitting Duck's AST, while also inspecting ERROR nodes:
+  its SQL grammar can reject valid DuckDB constructs, so an empty AST match is not proof of absence.
 - Verified 2026-09-29: `parse_statements(text)` returns `VARCHAR[]` (not structs) of re-serialized SQL:
   normalized (`CAST('t' AS BOOLEAN)`, quoted identifiers, added parentheses) with every comment removed.
   Use it to split and validate; to keep comments, split the file text yourself and hand each piece to the
