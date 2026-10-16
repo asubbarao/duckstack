@@ -218,34 +218,30 @@ FROM quackapi_serve(9495, host := '127.0.0.1', query_timeout_ms := 120000);
 -- quackapi_serve switches logging off.
 CALL enable_logging(['QueryLog', 'HTTP', 'Quack'], storage := 'file', storage_path := getenv('QUACK_NATIVE_LOG'), storage_buffer_size := 0);
 
--- Agent transcripts (Claude Code ~/.claude/projects, Codex ~/.codex), read natively, one Parquet per transcript at its own
--- path under ~/.duck/lake/agent.
--- agent.entries: PR #1576's entries shape over one find: hostfs columns, the file's reader and the statement that reads
--- it. read_json types the top-level fields and reads every object as MAP(VARCHAR, JSON) (map_inference_threshold 0,
--- maximum_depth 2): the same shape in every file. Inferred further, the same field is a STRUCT in one file and a MAP in
--- another, which union_by_name cannot merge, and objects keyed by tool-call id become thousands of columns.
--- maximum_object_size 32 MB fits the largest line (~21 MB); the reader's buffers are twice it per thread.
+-- Agent transcripts (Claude Code ~/.claude/projects, Codex ~/.codex), read natively, one Parquet per folder at the folder's
+-- own path under ~/.duck/lake/agent.
+-- agent.entries: PR #1576's entries shape over one find: hostfs columns, the reader, and the statement that copies the
+-- file's whole folder (a glob read) to its stored file. read_json keeps every top-level field as a column of JSON
+-- (maximum_depth 1, map inference off): the same shape in every folder. Map inference on turns a folder's ~170 top-level
+-- fields into one MAP; inferred deeper, a field is a STRUCT in one folder and a MAP in another, which union_by_name cannot
+-- merge. maximum_object_size 32 MB fits the largest line (~21 MB); the reader's buffers are twice it per thread.
 CREATE SCHEMA IF NOT EXISTS agent;
 CREATE OR REPLACE VIEW agent.entries AS
 SELECT path, parse_dirpath(path) AS parent, file_name(path) AS name, file_extension(path) AS ext, file_size(path) AS bytes,
-       file_last_modified(path) AS modified, 'read_json' AS reader,
-       printf($s$SELECT * FROM read_json('%s', format := 'newline_delimited', maximum_depth := 2, map_inference_threshold := 0, sample_size := -1,
-           maximum_object_size := 33554432, ignore_errors := true)$s$, path) AS sql_statement,
-       '~/.duck/lake/agent' || path || '.parquet' AS stored
+       file_last_modified(path) AS modified, 'read_json' AS reader, '~/.duck/lake/agent' || parent || '.parquet' AS stored,
+       printf($s$SELECT content FROM read_text('mkdir -p %s |');
+COPY (SELECT * FROM read_json('%s/*.jsonl*', format := 'newline_delimited', maximum_depth := 1, map_inference_threshold := -1, sample_size := -1,
+      maximum_object_size := 33554432, ignore_errors := true, union_by_name := true, filename := 'transcript')) TO '%s' (FORMAT parquet)$s$,
+              parse_dirpath(stored), parent, stored) AS sql_statement
 FROM (SELECT rtrim(content, e'\n') AS path
       FROM read_lines($c$find ~/.claude/projects ~/.codex/sessions ~/.codex/archived_sessions -type f -name '*.jsonl*' |$c$));
--- Each entry's statement, copied to its stored file. Boot copies every transcript; every 5 minutes the cron copies those
--- modified since yesterday. A run is 4 /sql bodies that each run in order: 4 files in memory at a time.
-CREATE OR REPLACE VIEW agent.ingest AS
-SELECT path, parent, modified, printf($s$COPY (%s) TO '%s' (FORMAT parquet)$s$, sql_statement, stored) AS stmt FROM agent.entries;
-SELECT quackapi_post('http://127.0.0.1:9495/sql', json_object('sql', printf($s$SELECT content FROM read_text('mkdir -p %s |')$s$,
-           string_agg(DISTINCT '~/.duck/lake/agent' || parent, ' ')) || e';\n' || string_agg(stmt, e';\n'))).status
-FROM agent.ingest GROUP BY hash(path) % 4;
-SELECT cron($$SELECT quackapi_post('http://127.0.0.1:9495/sql', json_object('sql', printf($s$SELECT content FROM read_text('mkdir -p %s |')$s$,
-           string_agg(DISTINCT '~/.duck/lake/agent' || parent, ' ')) || e';\n' || string_agg(stmt, e';\n'))).status
-FROM agent.ingest WHERE modified >= current_date - INTERVAL 1 DAY GROUP BY hash(path) % 4$$, '0 */5 * * * *');
--- Every stored transcript whose source still exists (a Codex session compressed or archived leaves its old copy behind).
+-- One post per folder; the posts of one SELECT run at the same time. Boot copies every folder (111, 3.9 GB: 21 s);
+-- every 5 minutes the cron replaces the folders holding a file modified since yesterday.
+SELECT quackapi_post('http://127.0.0.1:9495/sql', json_object('sql', sql_statement)).status
+FROM (SELECT DISTINCT parent, sql_statement FROM agent.entries);
+SELECT cron($$SELECT quackapi_post('http://127.0.0.1:9495/sql', json_object('sql', sql_statement)).status
+FROM (SELECT DISTINCT parent, sql_statement FROM agent.entries WHERE modified >= current_date - INTERVAL 1 DAY)$$, '0 */5 * * * *');
+-- Every stored line whose transcript still exists (a Codex session archived out of a folder leaves its old copy behind).
 CREATE OR REPLACE VIEW agent.lines AS
-SELECT * FROM (SELECT *, split_part(filename, '/.duck/lake/agent', 2)[:-9] AS transcript   -- Claude records have their own source
-               FROM read_parquet('~/.duck/lake/agent/**/*.parquet', union_by_name := true, filename := true))
+SELECT * FROM read_parquet('~/.duck/lake/agent/**/*.parquet', union_by_name := true)
 SEMI JOIN agent.entries e ON e.path = transcript;
