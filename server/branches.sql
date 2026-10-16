@@ -11,14 +11,37 @@ FROM cd(getenv('HOME') || '/inframe');
 -- counts once, and the two ends join on qualified_name (scope path with per-name index), not on name. A file's blob
 -- reads are correlated LATERALs, so WHERE branch_name = … reads only that branch; the side a file lacks gets a NULL uri,
 -- because a WHERE inside the LATERAL does not stop the read.
--- git_changes: every file each origin/staging commit changed against each parent, read live (no store): a WHERE on
--- commit_date or commit_hash diffs only those commits (2 days: 0.8 s); the whole history (6,826 commits) is 32 s.
+-- git_changes and git_worktrees answer what agents ran git log/show/diff/status for (about 6,600 calls in the Claude
+-- transcripts), for both repos. git_changes: every file each commit on any branch changed against each parent, read
+-- live; a WHERE on commit_date diffs only those commits (2 days, both repos: 24 s, most of it walking the branches).
+-- git_worktrees: every checkout of either repo with its branch and its uncommitted files (none: one row, NULL file).
 SELECT selfdispatch($views$
 CREATE OR REPLACE VIEW git_changes AS
-SELECT l.commit_hash, e.parent_hash, l.author_name, l.commit_date, l.message, d.file_path, d.file_ext, d.status, d.old_path
-FROM git_log('.', 'origin/staging') l
-JOIN git_parents('.', 'origin/staging') e USING (commit_hash)
-CROSS JOIN LATERAL git_diff_tree_each('.', e.parent_hash, e.commit_hash) d;
+WITH repos AS (
+  SELECT unnest([getenv('HOME') || '/inframe', getenv('HOME') || '/duckdb-skills']) AS repo
+), commits AS (
+  SELECT DISTINCT r.repo, l.commit_hash, l.author_name, l.commit_date, l.message
+  FROM repos r
+  CROSS JOIN LATERAL git_branches_each(r.repo) b
+  CROSS JOIN LATERAL git_log_each(r.repo, b.commit_hash) l
+)
+SELECT c.*, p.parent_hash, d.file_path, d.file_ext, d.status, d.old_path
+FROM commits c
+CROSS JOIN LATERAL git_parents_each(c.repo, c.commit_hash) p
+CROSS JOIN LATERAL git_diff_tree_each(c.repo, p.parent_hash, c.commit_hash) d;
+CREATE OR REPLACE VIEW git_worktrees AS
+WITH repos AS (
+  SELECT unnest([getenv('HOME') || '/inframe', getenv('HOME') || '/duckdb-skills']) AS repo
+), worktrees AS (
+  SELECT r.repo, rtrim(substr(l.content, 10), E'\n') AS worktree
+  FROM repos r CROSS JOIN LATERAL read_lines_lateral('git -C ' || r.repo || ' worktree list --porcelain |') l
+  WHERE starts_with(l.content, 'worktree ')
+), branches AS (
+  SELECT w.*, rtrim(b.content, E'\n') AS branch
+  FROM worktrees w CROSS JOIN LATERAL read_lines_lateral('git -C ' || w.worktree || ' rev-parse --abbrev-ref HEAD |') b
+)
+SELECT b.repo, b.worktree, b.branch, s.file_path, s.file_ext, s.status, s.staged, s.unstaged, s.old_path
+FROM branches b LEFT JOIN LATERAL (SELECT * FROM git_status_each(b.worktree)) s ON true;
 CREATE OR REPLACE VIEW branch_diff AS
 WITH local_branches AS (
     SELECT * FROM git_branches() WHERE NOT is_remote
