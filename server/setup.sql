@@ -374,13 +374,14 @@ CALL enable_logging(['QueryLog', 'HTTP', 'Quack'], storage := 'file', storage_pa
 -- path under ~/.duck/lake/agent.
 -- agent.entries: PR #1576's entries shape over one find: hostfs columns, the file's reader and the statement that reads
 -- it. read_json infers every field and type from the file (map_inference_threshold -1: objects stay structs;
--- maximum_depth 4: anything deeper, tool inputs and results among it, stays JSON).
+-- maximum_depth 4: anything deeper, tool inputs and results among it, stays JSON). maximum_object_size 32 MB fits the
+-- largest line (~21 MB); the reader's buffers are twice it per thread, and 256 MB ran dev out of memory.
 CREATE SCHEMA IF NOT EXISTS agent;
 CREATE OR REPLACE VIEW agent.entries AS
 SELECT path, parse_dirpath(path) AS parent, file_name(path) AS name, file_extension(path) AS ext, file_size(path) AS bytes,
        file_last_modified(path) AS modified, 'read_json' AS reader,
        printf($s$SELECT * FROM read_json('%s', format := 'newline_delimited', maximum_depth := 4, map_inference_threshold := -1,
-           sample_size := -1, maximum_object_size := 268435456, ignore_errors := true)$s$, path) AS sql_statement,
+           sample_size := -1, maximum_object_size := 33554432, ignore_errors := true)$s$, path) AS sql_statement,
        '~/.duck/lake/agent' || path || '.parquet' AS stored
 FROM (SELECT rtrim(content, e'\n') AS path
       FROM read_lines($c$find ~/.claude/projects ~/.codex/sessions ~/.codex/archived_sessions -type f -name '*.jsonl*' |$c$));
