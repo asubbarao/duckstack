@@ -21,32 +21,49 @@ FROM (SELECT rtrim(content, e'\n') AS path
 -- agent.titles: Codex thread names from ~/.codex/session_index.jsonl; id is the session id in the rollout file name.
 CREATE OR REPLACE VIEW agent.titles AS
 SELECT id, thread_name AS title, updated_at::TIMESTAMPTZ AS updated_at FROM read_json(getenv('HOME') || '/.codex/session_index.jsonl', format := 'newline_delimited');
--- Each session with a file newer than its stored copy (or none stored) is copied whole, one post per session; the posts
--- of one SELECT run at the same time. Boot and the 5-minute cron run the same two statements: an empty store takes
--- 980 sessions (3.6 GB, ~45 s; posts that fail are retried by the next run), a 5-minute run the few active sessions
--- (~13 MB, 0.5 s). A replaced file is written as tmp_<name> and renamed, and agent.lines is posted after the copies with
--- the stored files' literal list, so it never reads a partial file. It keeps the lines whose transcript still exists.
-SELECT quackapi_post('http://127.0.0.1:9495/sql', json_object('sql', printf($s$SELECT content FROM read_text('mkdir -p %s |');
-COPY (SELECT * FROM read_json([%s], format := 'newline_delimited', maximum_depth := 1, map_inference_threshold := -1, sample_size := -1,
-      maximum_object_size := 33554432, ignore_errors := true, union_by_name := true, filename := 'transcript')) TO '%s' (FORMAT parquet)$s$,
-      parse_dirpath(stored), files, stored))).status
-FROM (SELECT t.session, '~/.duck/lake/agent' || t.session || '.parquet' AS stored, string_agg('$q$' || t.path || '$q$', ', ') AS files
-      FROM agent.entries t LEFT JOIN agent.entries s ON s.reader = 'read_parquet' AND s.session = t.session
-      WHERE t.reader = 'read_json'
-      GROUP BY t.session HAVING bool_or(t.modified > coalesce(s.modified, '-infinity'::TIMESTAMP)));
-SELECT quackapi_post('http://127.0.0.1:9495/sql', json_object('sql', printf($s$CREATE OR REPLACE VIEW agent.lines AS
-SELECT * FROM read_parquet([%s], union_by_name := true) SEMI JOIN agent.entries e ON e.path = transcript$s$, files))).status
-FROM (SELECT string_agg('$q$' || path || '$q$', ', ') AS files FROM agent.entries WHERE reader = 'read_parquet' AND NOT starts_with(name, 'tmp_'))
-WHERE files IS NOT NULL;
-SELECT cron($$SELECT quackapi_post('http://127.0.0.1:9495/sql', json_object('sql', printf($s$SELECT content FROM read_text('mkdir -p %s |');
-COPY (SELECT * FROM read_json([%s], format := 'newline_delimited', maximum_depth := 1, map_inference_threshold := -1, sample_size := -1,
-      maximum_object_size := 33554432, ignore_errors := true, union_by_name := true, filename := 'transcript')) TO '%s' (FORMAT parquet)$s$,
-      parse_dirpath(stored), files, stored))).status
-FROM (SELECT t.session, '~/.duck/lake/agent' || t.session || '.parquet' AS stored, string_agg('$q$' || t.path || '$q$', ', ') AS files
-      FROM agent.entries t LEFT JOIN agent.entries s ON s.reader = 'read_parquet' AND s.session = t.session
-      WHERE t.reader = 'read_json'
-      GROUP BY t.session HAVING bool_or(t.modified > coalesce(s.modified, '-infinity'::TIMESTAMP)));
-SELECT quackapi_post('http://127.0.0.1:9495/sql', json_object('sql', printf($s$CREATE OR REPLACE VIEW agent.lines AS
-SELECT * FROM read_parquet([%s], union_by_name := true) SEMI JOIN agent.entries e ON e.path = transcript$s$, files))).status
-FROM (SELECT string_agg('$q$' || path || '$q$', ', ') AS files FROM agent.entries WHERE reader = 'read_parquet' AND NOT starts_with(name, 'tmp_'))
-WHERE files IS NOT NULL$$, '0 */5 * * * *');
+-- One refresh program, run once now and every five minutes. Each session with a file newer than its stored copy (or
+-- none stored) is copied whole, one post per session, run at the same time: an empty store takes 980 sessions (3.6 GB,
+-- ~45 s; failed posts are retried by the next run), a 5-minute run the few active ones (~13 MB, 0.5 s). agent.lines is
+-- rebound after the copies with the stored files' literal list, so it never reads a partial file. No changed session
+-- means no rows, so nothing is posted.
+WITH program AS (
+    SELECT $refresh$
+WITH c AS (
+    SELECT t.session, getenv('HOME') || '/.duck/lake/agent' || t.session || '.parquet' AS stored,
+           parse_dirpath(stored) AS directory, list(t.path) AS files
+    FROM agent.entries t LEFT JOIN agent.entries s ON s.reader = 'read_parquet' AND s.session = t.session
+    WHERE t.reader = 'read_json'
+    GROUP BY t.session HAVING bool_or(t.modified > coalesce(s.modified, '-infinity'::TIMESTAMP))
+), statements AS (
+    SELECT tera_render($copy$
+SELECT content FROM read_text($cmd$mkdir -p '{{ directory }}' |$cmd$);
+COPY (
+    SELECT * FROM read_json([{% for f in files %}$q${{ f }}$q${% if not loop.last %}, {% endif %}{% endfor %}],
+        format := 'newline_delimited', maximum_depth := 1, map_inference_threshold := -1, sample_size := -1,
+        maximum_object_size := 33554432, ignore_errors := true, union_by_name := true, filename := 'transcript')
+) TO $path${{ stored }}$path$ (FORMAT parquet);
+$copy$, c::JSON, autoescape := false) AS sql FROM c
+), posted AS (
+    SELECT array_agg(quackapi_post('http://127.0.0.1:9495/sql', json_object('sql', sql)::VARCHAR)) AS receipts FROM statements
+)
+SELECT r.* FROM posted CROSS JOIN UNNEST(receipts) AS t(r);
+
+WITH c AS (
+    SELECT list(path) AS files FROM agent.entries WHERE reader = 'read_parquet' AND NOT starts_with(name, 'tmp_')
+), statements AS (
+    SELECT tera_render($view$
+CREATE OR REPLACE VIEW agent.lines AS
+SELECT * FROM read_parquet([{% for f in files %}$q${{ f }}$q${% if not loop.last %}, {% endif %}{% endfor %}], union_by_name := true)
+SEMI JOIN agent.entries e ON e.path = transcript;
+$view$, c::JSON, autoescape := false) AS sql FROM c WHERE len(files) > 0
+), posted AS (
+    SELECT array_agg(quackapi_post('http://127.0.0.1:9495/sql', json_object('sql', sql)::VARCHAR)) AS receipts FROM statements
+)
+SELECT r.* FROM posted CROSS JOIN UNNEST(receipts) AS t(r);
+$refresh$ AS sql
+), posted AS (
+    SELECT sql, array_agg(quackapi_post('http://127.0.0.1:9495/sql', json_object('sql', sql)::VARCHAR)) AS receipts
+    FROM program GROUP BY sql
+)
+SELECT cron(sql, '0 */5 * * * *') AS job, r.*
+FROM posted CROSS JOIN UNNEST(receipts) AS t(r);
