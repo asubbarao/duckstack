@@ -50,8 +50,7 @@ INSTALL fts; LOAD fts;
 SELECT content FROM read_text('mkdir -p ' || getenv('HOME') || '/inframe && echo ok |') LIMIT 1;
 FROM cd(getenv('HOME') || '/inframe');
 
-ATTACH IF NOT EXISTS 'ducklake:~/.duck/lake/duckstack/catalog.ducklake' AS lake
-    (DATA_PATH '~/.duck/lake/duckstack/data/', DATA_INLINING_ROW_LIMIT 0);
+ATTACH IF NOT EXISTS 'ducklake:~/.duck/lake/duckstack/catalog.ducklake' AS lake (DATA_INLINING_ROW_LIMIT 0);
 
 CALL enable_logging(['QueryLog', 'HTTP', 'Quack'], storage := 'file', storage_path := getenv('QUACK_NATIVE_LOG'), storage_buffer_size := 0);
 
@@ -284,8 +283,3 @@ SELECT quackapi_post('http://127.0.0.1:9495/sql', json_object('sql', printf($s$C
 SELECT * FROM read_parquet([%s], union_by_name := true) SEMI JOIN agent.entries e ON e.path = transcript$s$, files))).status
 FROM (SELECT string_agg('$q$' || path || '$q$', ', ') AS files FROM agent.entries WHERE reader = 'read_parquet' AND NOT starts_with(name, 'tmp_'))
 WHERE files IS NOT NULL$$, '0 */5 * * * *');
-
--- Boot marker for the Server Bootstrap Smoke workflow: it polls
--- duckdb_tables() for _setup_complete over /sql. Created last, so its
--- presence means setup.sql ran to completion.
-CREATE OR REPLACE TABLE _setup_complete AS SELECT now() AS booted_at;
