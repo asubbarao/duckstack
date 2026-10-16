@@ -81,95 +81,6 @@ $t$, c::JSON, autoescape := false) AS sql
 SELECT r.* FROM posted CROSS JOIN UNNEST(receipts) AS t(r)
 $$, '0 15 3 * * *');
 
--- What each local branch changed since it left origin/staging, and whether origin has it: the files a PR
--- shows, with no gh. branch_point = shared commits that no other shared commit has as a parent (git's
--- merge base). One row per branch and changed file; filter with WHERE branch_name = ….
-CREATE OR REPLACE VIEW branch_diff AS
-WITH local_branches AS (
-    SELECT * FROM git_branches() WHERE NOT is_remote
-), remote_branches AS (
-    SELECT branch_name AS remote_branch_name, commit_hash AS remote_commit_hash FROM git_branches() WHERE is_remote
-), tracked_branches AS (
-    SELECT local_branches.*, remote_branches.remote_branch_name, remote_branches.remote_commit_hash,
-           remote_branches.remote_commit_hash IS NOT DISTINCT FROM local_branches.commit_hash AS is_pushed
-    FROM local_branches
-    LEFT JOIN remote_branches ON remote_branches.remote_branch_name = 'origin/' || local_branches.branch_name
-), staging_commits AS (
-    SELECT commit_hash FROM git_log('.', 'origin/staging')
-), staging_parent_edges AS (
-    SELECT commit_hash, parent_hash FROM git_parents('.', 'origin/staging')
-), branch_history AS (
-    SELECT tracked_branches.branch_name, history.commit_hash
-    FROM tracked_branches, LATERAL git_log_each(tracked_branches.repo_path, tracked_branches.commit_hash) history
-), shared_history AS (
-    SELECT * FROM branch_history SEMI JOIN staging_commits USING (commit_hash)
-), shared_parents AS (
-    SELECT shared_history.branch_name, staging_parent_edges.parent_hash AS commit_hash
-    FROM shared_history JOIN staging_parent_edges USING (commit_hash)
-), branch_points AS (
-    SELECT branch_name, commit_hash AS branch_point FROM shared_history
-    ANTI JOIN shared_parents USING (branch_name, commit_hash)
-)
-SELECT tracked_branches.*, branch_points.branch_point, changed_file.* EXCLUDE (repo_path),
-       git_uri(tracked_branches.repo_path, changed_file.file_path, branch_points.branch_point) AS before_uri,
-       git_uri(tracked_branches.repo_path, changed_file.file_path, tracked_branches.commit_hash) AS after_uri
-FROM tracked_branches
-JOIN branch_points USING (branch_name)
-CROSS JOIN LATERAL git_diff_tree_each(tracked_branches.repo_path, branch_points.branch_point, tracked_branches.commit_hash) changed_file;
-
--- Every branch_diff file with both ends' blob metadata and the branch's commit facts. Ahead/behind match
--- `git rev-list --left-right --count origin/staging...<branch>`. A file's blob reads are correlated LATERALs,
--- so WHERE branch_name = … reads only that branch; the side a file lacks gets a NULL uri, because a WHERE
--- inside the LATERAL does not stop the read.
--- Definitions each branch_diff file added, removed or modified: sitting_duck parses both ends; a declaration
--- wrapping a same-named definition (TS `const x` around its declarator) is dropped so each name counts once,
--- and the two ends join on qualified_name (scope path with per-name index), not on name.
-CREATE OR REPLACE VIEW branch_definition_changes AS
-WITH file_sides AS (
-    SELECT branch_diff.branch_name, branch_diff.file_path, 'before' AS side, file_read.text
-    FROM branch_diff, LATERAL git_read_each(branch_diff.before_uri) file_read
-    WHERE branch_diff.status <> 'added'
-    UNION ALL
-    SELECT branch_diff.branch_name, branch_diff.file_path, 'after' AS side, file_read.text
-    FROM branch_diff, LATERAL git_read_each(branch_diff.after_uri) file_read
-    WHERE branch_diff.status <> 'deleted'
-), nodes AS (
-    SELECT branch_name, file_path, side, unnest(parse_ast_list(text, detect_language(file_path)), recursive := true)
-    FROM file_sides
-    WHERE detect_language(file_path) IS NOT NULL
-), definitions AS (
-    SELECT * FROM nodes WHERE is_definition(semantic_type) AND name <> ''
-), wrapper_definitions AS (
-    SELECT parent.branch_name, parent.file_path, parent.side, parent.node_id
-    FROM definitions parent JOIN definitions child
-      ON child.branch_name = parent.branch_name AND child.file_path = parent.file_path AND child.side = parent.side
-     AND child.parent_id = parent.node_id AND child.name = parent.name
-), own_definitions AS (
-    SELECT * FROM definitions ANTI JOIN wrapper_definitions USING (branch_name, file_path, side, node_id)
-), before_definitions AS (
-    SELECT * FROM own_definitions WHERE side = 'before'
-), after_definitions AS (
-    SELECT * FROM own_definitions WHERE side = 'after'
-)
-SELECT coalesce(after_definitions.branch_name, before_definitions.branch_name) AS branch_name,
-       coalesce(after_definitions.file_path, before_definitions.file_path) AS file_path,
-       coalesce(after_definitions.qualified_name, before_definitions.qualified_name) AS qualified_name,
-       coalesce(after_definitions.name, before_definitions.name) AS name,
-       coalesce(after_definitions.type, before_definitions.type) AS node_type,
-       CASE WHEN before_definitions.node_id IS NULL THEN 'added'
-            WHEN after_definitions.node_id IS NULL THEN 'removed'
-            WHEN after_definitions.descendant_count <> before_definitions.descendant_count THEN 'modified'
-            WHEN after_definitions.peek <> before_definitions.peek THEN 'modified'
-            ELSE 'unchanged' END AS change,
-       before_definitions.start_line AS before_start_line, before_definitions.end_line AS before_end_line,
-       after_definitions.start_line AS after_start_line, after_definitions.end_line AS after_end_line,
-       before_definitions.descendant_count AS before_descendant_count, after_definitions.descendant_count AS after_descendant_count,
-       before_definitions.peek AS before_peek, after_definitions.peek AS after_peek
-FROM before_definitions FULL JOIN after_definitions
-  ON after_definitions.branch_name = before_definitions.branch_name
- AND after_definitions.file_path = before_definitions.file_path
- AND after_definitions.qualified_name = before_definitions.qualified_name;
-
 -- 9494 Quack.
 FROM quack_serve('quack:localhost:9494', token := getenv('QUACK_TOKEN'));
 
@@ -221,6 +132,96 @@ SET GLOBAL quackapi_max_response_bytes = 67108864;
 FROM quackapi_serve(9495, host := '127.0.0.1', query_timeout_ms := 120000);
 -- quackapi_serve switches logging off.
 CALL enable_logging(['QueryLog', 'HTTP', 'Quack'], storage := 'file', storage_path := getenv('QUACK_NATIVE_LOG'), storage_buffer_size := 0);
+
+-- The branch views read the inframe git checkout (the working directory), which a machine without it (CI) lacks; they
+-- are posted once dev is serving, so a missing checkout fails this post and nothing else.
+-- branch_diff: what each local branch changed since it left origin/staging, and whether origin has it: the files a PR
+-- shows, with no gh. branch_point = shared commits that no other shared commit has as a parent (git's
+-- merge base). One row per branch and changed file; filter with WHERE branch_name = ….
+-- branch_definition_changes: definitions each branch_diff file added, removed or modified: sitting_duck parses both
+-- ends; a declaration wrapping a same-named definition (TS `const x` around its declarator) is dropped so each name
+-- counts once, and the two ends join on qualified_name (scope path with per-name index), not on name. A file's blob
+-- reads are correlated LATERALs, so WHERE branch_name = … reads only that branch; the side a file lacks gets a NULL uri,
+-- because a WHERE inside the LATERAL does not stop the read.
+SELECT quackapi_post('http://127.0.0.1:9495/sql', json_object('sql', $views$
+CREATE OR REPLACE VIEW branch_diff AS
+WITH local_branches AS (
+    SELECT * FROM git_branches() WHERE NOT is_remote
+), remote_branches AS (
+    SELECT branch_name AS remote_branch_name, commit_hash AS remote_commit_hash FROM git_branches() WHERE is_remote
+), tracked_branches AS (
+    SELECT local_branches.*, remote_branches.remote_branch_name, remote_branches.remote_commit_hash,
+           remote_branches.remote_commit_hash IS NOT DISTINCT FROM local_branches.commit_hash AS is_pushed
+    FROM local_branches
+    LEFT JOIN remote_branches ON remote_branches.remote_branch_name = 'origin/' || local_branches.branch_name
+), staging_commits AS (
+    SELECT commit_hash FROM git_log('.', 'origin/staging')
+), staging_parent_edges AS (
+    SELECT commit_hash, parent_hash FROM git_parents('.', 'origin/staging')
+), branch_history AS (
+    SELECT tracked_branches.branch_name, history.commit_hash
+    FROM tracked_branches, LATERAL git_log_each(tracked_branches.repo_path, tracked_branches.commit_hash) history
+), shared_history AS (
+    SELECT * FROM branch_history SEMI JOIN staging_commits USING (commit_hash)
+), shared_parents AS (
+    SELECT shared_history.branch_name, staging_parent_edges.parent_hash AS commit_hash
+    FROM shared_history JOIN staging_parent_edges USING (commit_hash)
+), branch_points AS (
+    SELECT branch_name, commit_hash AS branch_point FROM shared_history
+    ANTI JOIN shared_parents USING (branch_name, commit_hash)
+)
+SELECT tracked_branches.*, branch_points.branch_point, changed_file.* EXCLUDE (repo_path),
+       git_uri(tracked_branches.repo_path, changed_file.file_path, branch_points.branch_point) AS before_uri,
+       git_uri(tracked_branches.repo_path, changed_file.file_path, tracked_branches.commit_hash) AS after_uri
+FROM tracked_branches
+JOIN branch_points USING (branch_name)
+CROSS JOIN LATERAL git_diff_tree_each(tracked_branches.repo_path, branch_points.branch_point, tracked_branches.commit_hash) changed_file;
+CREATE OR REPLACE VIEW branch_definition_changes AS
+WITH file_sides AS (
+    SELECT branch_diff.branch_name, branch_diff.file_path, 'before' AS side, file_read.text
+    FROM branch_diff, LATERAL git_read_each(branch_diff.before_uri) file_read
+    WHERE branch_diff.status <> 'added'
+    UNION ALL
+    SELECT branch_diff.branch_name, branch_diff.file_path, 'after' AS side, file_read.text
+    FROM branch_diff, LATERAL git_read_each(branch_diff.after_uri) file_read
+    WHERE branch_diff.status <> 'deleted'
+), nodes AS (
+    SELECT branch_name, file_path, side, unnest(parse_ast_list(text, detect_language(file_path)), recursive := true)
+    FROM file_sides
+    WHERE detect_language(file_path) IS NOT NULL
+), definitions AS (
+    SELECT * FROM nodes WHERE is_definition(semantic_type) AND name <> ''
+), wrapper_definitions AS (
+    SELECT parent.branch_name, parent.file_path, parent.side, parent.node_id
+    FROM definitions parent JOIN definitions child
+      ON child.branch_name = parent.branch_name AND child.file_path = parent.file_path AND child.side = parent.side
+     AND child.parent_id = parent.node_id AND child.name = parent.name
+), own_definitions AS (
+    SELECT * FROM definitions ANTI JOIN wrapper_definitions USING (branch_name, file_path, side, node_id)
+), before_definitions AS (
+    SELECT * FROM own_definitions WHERE side = 'before'
+), after_definitions AS (
+    SELECT * FROM own_definitions WHERE side = 'after'
+)
+SELECT coalesce(after_definitions.branch_name, before_definitions.branch_name) AS branch_name,
+       coalesce(after_definitions.file_path, before_definitions.file_path) AS file_path,
+       coalesce(after_definitions.qualified_name, before_definitions.qualified_name) AS qualified_name,
+       coalesce(after_definitions.name, before_definitions.name) AS name,
+       coalesce(after_definitions.type, before_definitions.type) AS node_type,
+       CASE WHEN before_definitions.node_id IS NULL THEN 'added'
+            WHEN after_definitions.node_id IS NULL THEN 'removed'
+            WHEN after_definitions.descendant_count <> before_definitions.descendant_count THEN 'modified'
+            WHEN after_definitions.peek <> before_definitions.peek THEN 'modified'
+            ELSE 'unchanged' END AS change,
+       before_definitions.start_line AS before_start_line, before_definitions.end_line AS before_end_line,
+       after_definitions.start_line AS after_start_line, after_definitions.end_line AS after_end_line,
+       before_definitions.descendant_count AS before_descendant_count, after_definitions.descendant_count AS after_descendant_count,
+       before_definitions.peek AS before_peek, after_definitions.peek AS after_peek
+FROM before_definitions FULL JOIN after_definitions
+  ON after_definitions.branch_name = before_definitions.branch_name
+ AND after_definitions.file_path = before_definitions.file_path
+ AND after_definitions.qualified_name = before_definitions.qualified_name
+$views$)).status;
 
 -- Agent transcripts (Claude Code ~/.claude/projects, Codex ~/.codex), read natively, one Parquet per session under
 -- ~/.duck/lake/agent at the session's own path.
