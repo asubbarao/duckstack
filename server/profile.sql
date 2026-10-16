@@ -30,6 +30,30 @@ SELECT q.timestamp, q.connection_id, q.query_id, q.query,
        v['TOTAL_BYTES_WRITTEN']::UBIGINT AS bytes_written, v['CHECKPOINT_LATENCY']::DOUBLE AS checkpoint_s,
        v['WRITE_TO_WAL_LATENCY']::DOUBLE AS wal_write_s, v AS metrics
 FROM meta.query_log q JOIN per_query USING (connection_id, query_id);
+-- macOS crash reports (~/Library/Logs/DiagnosticReports/*.ips): each file is a one-line JSON header and a JSON body.
+-- One row per report: app, time, exception, faulting address, and the faulting thread's frames with the binary each
+-- frame is in (usedImages[imageIndex]); the whole body stays in report.
+CREATE OR REPLACE VIEW meta.crash_reports AS
+WITH doc AS (
+    SELECT filename, json FROM read_json_objects('~/Library/Logs/DiagnosticReports/*.ips', format := 'unstructured',
+                                                 filename := true, maximum_object_size := 67108864)
+), header AS (
+    SELECT filename, json AS h FROM doc WHERE NOT json_exists(json, '$.threads')
+), body AS (
+    SELECT filename, json AS b FROM doc WHERE json_exists(json, '$.threads')
+)
+SELECT file_name(filename) AS file, h ->> 'app_name' AS app,
+       strptime(h ->> 'timestamp', '%Y-%m-%d %H:%M:%S.%f %z') AS crashed_at,
+       b ->> '$.exception.type' AS exception, b ->> '$.exception.signal' AS signal, b ->> '$.exception.subtype' AS address,
+       (b ->> '$.faultingThread')::INTEGER AS faulting_thread,
+       from_json(jsonata($j$(
+           $imgs := usedImages;
+           $ft := faultingThread;
+           threads[$ft].frames.($f := $; {"image": $imgs[$f.imageIndex].($exists(name) ? name : path),
+                                          "symbol": $f.symbol, "offset": $f.imageOffset})
+       )$j$, b), '[{"image": "VARCHAR", "symbol": "VARCHAR", "offset": "UBIGINT"}]') AS frames,
+       b -> '$.asi' AS app_info, b AS report, filename AS path
+FROM header JOIN body USING (filename);
 -- GET /profile?sql=…: the query graph that `python -m duckdb.query_graph` draws. Runs the SQL (writes included) under
 -- EXPLAIN (ANALYZE, FORMAT json) through Quack, keeps the profile as ~/.duck/logs/profiles/<UTC time>.json (a COPY
 -- dispatched to /sql), and answers one HTML page: headline metrics, time per operator type, and the operator tree in
