@@ -76,33 +76,57 @@ WHERE severity = 'error';
 -- when: a retro on agent behaviour: the same brief went to several Claude/Codex sessions and the question is which
 --   of them ran the repo flow (Skill calls), asked the user anything (AskUserQuestion), wrote Linear, opened a PR.
 --   Scope is the sessions whose own user turn contains a phrase from the brief; every tool call of those sessions
---   stays in, flagged with CASE, never filtered. Main thread only (agent_id IS NULL: no Claude subagent files; each
---   Codex thread is its own session).
--- uses: agent.messages, agent.tool_calls, agent.sessions (dev DuckDB, the transcript store; was agent.stream until 2026-10-15)
--- returns: one row per (source, session_id): cwds VARCHAR[] (every working directory seen), first_ts VARCHAR
+--   stays in, flagged with CASE, never filtered. Main thread only (no Claude subagents/ files; each Codex thread is
+--   its own session).
+-- uses: agent.lines (one row per transcript line, every top-level field as JSON) and agent.entries (session per file)
+--   on dev; Claude tool calls are tool_use blocks in message.content, Codex's are function_call/custom_tool_call payloads.
+-- returns: one row per (source, session): cwds VARCHAR[] (every working directory seen), first_ts VARCHAR
 --   (local time of the first tool call), skills VARCHAR[] (distinct Skill names called), n_ask_user, n_linear_writes,
 --   n_pr_creates, n_design_doc_writes BIGINT (sums of 0/1 flags), n_tools BIGINT (len of all tool calls).
--- tested: the 2026-10-07 "Usage limits for Projects" brief: 2 Claude + 9 Codex sessions, zero flow-skill calls
---   (agent.stream version; this agent.* version is not re-run yet).
-WITH topic AS (
-  SELECT DISTINCT session_id FROM agent.messages
-  WHERE ts >= now() - INTERVAL <n> DAY AND role = 'user' AND contains(text, '<phrase from the brief>')
+-- tested 2026-10-16 on agent.lines, 2-day window, phrase 'useful_queries.sql', file 'SKILL.md': 3 Claude sessions,
+--   958 / 309 / 16 tool calls.
+WITH recent AS (
+  SELECT e.session, l.transcript, (l.timestamp ->> '$')::TIMESTAMPTZ AS ts,
+         CASE WHEN contains(l.transcript, '/.codex/') THEN 'codex' ELSE 'claude' END AS source,
+         l.type ->> '$' AS type, l.message, l.payload,
+         coalesce(l.cwd ->> '$', CASE WHEN l.type ->> '$' IN ('session_meta', 'turn_context') THEN l.payload ->> 'cwd' END) AS cwd,
+         CASE WHEN l.type ->> '$' IN ('user', 'assistant') THEN l.message
+              WHEN l.payload ->> 'type' IN ('message', 'agent_message') THEN l.payload END AS msg
+  FROM agent.lines l JOIN agent.entries e ON e.path = l.transcript
+  WHERE (l.timestamp ->> '$')::TIMESTAMPTZ >= now() - INTERVAL <n> DAY AND NOT contains(l.transcript, '/subagents/')
+), messages AS (
+  SELECT session, ts, role, coalesce(block ->> 'text', block ->> '$') AS text
+  FROM (SELECT *, coalesce(msg ->> 'role', 'agent') AS role,
+               unnest(CASE json_type(msg -> 'content') WHEN 'ARRAY' THEN json_extract(msg, '$.content[*]') ELSE [msg -> 'content'] END) AS block
+        FROM recent WHERE msg IS NOT NULL)
+  WHERE coalesce(block ->> 'type', 'text') IN ('text', 'input_text', 'output_text')
+), topic AS (
+  SELECT DISTINCT session FROM messages WHERE role = 'user' AND contains(text, '<phrase from the brief>')
 ), calls AS (
-  SELECT t.source, t.session_id, t.ts, t.tool_name, s.cwd,
-         CASE WHEN t.tool_name = 'Skill' THEN t.input ->> '$.skill' END AS skill_name,
-         CASE WHEN t.tool_name = 'AskUserQuestion' THEN 1 ELSE 0 END AS is_ask_user,
-         CASE WHEN contains(t.tool_name, 'save_issue') THEN 1 WHEN contains(t.tool_name, 'save_project') THEN 1 ELSE 0 END AS is_linear_write,
-         CASE WHEN contains(t.input::VARCHAR, 'gh pr create') THEN 1 ELSE 0 END AS is_pr_create,
-         CASE WHEN contains(t.input::VARCHAR, '<design doc file name>') AND t.tool_name IN ('Write', 'Edit', 'apply_patch', 'shell', 'Bash', 'exec_command') THEN 1 ELSE 0 END AS is_design_doc_write
-  FROM agent.tool_calls t JOIN topic USING (session_id) LEFT JOIN agent.sessions s USING (file)
-  WHERE t.level = 'model' AND t.agent_id IS NULL
+  SELECT session, source, ts, block ->> 'name' AS tool_name, block -> 'input' AS input
+  FROM (SELECT *, unnest(json_extract(message, '$.content[*]')) AS block FROM recent WHERE type = 'assistant')
+  WHERE block ->> 'type' = 'tool_use'
+  UNION ALL BY NAME
+  SELECT session, source, ts, payload ->> 'name' AS tool_name,
+         coalesce(try_cast(payload ->> 'arguments' AS JSON), to_json(payload ->> 'input')) AS input
+  FROM recent WHERE payload ->> 'type' IN ('function_call', 'custom_tool_call')
+), flags AS (
+  SELECT c.session, c.source, c.ts, c.tool_name,
+         CASE WHEN c.tool_name = 'Skill' THEN c.input ->> 'skill' END AS skill_name,
+         CASE WHEN c.tool_name = 'AskUserQuestion' THEN 1 ELSE 0 END AS is_ask_user,
+         CASE WHEN contains(c.tool_name, 'save_issue') THEN 1 WHEN contains(c.tool_name, 'save_project') THEN 1 ELSE 0 END AS is_linear_write,
+         CASE WHEN contains(c.input::VARCHAR, 'gh pr create') THEN 1 ELSE 0 END AS is_pr_create,
+         CASE WHEN contains(c.input::VARCHAR, '<design doc file name>') AND c.tool_name IN ('Write', 'Edit', 'apply_patch', 'shell', 'Bash', 'exec_command', 'exec') THEN 1 ELSE 0 END AS is_design_doc_write
+  FROM calls c SEMI JOIN topic t ON t.session = c.session
+), cwds AS (
+  SELECT r.session, list_distinct(array_agg(r.cwd)) AS cwds FROM recent r SEMI JOIN topic t ON t.session = r.session GROUP BY r.session
 )
-SELECT source, session_id, array_agg(DISTINCT cwd) AS cwds,
-       strftime(list_aggregate(array_agg(ts), 'min') AT TIME ZONE 'America/Los_Angeles', '%m-%d %H:%M') AS first_ts,
-       array_agg(DISTINCT skill_name) FILTER (WHERE skill_name IS NOT NULL) AS skills,
-       sum(is_ask_user) AS n_ask_user, sum(is_linear_write) AS n_linear_writes, sum(is_pr_create) AS n_pr_creates,
-       sum(is_design_doc_write) AS n_design_doc_writes, len(array_agg(tool_name)) AS n_tools
-FROM calls GROUP BY source, session_id ORDER BY first_ts LIMIT 25;
+SELECT f.source, f.session, w.cwds,
+       strftime(min(f.ts) AT TIME ZONE 'America/Los_Angeles', '%m-%d %H:%M') AS first_ts,
+       list_distinct(array_agg(f.skill_name)) AS skills,
+       sum(f.is_ask_user) AS n_ask_user, sum(f.is_linear_write) AS n_linear_writes, sum(f.is_pr_create) AS n_pr_creates,
+       sum(f.is_design_doc_write) AS n_design_doc_writes, len(array_agg(f.tool_name)) AS n_tools
+FROM flags f JOIN cwds w USING (session) GROUP BY f.source, f.session, w.cwds ORDER BY first_ts LIMIT 25;
 
 
 -- ## How do each author's PRs look against the /ship fingerprint? (Claude Fable 5.1, 2026-10-08)

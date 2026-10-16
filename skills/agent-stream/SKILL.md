@@ -6,43 +6,50 @@ allowed-tools: mcp__dev__query
 
 # Agent stream
 
-Transcripts are already indexed on dev. Query the `agent.*` views through `mcp__dev__query`. Do not
+Transcripts are already stored on dev. Query `agent.lines` and `agent.entries` through `mcp__dev__query`. Do not
 re-parse the raw JSONL.
 
 ## The store
 
-- **Where:** `~/.duck/lake/agent/lines/source=<s>/project=<p>/file_key=<k>/part0.parquet`, plus `events/`.
-- **Coverage:** every Claude Code and Codex transcript, including subagents and `.jsonl.zst` rollouts.
-- **Feed:** a dev cron runs every minute.
-  - It lists files with one shellfs `find`, then hostfs `file_size`/`file_last_modified`.
-  - Each changed file's partition is rewritten with one self-dispatched COPY.
-  - So the store is about a minute behind live.
+- **Where:** one Parquet per session under `~/.duck/lake/agent`, at the session's own path
+  (`~/.duck/lake/agent/Users/<you>/.claude/projects/<project>/<session>.parquet`, Codex rollouts likewise).
+- **Coverage:** every Claude Code and Codex transcript. A Claude session's Parquet holds its main file and its
+  `subagents/*.jsonl`.
+- **Feed:** boot and a cron every 5 minutes copy each session whose transcript changed since its stored copy, then
+  re-post `agent.lines` over the stored files. So the store is up to ~5 minutes behind live.
 
 | View | One row per |
 |---|---|
-| `agent.messages` | text block: `source, file, line, idx, session_id, agent_id, ts, role, text` (tool results excluded) |
-| `agent.tool_calls` | tool call with its result: `tool_name, input` (JSON), `is_error, error, result_bytes, level` |
-| `agent.copies` | call or response id, with `first_seen`. A resumed transcript repeats earlier calls; keep `first_seen` to count each once |
-| `agent.sessions` | transcript file: `started_at, cwd, git_branch, is_subagent, parent_session_id, forked_from_id` |
-| `agent.usage` | model response with token counts |
-| `agent.thinking` | thinking / reasoning-summary block |
-| `agent.lines` | raw line: `record` JSON plus typed top-level columns |
+| `agent.entries` | transcript file or stored Parquet: `path, parent, name, stem, ext, bytes, modified, reader, session` |
+| `agent.lines` | transcript line: every top-level field as a `JSON` column, plus `transcript` (the source file's path) |
 
-The key is `(file, line)`. Roles are `user`/`assistant` for Claude and `user`/`assistant`/`agent` for Codex.
-`agent_id IS NULL` keeps top-level sessions and drops Claude subagents.
+- `session` (from `agent.entries`) is the session's path without extension; join `agent.entries e ON e.path = l.transcript`.
+  Claude subagent files share their parent's `session`; `contains(transcript, '/subagents/')` marks them.
+  Each Codex thread is its own session.
+- `contains(transcript, '/.codex/')` tells Codex from Claude.
+- `(timestamp ->> '$')::TIMESTAMPTZ` is the line's time. There is no line number: order by that time within a
+  `transcript`.
+- **Claude** lines: `type` is `user`/`assistant`/`system`/…; `message` holds `role` and `content`, a string or an
+  array of blocks (`text`, `thinking`, `tool_use` with `id, name, input`, `tool_result`).
+- **Codex** lines: `type` is `session_meta`, `turn_context`, `response_item`, `event_msg`, …; `payload ->> 'type'`
+  is `message` (`role`, `content` blocks `input_text`/`output_text`), `agent_message`, `reasoning`,
+  `function_call` (`name`, `arguments` as JSON text, `call_id`), `custom_tool_call` (`name`, `input` as text).
+- If a filter on several `payload` fields fails with `Failed to cast value to numerical`, project them as columns
+  in one CTE and filter in the next.
 
 ## Rules
 
-- **One statement covers every session.** Filter by a `ts` window, `file IN (…)` or `(file, line) IN (…)`.
-  Never one query per file or per line.
+- **One statement covers every session.** Filter by a time window, `transcript IN (…)` or `session IN (…)`.
+  Never one query per file.
 - **Keep rows.**
   - No `QUALIFY row_number() = 1` dedup and no `left()` cuts.
   - Size text with `strlen`.
   - Pick a row with an ASOF join or `arg_max`.
-  - Dedup copies with `agent.copies.first_seen`.
+  - A resumed or forked Claude transcript repeats earlier tool calls; count each call once by its first time
+    (`min(ts)` per call id, then a SEMI JOIN), as in the external-actions query.
 - **Oversized results:** when a result is too big for the tool, it is saved as JSON under the session's
   `tool-results/`. Query that file with `read_json('<file>')`; don't re-run the query.
-- **Briefs:** a subagent brief names the view and the query below. Never point it at a store root.
+- **Briefs:** a subagent brief names `agent.lines` and the query below. Never point it at a store root.
 - **agent_data:** `read_conversations` is only for one file the store doesn't hold yet, with
   `path := '<that file>'`. Never point it at `~/.claude` or `~/.codex`.
 
@@ -51,24 +58,37 @@ The key is `(file, line)`. Roles are `user`/`assistant` for Claude and `user`/`a
 Each prompt pairs with the last assistant text before the next prompt. `reply IS NULL` means no reply yet.
 
 ```sql
-WITH prompts AS (
-  SELECT source, file, line, ts, session_id, text AS prompt,
-         lead(line) OVER (PARTITION BY file ORDER BY line) AS next_prompt_line
-  FROM agent.messages
-  WHERE role = 'user' AND agent_id IS NULL AND ts > now() - INTERVAL 2 DAY
-    AND NOT starts_with(ltrim(text), '<')                       -- harness tags, reminders
-    AND NOT starts_with(text, 'This session is being continued') -- compaction summaries
+WITH recent AS (
+  SELECT e.session, l.transcript, (l.timestamp ->> '$')::TIMESTAMPTZ AS ts,
+         CASE WHEN contains(l.transcript, '/.codex/') THEN 'codex' ELSE 'claude' END AS source,
+         contains(l.transcript, '/subagents/') AS is_subagent,
+         CASE WHEN l.type ->> '$' IN ('user', 'assistant') THEN l.message
+              WHEN l.payload ->> 'type' IN ('message', 'agent_message') THEN l.payload END AS msg
+  FROM agent.lines l JOIN agent.entries e ON e.path = l.transcript
+  WHERE (l.timestamp ->> '$')::TIMESTAMPTZ > now() - INTERVAL 2 DAY
+), messages AS (
+  SELECT session, transcript, ts, source, is_subagent, role, coalesce(block ->> 'text', block ->> '$') AS text
+  FROM (SELECT *, coalesce(msg ->> 'role', 'agent') AS role,
+               unnest(CASE json_type(msg -> 'content') WHEN 'ARRAY' THEN json_extract(msg, '$.content[*]') ELSE [msg -> 'content'] END) AS block
+        FROM recent WHERE msg IS NOT NULL)
+  WHERE coalesce(block ->> 'type', 'text') IN ('text', 'input_text', 'output_text')
+), prompts AS (
+  SELECT source, session, transcript, ts, text AS prompt,
+         lead(ts) OVER (PARTITION BY transcript ORDER BY ts) AS next_prompt_ts
+  FROM messages
+  WHERE role = 'user' AND NOT is_subagent
+    AND NOT starts_with(ltrim(text), '<')                         -- harness tags, reminders
+    AND NOT starts_with(text, '# AGENTS.md instructions')         -- Codex instruction preamble
+    AND NOT starts_with(text, 'This session is being continued')  -- compaction summaries
 ), replies AS (
-  SELECT file, line AS reply_line, text AS reply
-  FROM agent.messages
-  WHERE role IN ('assistant', 'agent') AND agent_id IS NULL AND ts > now() - INTERVAL 2 DAY
+  SELECT transcript, ts AS reply_ts, text AS reply FROM messages WHERE role = 'assistant' AND NOT is_subagent
 ), turns AS (
-  SELECT p.*, CASE WHEN r.reply_line > p.line THEN r.reply_line END AS reply_line,
-              CASE WHEN r.reply_line > p.line THEN r.reply END AS reply
+  SELECT p.*, CASE WHEN r.reply_ts > p.ts THEN r.reply_ts END AS reply_ts,
+              CASE WHEN r.reply_ts > p.ts THEN r.reply END AS reply
   FROM prompts p
-  ASOF LEFT JOIN replies r ON r.file = p.file AND r.reply_line < coalesce(p.next_prompt_line, 9223372036854775807)
+  ASOF LEFT JOIN replies r ON r.transcript = p.transcript AND r.reply_ts < coalesce(p.next_prompt_ts, 'infinity'::TIMESTAMPTZ)
 )
-SELECT source, session_id, file, line, ts, prompt, reply_line, reply FROM turns ORDER BY session_id, line;
+SELECT source, session, ts, prompt, reply_ts, reply FROM turns ORDER BY session, ts;
 ```
 
 **One row per session.** This shows where each session stands. The final reply usually lists what it is
@@ -76,43 +96,83 @@ waiting on.
 
 ```sql
 -- same CTEs as above, then:
-SELECT source, session_id, arg_max(ts, line) AS last_ts,
-       arg_max(prompt, line) AS last_prompt, arg_max(reply, line) AS last_reply
-FROM turns GROUP BY source, session_id ORDER BY last_ts DESC;
+SELECT source, session, max(ts) AS last_ts, arg_max(prompt, ts) AS last_prompt, arg_max(reply, ts) AS last_reply
+FROM turns GROUP BY source, session ORDER BY last_ts DESC;
 ```
 
 ## External actions: PRs, issues, comments, pushes, forks
 
 ```sql
-WITH actions(action, words) AS (VALUES
-  ('pr create', ['gh', 'pr', 'create']), ('pr comment', ['gh', 'pr', 'comment']), ('pr close', ['gh', 'pr', 'close']),
-  ('pr merge', ['gh', 'pr', 'merge']), ('pr edit', ['gh', 'pr', 'edit']), ('issue create', ['gh', 'issue', 'create']),
-  ('issue comment', ['gh', 'issue', 'comment']), ('fork', ['gh', 'repo', 'fork']), ('push', ['git', 'push'])
+WITH recent AS (
+  SELECT e.session, l.transcript, (l.timestamp ->> '$')::TIMESTAMPTZ AS ts,
+         CASE WHEN contains(l.transcript, '/.codex/') THEN 'codex' ELSE 'claude' END AS source,
+         contains(l.transcript, '/subagents/') AS is_subagent, l.type ->> '$' AS type, l.message, l.payload
+  FROM agent.lines l JOIN agent.entries e ON e.path = l.transcript
+  WHERE (l.timestamp ->> '$')::TIMESTAMPTZ > now() - INTERVAL 2 DAY
 ), calls AS (
-  SELECT t.source, t.level, t.session_id, t.file, t.line, t.ts, t.tool_name, t.is_error,
-         coalesce(t.input ->> 'command', t.input ->> 'cmd', t.input ->> 'sql', t.input::VARCHAR) AS cmd
-  FROM agent.tool_calls t
-  SEMI JOIN agent.copies c ON c.kind = 'tool_call' AND c.id = t.call_id AND c.file = t.file AND c.line = t.line AND c.first_seen
-  WHERE t.ts > now() - INTERVAL 2 DAY
+  SELECT session, transcript, ts, source, is_subagent, block ->> 'id' AS call_id, block ->> 'name' AS tool_name, block -> 'input' AS input
+  FROM (SELECT *, unnest(json_extract(message, '$.content[*]')) AS block FROM recent WHERE type = 'assistant')
+  WHERE block ->> 'type' = 'tool_use'
+  UNION ALL BY NAME
+  SELECT session, transcript, ts, source, is_subagent, payload ->> 'call_id' AS call_id, payload ->> 'name' AS tool_name,
+         coalesce(try_cast(payload ->> 'arguments' AS JSON), to_json(payload ->> 'input')) AS input
+  FROM recent WHERE payload ->> 'type' IN ('function_call', 'custom_tool_call')
+), first_copy AS (
+  SELECT call_id, min(ts) AS ts FROM calls GROUP BY call_id
+), actions AS (
+  SELECT 'pr create' AS action, ['gh', 'pr', 'create'] AS words UNION ALL
+  SELECT 'pr comment', ['gh', 'pr', 'comment'] UNION ALL
+  SELECT 'pr close', ['gh', 'pr', 'close'] UNION ALL
+  SELECT 'pr merge', ['gh', 'pr', 'merge'] UNION ALL
+  SELECT 'pr edit', ['gh', 'pr', 'edit'] UNION ALL
+  SELECT 'issue create', ['gh', 'issue', 'create'] UNION ALL
+  SELECT 'issue comment', ['gh', 'issue', 'comment'] UNION ALL
+  SELECT 'fork', ['gh', 'repo', 'fork'] UNION ALL
+  SELECT 'push', ['git', 'push']
+), cmds AS (
+  SELECT c.*, coalesce(input ->> 'command', input ->> 'cmd', input ->> 'sql', input ->> '$', input::VARCHAR) AS cmd
+  FROM calls c SEMI JOIN first_copy f ON f.call_id = c.call_id AND f.ts = c.ts
 )
-SELECT a.action, c.* FROM calls c JOIN actions a ON list_has_all(string_split(replace(c.cmd, '''', ' '), ' '), a.words)
+SELECT a.action, c.source, c.session, c.transcript, c.ts, c.tool_name, c.is_subagent, c.cmd
+FROM cmds c JOIN actions a ON list_has_all(string_split(translate(c.cmd, '''";{}()|&', '         '), ' '), a.words)
 ORDER BY c.ts;
 ```
 
 The words match anywhere in the tool input. A call that only mentions `gh pr create`, such as a search or
-a heredoc, also matches, so read `cmd`. Codex logs both the model's call (`level = 'model'`) and the
-command it ran (`level = 'nested'`).
+a heredoc, also matches, so read `cmd`. Codex's `exec` tool takes JavaScript that calls
+`tools.exec_command({cmd: …})`, so its `cmd` is that script.
 
 ## Plans
 
 ```sql
-SELECT 'tool' AS via, source, session_id, file, line, ts, tool_name AS what, input::VARCHAR AS plan
-FROM agent.tool_calls
-WHERE ts > now() - INTERVAL 2 DAY AND tool_name IN ('ExitPlanMode', 'update_plan', 'TodoWrite')
+WITH recent AS (
+  SELECT e.session, l.transcript, (l.timestamp ->> '$')::TIMESTAMPTZ AS ts,
+         CASE WHEN contains(l.transcript, '/.codex/') THEN 'codex' ELSE 'claude' END AS source,
+         contains(l.transcript, '/subagents/') AS is_subagent, l.type ->> '$' AS type, l.message, l.payload,
+         CASE WHEN l.type ->> '$' IN ('user', 'assistant') THEN l.message
+              WHEN l.payload ->> 'type' IN ('message', 'agent_message') THEN l.payload END AS msg
+  FROM agent.lines l JOIN agent.entries e ON e.path = l.transcript
+  WHERE (l.timestamp ->> '$')::TIMESTAMPTZ > now() - INTERVAL 2 DAY
+), messages AS (
+  SELECT session, transcript, ts, source, is_subagent, role, coalesce(block ->> 'text', block ->> '$') AS text
+  FROM (SELECT *, coalesce(msg ->> 'role', 'agent') AS role,
+               unnest(CASE json_type(msg -> 'content') WHEN 'ARRAY' THEN json_extract(msg, '$.content[*]') ELSE [msg -> 'content'] END) AS block
+        FROM recent WHERE msg IS NOT NULL)
+  WHERE coalesce(block ->> 'type', 'text') IN ('text', 'input_text', 'output_text')
+), calls AS (
+  SELECT session, transcript, ts, source, is_subagent, block ->> 'name' AS tool_name, block -> 'input' AS input
+  FROM (SELECT *, unnest(json_extract(message, '$.content[*]')) AS block FROM recent WHERE type = 'assistant')
+  WHERE block ->> 'type' = 'tool_use'
+  UNION ALL BY NAME
+  SELECT session, transcript, ts, source, is_subagent, payload ->> 'name' AS tool_name,
+         coalesce(try_cast(payload ->> 'arguments' AS JSON), to_json(payload ->> 'input')) AS input
+  FROM recent WHERE payload ->> 'type' IN ('function_call', 'custom_tool_call')
+)
+SELECT 'tool' AS via, source, session, transcript, ts, is_subagent, tool_name AS what, input::VARCHAR AS plan
+FROM calls WHERE tool_name IN ('ExitPlanMode', 'TodoWrite', 'mcp__ccd_turn__update_plan', 'update_plan')
 UNION ALL BY NAME
-SELECT 'message' AS via, source, session_id, file, line, ts, 'proposed_plan' AS what, text AS plan
-FROM agent.messages
-WHERE ts > now() - INTERVAL 2 DAY AND role IN ('assistant', 'agent') AND starts_with(ltrim(text), '<proposed_plan>')
+SELECT 'message' AS via, source, session, transcript, ts, is_subagent, 'proposed_plan' AS what, text AS plan
+FROM messages WHERE role = 'assistant' AND starts_with(ltrim(text), '<proposed_plan>')
 ORDER BY ts;
 ```
 
@@ -121,14 +181,40 @@ ORDER BY ts;
 Keep the terms as an array and intersect tokens, rather than chaining text predicates:
 
 ```sql
-SELECT source, session_id, file, line, ts, role, text
-FROM agent.messages
-WHERE ts > now() - INTERVAL 7 DAY
-  AND len(array_intersect(string_split(lower(text), ' '), ['webbed', 'crawler', 'tera', 'shellfs'])) > 0
+WITH recent AS (
+  SELECT e.session, l.transcript, (l.timestamp ->> '$')::TIMESTAMPTZ AS ts,
+         CASE WHEN contains(l.transcript, '/.codex/') THEN 'codex' ELSE 'claude' END AS source,
+         CASE WHEN l.type ->> '$' IN ('user', 'assistant') THEN l.message
+              WHEN l.payload ->> 'type' IN ('message', 'agent_message') THEN l.payload END AS msg
+  FROM agent.lines l JOIN agent.entries e ON e.path = l.transcript
+  WHERE (l.timestamp ->> '$')::TIMESTAMPTZ > now() - INTERVAL 7 DAY
+), messages AS (
+  SELECT session, transcript, ts, source, role, coalesce(block ->> 'text', block ->> '$') AS text
+  FROM (SELECT *, coalesce(msg ->> 'role', 'agent') AS role,
+               unnest(CASE json_type(msg -> 'content') WHEN 'ARRAY' THEN json_extract(msg, '$.content[*]') ELSE [msg -> 'content'] END) AS block
+        FROM recent WHERE msg IS NOT NULL)
+  WHERE coalesce(block ->> 'type', 'text') IN ('text', 'input_text', 'output_text')
+)
+SELECT source, session, transcript, ts, role, text
+FROM messages
+WHERE len(array_intersect(string_split(lower(text), ' '), ['webbed', 'crawler', 'tera', 'shellfs'])) > 0
 ORDER BY ts DESC;
 ```
 
 ## Subagents and forks
 
-`agent.sessions` carries `is_subagent`, `parent_session_id` and `forked_from_id`. Claude subagent rows in
-`agent.messages` have an `agent_id`. Codex children carry their parent in `parent_session_id`.
+A Claude subagent is a file under `<session>/subagents/`; its lines carry `agentId`. A Codex child thread is its
+own rollout whose `session_meta` line names its parent:
+
+```sql
+WITH meta AS (
+  SELECT e.session, l.transcript, l.timestamp ->> '$' AS started_at, l.payload ->> 'id' AS thread_id,
+         l.payload ->> 'parent_thread_id' AS parent_thread_id, l.payload ->> 'forked_from_id' AS forked_from_id,
+         l.payload ->> 'agent_nickname' AS nickname, l.payload ->> 'cwd' AS cwd
+  FROM agent.lines l JOIN agent.entries e ON e.path = l.transcript
+  WHERE l.type ->> '$' = 'session_meta'
+)
+SELECT * FROM meta
+WHERE started_at > (now() - INTERVAL 2 DAY)::VARCHAR AND parent_thread_id IS NOT NULL
+ORDER BY started_at DESC;
+```
