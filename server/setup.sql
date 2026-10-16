@@ -152,13 +152,6 @@ $t$, json_object('url', url), autoescape := false))) ->> '$.status' AS status
 FROM due
 $$, '0 15 * * * *');
 
--- Read every minute by the mac-metrics collector (launchd com.alok.mac-metrics, ~/Documents/mac-metrics-incubator).
-CREATE OR REPLACE VIEW agents.mac_query_activity AS
-SELECT getenv('QUACK_INSTANCE_ID') AS instance_id, min("timestamp") OVER () AS instance_started_at,
-       getenv('QUACK_WRAPPER_PID')::BIGINT AS wrapper_pid,
-       "timestamp" AS observed_at, context_id, connection_id, query_id, query AS sql_text,
-       getenv('QUACK_NATIVE_LOG') AS source_log, 'query_log_observation' AS observation_kind
-FROM meta.query_log;
 
 -- What each local branch changed since it left origin/staging, and whether origin has it: the files a PR
 -- shows, with no gh. branch_point = shared commits that no other shared commit has as a parent (git's
