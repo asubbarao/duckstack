@@ -1,9 +1,9 @@
 -- Dev DuckDB. launchd runs `duckdb -bail ~/.duck/db/dev.duckdb -init setup.sql` and keeps stdin open.
 -- Dev boots ~/.duck/deploy/server/setup.sql, the duckdb-skills branch `deploy`. A save here changes nothing until
 -- it is committed and the branch moved: git branch -f deploy <commit>; the watcher restarts dev within 30 s.
-SET GLOBAL extension_directory = '/Users/aloksubbarao/.duck/extensions';
-SET GLOBAL secret_directory = '/Users/aloksubbarao/.duck/secrets';
-SET GLOBAL temp_directory = '/Users/aloksubbarao/.duck/tmp';
+SET GLOBAL extension_directory = '~/.duck/extensions';
+SET GLOBAL secret_directory = '~/.duck/secrets';
+SET GLOBAL temp_directory = '~/.duck/tmp';
 -- DuckDB's performance guide: 1-4 GB per thread. 10 threads x 1.6 GB; RSS runs 1.5-2.5 GB above this
 -- (reader/JSON allocations are untracked), and the 48 GB machine keeps ~30 GB for everything else.
 SET GLOBAL memory_limit = '16GB';
@@ -14,7 +14,7 @@ SET GLOBAL http_retries = 0;
 -- INSTALL is a no-op once a file exists, so without this every boot reloads the first build ever downloaded.
 -- A child process updates the files before anything below loads them; offline, it prints the error and boot goes on.
 INSTALL shellfs FROM community; LOAD shellfs;
-SELECT content FROM read_text($u$/opt/homebrew/bin/duckdb -csv :memory: -c "SET extension_directory = '/Users/aloksubbarao/.duck/extensions'; UPDATE EXTENSIONS;" 2>&1; true |$u$);
+SELECT content FROM read_text($u$/opt/homebrew/bin/duckdb -csv :memory: -c "SET extension_directory = '~/.duck/extensions'; UPDATE EXTENSIONS;" 2>&1; true |$u$);
 INSTALL quack; LOAD quack;
 INSTALL httpfs; LOAD httpfs;
 INSTALL ducklake; LOAD ducklake;
@@ -29,7 +29,9 @@ INSTALL webbed FROM community; LOAD webbed;
 INSTALL markdown FROM community; LOAD markdown;
 INSTALL urlpattern FROM community; LOAD urlpattern;
 INSTALL otlp FROM community; LOAD otlp;
-INSTALL sazgar FROM community; LOAD sazgar;
+-- sazgar is intentionally not installed: community-extensions has no
+-- linux_amd64 build published for DuckDB 1.5.5 (HTTP 404 on a fresh home),
+-- and nothing in this boot uses it since the prometheus view was dropped.
 -- Called by name from the skills (tera, duck-tails, duck-hunt, pdf-digest, ci-timing, ...).
 INSTALL tera FROM community; LOAD tera;
 INSTALL jsonata FROM community; LOAD jsonata;
@@ -45,10 +47,11 @@ INSTALL gh FROM community; LOAD gh;
 INSTALL netquack FROM community; LOAD netquack;
 INSTALL fts; LOAD fts;
 -- Dev works in the inframe checkout: duck_tails calls take '.' or no path at all.
+SELECT content FROM read_text('mkdir -p ' || getenv('HOME') || '/inframe && echo ok |') LIMIT 1;
 FROM cd(getenv('HOME') || '/inframe');
 
-ATTACH IF NOT EXISTS 'ducklake:/Users/aloksubbarao/.duck/lake/duckstack/catalog.ducklake' AS lake
-    (DATA_PATH '/Users/aloksubbarao/.duck/lake/duckstack/data/', DATA_INLINING_ROW_LIMIT 0);
+ATTACH IF NOT EXISTS 'ducklake:~/.duck/lake/duckstack/catalog.ducklake' AS lake
+    (DATA_PATH '~/.duck/lake/duckstack/data/', DATA_INLINING_ROW_LIMIT 0);
 
 CALL enable_logging(['QueryLog', 'HTTP', 'Quack'], storage := 'file', storage_path := getenv('QUACK_NATIVE_LOG'), storage_buffer_size := 0);
 
@@ -214,7 +217,7 @@ FROM called;
 -- Response cap 64 MiB (default 16): one transcript line reaches 21 MB; 32 parallel replies stay under 2 GiB.
 -- Bigger self-dispatch reads write Parquet on dev and return a count.
 SET GLOBAL quackapi_max_response_bytes = 67108864;
-FROM quackapi_serve(9495, host := '127.0.0.1', query_timeout_ms := 120000);
+FROM quackapi_serve(coalesce(getenv('DEV_QUACKAPI_PORT')::INTEGER, 9495), host := '127.0.0.1', query_timeout_ms := 120000);
 -- quackapi_serve switches logging off.
 CALL enable_logging(['QueryLog', 'HTTP', 'Quack'], storage := 'file', storage_path := getenv('QUACK_NATIVE_LOG'), storage_buffer_size := 0);
 
@@ -255,3 +258,8 @@ SELECT * FROM read_parquet([%s], union_by_name := true) SEMI JOIN agent.entries 
 FROM (SELECT string_agg('$q$' || file || '$q$', ', ') AS files FROM glob('~/.duck/lake/agent/**/*.parquet')
       WHERE NOT starts_with(file_name(file), 'tmp_'))
 WHERE files IS NOT NULL$$, '0 */5 * * * *');
+
+-- Boot marker for the Server Bootstrap Smoke workflow: it polls
+-- duckdb_tables() for _setup_complete over /sql. Created last, so its
+-- presence means setup.sql ran to completion.
+CREATE OR REPLACE TABLE _setup_complete AS SELECT now() AS booted_at;
