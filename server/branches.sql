@@ -11,7 +11,14 @@ FROM cd(getenv('HOME') || '/inframe');
 -- counts once, and the two ends join on qualified_name (scope path with per-name index), not on name. A file's blob
 -- reads are correlated LATERALs, so WHERE branch_name = … reads only that branch; the side a file lacks gets a NULL uri,
 -- because a WHERE inside the LATERAL does not stop the read.
+-- git_changes: every file each origin/staging commit changed against each parent, read live (no store): a WHERE on
+-- commit_date or commit_hash diffs only those commits (2 days: 0.8 s); the whole history (6,826 commits) is 32 s.
 SELECT selfdispatch($views$
+CREATE OR REPLACE VIEW git_changes AS
+SELECT l.commit_hash, e.parent_hash, l.author_name, l.commit_date, l.message, d.file_path, d.file_ext, d.status, d.old_path
+FROM git_log('.', 'origin/staging') l
+JOIN git_parents('.', 'origin/staging') e USING (commit_hash)
+CROSS JOIN LATERAL git_diff_tree_each('.', e.parent_hash, e.commit_hash) d;
 CREATE OR REPLACE VIEW branch_diff AS
 WITH local_branches AS (
     SELECT * FROM git_branches() WHERE NOT is_remote
