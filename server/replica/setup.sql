@@ -8,6 +8,7 @@ SET GLOBAL extension_directory = getenv('HOME') || '/.duck/extensions';
 INSTALL quack; LOAD quack; INSTALL postgres; LOAD postgres; LOAD json; LOAD icu;
 INSTALL quackapi FROM community; LOAD quackapi; INSTALL cronjob FROM community; LOAD cronjob;
 INSTALL curl_httpfs FROM community; LOAD curl_httpfs;
+INSTALL tera FROM community; LOAD tera;
 
 -- A laptop tenant beside dev: bounded memory and cores, spill under ~/.duck/replica, UTC, no silent downloads.
 SET GLOBAL memory_limit = '6GiB'; SET GLOBAL threads = 4; SET GLOBAL TimeZone = 'UTC';
@@ -19,8 +20,9 @@ SET GLOBAL autoinstall_known_extensions = false;
 CREATE SCHEMA IF NOT EXISTS public;
 -- One row per table per pull: the dispatched statement, its receipt, and what it landed.
 CREATE TABLE IF NOT EXISTS pull_log (
-    run_id VARCHAR, run_started TIMESTAMPTZ, table_name VARCHAR, rows BIGINT, started TIMESTAMPTZ, finished TIMESTAMPTZ,
+    run_id VARCHAR, run_started TIMESTAMPTZ NOT NULL, table_name VARCHAR NOT NULL, rows BIGINT, started TIMESTAMPTZ, finished TIMESTAMPTZ,
     status VARCHAR, http_status INTEGER, error VARCHAR, request_id VARCHAR, statement VARCHAR, receipt_body VARCHAR);
+CREATE UNIQUE INDEX IF NOT EXISTS pull_log_identity ON pull_log (run_started, table_name);
 
 -- Serve. /sql runs any body on this process through its own quack door (quack_query is DuckDB's eval).
 -- quack_serve(uri, token := ...): the token comes from the environment; unset fails closed.
@@ -37,10 +39,11 @@ FROM quackapi_serve(9511, host := '127.0.0.1', query_timeout_ms := 1800000, read
 -- reads.sql (graph views + the two /org routes) every minute, failing harmlessly until the first tables land.
 -- cron(query VARCHAR, schedule VARCHAR: 6 fields, seconds first) -> job id. quackapi_post, not http_client's
 -- http_post: http_post returns status -1 at 10 s and the work behind it stops.
-SELECT file, cron('SELECT quackapi_post(' || chr(39) || 'http://127.0.0.1:9511/sql' || chr(39)
-    || ', json_object(' || chr(39) || 'sql' || chr(39) || ', content)).status AS status FROM read_text('
-    || chr(39) || '/Users/aloksubbarao/duckdb-skills/server/replica/' || file || chr(39) || ')', schedule) AS job
-FROM (SELECT 'pull.sql' AS file, '*/10 * * * * *' AS schedule UNION ALL SELECT 'reads.sql', '30 * * * * *');
+SELECT file, cron(tera_render($job$
+SELECT quackapi_post('http://127.0.0.1:9511/sql', json_object('sql', content)).status AS status
+FROM read_text('/Users/aloksubbarao/duckdb-skills/server/replica/{{ file }}')
+$job$, c::JSON, autoescape := false), schedule) AS job
+FROM (SELECT 'pull.sql' AS file, '*/10 * * * * *' AS schedule UNION ALL SELECT 'reads.sql', '30 * * * * *') c;
 
 -- After this no connection can SET/PRAGMA/RESET; ATTACH, CREATE and HTTP still work.
 SET GLOBAL lock_configuration = true;

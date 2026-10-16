@@ -5,6 +5,12 @@ description: Query source-code syntax trees and code structure with the sitting_
 
 # Sitting Duck
 
+[Verified code-analysis queries](../query/references/code-analysis.sql) include
+`ast_select(path, '.call#quackapi_post', 'sql')`, per-row `parse_ast_list`, and
+committed-source reads through Duck Tails. Select invocation nodes rather than
+counting their identifier children again. Keep ERROR nodes visible: the SQL grammar
+can partially recover valid DuckDB syntax while missing calls within the error subtree.
+
 Start with the [Sitting Duck documentation](https://sitting-duck.readthedocs.io/en/latest/).
 Its function reference, output schema, parse-once/query-many guide and agent guide are
 the relevant upstream sources for this skill. Add focused, verified recipes here as
