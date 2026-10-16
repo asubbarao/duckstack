@@ -37,12 +37,14 @@ FROM meta.query_log q JOIN per_query USING (connection_id, query_id);
 SELECT content FROM read_text('mkdir -p ~/.duck/logs/profiles |');
 CREATE OR REPLACE ROUTE profile GET '/profile' AS
 WITH run AS (
-    SELECT explain_value::JSON AS profile, '~/.duck/logs/profiles/' || strftime(now(), '%Y%m%dT%H%M%S.%fZ') || '.json' AS path
+    SELECT explain_value::JSON AS profile, explain_value AS profile_text,
+           '~/.duck/logs/profiles/' || strftime(now(), '%Y%m%dT%H%M%S.%fZ') || '.json' AS path, quote_literal(path) AS target
     FROM quack_query('quack:localhost:9494', 'EXPLAIN (ANALYZE, FORMAT json) ' || $sql, token := getenv('QUACK_TOKEN'))
 ), saved AS (
-    SELECT *, http_post('http://127.0.0.1:9495/sql', MAP {'Content-Type': 'application/json'}, json_object('sql',
-               printf($c$COPY (SELECT $profile$%s$profile$) TO '%s' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '')$c$, profile, path))) ->> '$.status' AS saved_status
-    FROM run
+    SELECT *, selfdispatch(tera_render($copy$
+COPY (SELECT $profile${{ profile_text }}$profile$) TO {{ target }} (FORMAT csv, HEADER false, QUOTE '', ESCAPE '');
+$copy$, c::JSON, autoescape := false)).status::VARCHAR AS saved_status
+    FROM run c
 ), node AS (
     SELECT profile, path, saved_status, unnest(from_json(jsonata($j$(
         $walk := function($n, $d) { $n.operator_type = "EXPLAIN_ANALYZE" ? $n.children.$walk($, $d) :

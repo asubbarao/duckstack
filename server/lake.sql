@@ -4,7 +4,7 @@
 -- kill drops them. After its commits it runs CHECKPOINT lake, and it sets the lake's GLOBAL expire_older_than /
 -- delete_older_than to maintenance_retention_ms (default 15 min): every lake table's snapshots older than that are
 -- expired. 30 days here. agents.ext_docs is each fetch in lake.agents.ext_fetch with its page as markdown.
-SELECT quackapi_post('http://127.0.0.1:9495/sql', json_object('sql', $lake$
+SELECT selfdispatch($lake$
 ATTACH IF NOT EXISTS 'ducklake:~/.duck/lake/duckstack/catalog.ducklake' AS lake (DATA_INLINING_ROW_LIMIT 0);
 CREATE SCHEMA IF NOT EXISTS lake.otel;
 FROM otlp_serve('otlp:127.0.0.1:4318', catalog := 'lake', schema := 'otel', disable_auth := true, maintenance_retention_ms := 2592000000);
@@ -13,4 +13,4 @@ SELECT urlpattern_extract('https://duckdb.org/community_extensions/extensions/:n
        response ->> 'status' AS status,
        duck_blocks_to_md(html_to_duck_blocks((response ->> 'body')::HTML)) AS markdown
 FROM lake.agents.ext_fetch
-$lake$)).status;
+$lake$).status;

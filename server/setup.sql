@@ -41,7 +41,7 @@ WITH msg AS (
     SELECT $body::JSON -> '$.id' AS id, $body::JSON ->> '$.method' AS method,
            coalesce($body::JSON ->> '$.params.arguments.sql', $body::JSON ->> '$.params.arguments.statement') AS sql
 ), posted AS (
-    SELECT id, method, array_agg(quackapi_post('http://127.0.0.1:9495/sql', json_object('sql', sql)::VARCHAR)) AS receipts
+    SELECT id, method, array_agg(selfdispatch(sql)) AS receipts
     FROM msg WHERE method = 'tools/call' GROUP BY id, method
 ), called AS (
     SELECT id, method FROM msg WHERE method IS DISTINCT FROM 'tools/call'

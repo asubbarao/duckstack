@@ -11,7 +11,7 @@ FROM cd(getenv('HOME') || '/inframe');
 -- counts once, and the two ends join on qualified_name (scope path with per-name index), not on name. A file's blob
 -- reads are correlated LATERALs, so WHERE branch_name = … reads only that branch; the side a file lacks gets a NULL uri,
 -- because a WHERE inside the LATERAL does not stop the read.
-SELECT quackapi_post('http://127.0.0.1:9495/sql', json_object('sql', $views$
+SELECT selfdispatch($views$
 CREATE OR REPLACE VIEW branch_diff AS
 WITH local_branches AS (
     SELECT * FROM git_branches() WHERE NOT is_remote
@@ -89,4 +89,4 @@ FROM before_definitions FULL JOIN after_definitions
   ON after_definitions.branch_name = before_definitions.branch_name
  AND after_definitions.file_path = before_definitions.file_path
  AND after_definitions.qualified_name = before_definitions.qualified_name
-$views$)).status;
+$views$).status;
