@@ -65,16 +65,28 @@ SELECT urlpattern_extract('https://duckdb.org/community_extensions/extensions/:n
        duck_blocks_to_md(html_to_duck_blocks((response ->> 'body')::HTML)) AS markdown
 FROM lake.agents.ext_fetch;
 SELECT cron($$
-SELECT quackapi_post('http://127.0.0.1:9495/sql', json_object('sql', string_agg(printf($s$INSERT INTO lake.agents.ext_fetch BY NAME
-SELECT '%s' AS url, now() AS fetched_at, json_object('status', 200, 'body', content) AS response
-FROM read_text('curl -sSL --fail --max-time 30 %s |')$s$, url, url), e';\n'))).status
-FROM (SELECT 'https://duckdb.org/community_extensions/list_of_extensions' AS url
-      UNION
-      SELECT url_resolve(f.url, l.href) AS url FROM lake.agents.ext_fetch f
-      CROSS JOIN UNNEST(html_extract_links(parse_html(f.response ->> 'body'))) AS u(l)
-      WHERE f.url = 'https://duckdb.org/community_extensions/list_of_extensions'
-        AND urlpattern_test('https://duckdb.org/community_extensions/extensions/:name.html', url_resolve(f.url, l.href)))
-GROUP BY hash(url) % 4
+WITH urls AS (
+    SELECT 'https://duckdb.org/community_extensions/list_of_extensions' AS url
+    UNION
+    SELECT url_resolve(f.url, l.href) AS url FROM lake.agents.ext_fetch f
+    CROSS JOIN UNNEST(html_extract_links(parse_html(f.response ->> 'body'))) AS u(l)
+    WHERE f.url = 'https://duckdb.org/community_extensions/list_of_extensions'
+      AND urlpattern_test('https://duckdb.org/community_extensions/extensions/:name.html', url_resolve(f.url, l.href))
+), batches AS (
+    SELECT list(url ORDER BY url) AS urls FROM urls GROUP BY hash(url) % 4
+), statements AS (
+    SELECT tera_render($t$
+{% for url in urls %}
+INSERT INTO lake.agents.ext_fetch BY NAME
+SELECT $url${{ url }}$url$ AS url, now() AS fetched_at, json_object('status', 200, 'body', content) AS response
+FROM read_text($cmd$curl -sSL --fail --max-time 30 '{{ url }}' |$cmd$);
+{% endfor %}
+$t$, c::JSON, autoescape := false) AS sql
+    FROM batches c
+), posted AS (
+    SELECT array_agg(quackapi_post('http://127.0.0.1:9495/sql', json_object('sql', sql)::VARCHAR)) AS receipts FROM statements
+)
+SELECT r.* FROM posted CROSS JOIN UNNEST(receipts) AS t(r)
 $$, '0 15 3 * * *');
 
 -- What each local branch changed since it left origin/staging, and whether origin has it: the files a PR
@@ -175,7 +187,7 @@ CREATE SCHEMA IF NOT EXISTS lake.otel;
 FROM otlp_serve('otlp:127.0.0.1:4318', catalog := 'lake', schema := 'otel', disable_auth := true, maintenance_retention_ms := 2592000000);
 
 -- 9495: POST /sql {"sql": "..."}; POST /inbox any JSON, read it from quackapi_jobs; GET /profile?sql=…;
--- POST /mcp/ is the dev MCP server: tools query and execute, each a curl to /sql through shellfs, so calls run in parallel.
+-- POST /mcp/ is the dev MCP server: tools query and execute, each a native JSON post to /sql, collected and unnested as receipts.
 -- The inbox queue (quackapi_jobs) lives in dev.duckdb: jobs still queued are lost when the file is reset.
 CREATE QUEUE inbox;
 CREATE OR REPLACE ROUTE sql POST '/sql' AS SELECT * FROM quack_query('quack:localhost:9494', $sql, token := getenv('QUACK_TOKEN'));
@@ -193,16 +205,18 @@ CREATE GROUP mcp WITH (prefix='/mcp');
 CREATE OR REPLACE ROUTE mcp POST '/' IN GROUP mcp AS SELECT '' AS text;
 CREATE OR REPLACE MIDDLEWARE mcp BEFORE GROUP mcp AS
 WITH msg AS (
-    SELECT $body::JSON -> '$.id' AS id, $body::JSON ->> '$.method' AS method
-), called AS (  -- a tool call curls /sql through shellfs; the body is a quoted heredoc, so nothing in it is escaped
-    FROM msg WHERE method IS DISTINCT FROM 'tools/call'
+    SELECT $body::JSON -> '$.id' AS id, $body::JSON ->> '$.method' AS method,
+           coalesce($body::JSON ->> '$.params.arguments.sql', $body::JSON ->> '$.params.arguments.statement') AS sql
+), posted AS (
+    SELECT id, method, array_agg(quackapi_post('http://127.0.0.1:9495/sql', json_object('sql', sql)::VARCHAR)) AS receipts
+    FROM msg WHERE method = 'tools/call' GROUP BY id, method
+), called AS (
+    SELECT id, method FROM msg WHERE method IS DISTINCT FROM 'tools/call'
     UNION ALL BY NAME
-    SELECT id, method, json AS reply, json_exists(json, '$.detail') AS failed
-    FROM msg, read_json_objects(tera_render($t$curl -s -H 'content-type: application/json' --data-binary @- http://127.0.0.1:9495/sql <<'MCP_BODY'
-{{ body }}
-MCP_BODY
-|$t$, json_object('body', json_object('sql', coalesce($body::JSON ->> '$.params.arguments.sql', $body::JSON ->> '$.params.arguments.statement'))::VARCHAR), autoescape := false), format := 'unstructured')
-    WHERE method = 'tools/call'
+    SELECT id, method,
+           coalesce(try_cast(r.body AS JSON), json_object('detail', coalesce(r.error, r.body))) AS reply,
+           CASE WHEN r.status = 200 THEN coalesce(json_exists(reply, '$.detail'), false) ELSE true END AS failed
+    FROM posted CROSS JOIN UNNEST(receipts) AS t(r)
 )
 SELECT false AS allow, CASE WHEN id IS NULL THEN 202 ELSE 200 END AS status,
        json_object('jsonrpc', '2.0', 'id', id, 'result', coalesce(
@@ -221,42 +235,54 @@ FROM quackapi_serve(coalesce(getenv('DEV_QUACKAPI_PORT')::INTEGER, 9495), host :
 -- quackapi_serve switches logging off.
 CALL enable_logging(['QueryLog', 'HTTP', 'Quack'], storage := 'file', storage_path := getenv('QUACK_NATIVE_LOG'), storage_buffer_size := 0);
 
--- Agent transcripts (Claude Code ~/.claude/projects, Codex ~/.codex), read natively, one Parquet per folder at the folder's
--- own path under ~/.duck/lake/agent.
--- agent.entries: PR #1576's entries shape over one find: hostfs columns, the reader, and the statement that copies the
--- file's whole folder (a glob read) to its stored file. read_json keeps every top-level field as a column of JSON
--- (maximum_depth 1, map inference off): the same shape in every folder. Map inference on turns a folder's ~170 top-level
--- fields into one MAP; inferred deeper, a field is a STRUCT in one folder and a MAP in another, which union_by_name cannot
--- merge. maximum_object_size 32 MB fits the largest line (~21 MB); the reader's buffers are twice it per thread.
--- Nothing here errors on a machine without transcripts: glob() lists an empty set where find exits 1, so nothing is
--- copied and agent.lines is never posted (read_parquet fails on an empty file list and takes no subquery).
+-- Agent transcripts (Claude Code ~/.claude/projects, Codex ~/.codex), read natively, one Parquet per session under
+-- ~/.duck/lake/agent at the session's own path.
+-- agent.entries: PR #1576's entries shape over one find of the transcript roots and the store, with hostfs columns.
+-- A session is a Claude transcript <project>/<stem>.jsonl plus its <project>/<stem>/subagents/*.jsonl, or one Codex
+-- rollout file; its stored copy is <store><session>.parquet. Roots that do not exist are skipped, so a machine without
+-- transcripts lists nothing, copies nothing and never posts agent.lines (read_parquet fails on an empty file list).
+-- read_json keeps every top-level field as a column of JSON (maximum_depth 1, map inference off): the same shape in
+-- every file. Map inference turns a project's ~170 top-level fields into one MAP; inferred deeper, a field is a STRUCT
+-- in one file and a MAP in another, which union_by_name cannot merge. maximum_object_size 32 MB fits the largest line
+-- (~21 MB); the reader's buffers are twice it per thread.
 CREATE SCHEMA IF NOT EXISTS agent;
 CREATE OR REPLACE VIEW agent.entries AS
-SELECT path, parse_dirpath(path) AS parent, file_name(path) AS name, file_extension(path) AS ext, file_size(path) AS bytes,
-       file_last_modified(path) AS modified, 'read_json' AS reader, '~/.duck/lake/agent' || parent || '.parquet' AS stored,
-       printf($s$SELECT content FROM read_text('mkdir -p %s |');
-COPY (SELECT * FROM read_json('%s/*.jsonl*', format := 'newline_delimited', maximum_depth := 1, map_inference_threshold := -1, sample_size := -1,
+SELECT path, parse_dirpath(path) AS parent, file_name(path) AS name, parse_filename(path, true) AS stem, file_extension(path) AS ext,
+       file_size(path) AS bytes, file_last_modified(path) AS modified,
+       CASE WHEN ext = '.parquet' THEN 'read_parquet' ELSE 'read_json' END AS reader,
+       CASE WHEN reader = 'read_parquet' THEN split_part(path, '/.duck/lake/agent', 2)[:-9]
+            WHEN file_name(parent) = 'subagents' THEN parse_dirpath(parent)
+            ELSE parent || '/' || stem END AS session
+FROM (SELECT rtrim(content, e'\n') AS path
+      FROM read_lines($c$for d in ~/.claude/projects ~/.codex/sessions ~/.codex/archived_sessions ~/.duck/lake/agent; do [ -d "$d" ] && find "$d" -type f \( -name '*.jsonl*' -o -name '*.parquet' \); done; true |$c$));
+-- Each session with a file newer than its stored copy (or none stored) is copied whole, one post per session; the posts
+-- of one SELECT run at the same time. Boot and the 5-minute cron run the same two statements: an empty store takes
+-- 980 sessions (3.6 GB, ~45 s; posts that fail are retried by the next run), a 5-minute run the few active sessions
+-- (~13 MB, 0.5 s). A replaced file is written as tmp_<name> and renamed, and agent.lines is posted after the copies with
+-- the stored files' literal list, so it never reads a partial file. It keeps the lines whose transcript still exists.
+SELECT quackapi_post('http://127.0.0.1:9495/sql', json_object('sql', printf($s$SELECT content FROM read_text('mkdir -p %s |');
+COPY (SELECT * FROM read_json([%s], format := 'newline_delimited', maximum_depth := 1, map_inference_threshold := -1, sample_size := -1,
       maximum_object_size := 33554432, ignore_errors := true, union_by_name := true, filename := 'transcript')) TO '%s' (FORMAT parquet)$s$,
-              parse_dirpath(stored), parent, stored) AS sql_statement
-FROM (SELECT file AS path FROM glob('~/.claude/projects/**/*.jsonl*')
-      UNION ALL SELECT file FROM glob('~/.codex/*sessions/**/*.jsonl*'));
--- One post per folder; the posts of one SELECT run at the same time. Boot copies every folder (111, 3.9 GB: 21 s);
--- every 5 minutes the cron replaces the folders holding a file modified since yesterday. A replaced file is written as
--- tmp_<name> and renamed, so agent.lines, posted after the copies with the stored files' literal list, never reads a
--- partial file. It keeps the lines whose transcript still exists (a session archived out of a folder leaves its old copy).
-SELECT quackapi_post('http://127.0.0.1:9495/sql', json_object('sql', sql_statement)).status
-FROM (SELECT DISTINCT parent, sql_statement FROM agent.entries);
+      parse_dirpath(stored), files, stored))).status
+FROM (SELECT t.session, '~/.duck/lake/agent' || t.session || '.parquet' AS stored, string_agg('$q$' || t.path || '$q$', ', ') AS files
+      FROM agent.entries t LEFT JOIN agent.entries s ON s.reader = 'read_parquet' AND s.session = t.session
+      WHERE t.reader = 'read_json'
+      GROUP BY t.session HAVING bool_or(t.modified > coalesce(s.modified, '-infinity'::TIMESTAMP)));
 SELECT quackapi_post('http://127.0.0.1:9495/sql', json_object('sql', printf($s$CREATE OR REPLACE VIEW agent.lines AS
 SELECT * FROM read_parquet([%s], union_by_name := true) SEMI JOIN agent.entries e ON e.path = transcript$s$, files))).status
-FROM (SELECT string_agg('$q$' || file || '$q$', ', ') AS files FROM glob('~/.duck/lake/agent/**/*.parquet')
-      WHERE NOT starts_with(file_name(file), 'tmp_'))
+FROM (SELECT string_agg('$q$' || path || '$q$', ', ') AS files FROM agent.entries WHERE reader = 'read_parquet' AND NOT starts_with(name, 'tmp_'))
 WHERE files IS NOT NULL;
-SELECT cron($$SELECT quackapi_post('http://127.0.0.1:9495/sql', json_object('sql', sql_statement)).status
-FROM (SELECT DISTINCT parent, sql_statement FROM agent.entries WHERE modified >= current_date - INTERVAL 1 DAY);
+SELECT cron($$SELECT quackapi_post('http://127.0.0.1:9495/sql', json_object('sql', printf($s$SELECT content FROM read_text('mkdir -p %s |');
+COPY (SELECT * FROM read_json([%s], format := 'newline_delimited', maximum_depth := 1, map_inference_threshold := -1, sample_size := -1,
+      maximum_object_size := 33554432, ignore_errors := true, union_by_name := true, filename := 'transcript')) TO '%s' (FORMAT parquet)$s$,
+      parse_dirpath(stored), files, stored))).status
+FROM (SELECT t.session, '~/.duck/lake/agent' || t.session || '.parquet' AS stored, string_agg('$q$' || t.path || '$q$', ', ') AS files
+      FROM agent.entries t LEFT JOIN agent.entries s ON s.reader = 'read_parquet' AND s.session = t.session
+      WHERE t.reader = 'read_json'
+      GROUP BY t.session HAVING bool_or(t.modified > coalesce(s.modified, '-infinity'::TIMESTAMP)));
 SELECT quackapi_post('http://127.0.0.1:9495/sql', json_object('sql', printf($s$CREATE OR REPLACE VIEW agent.lines AS
 SELECT * FROM read_parquet([%s], union_by_name := true) SEMI JOIN agent.entries e ON e.path = transcript$s$, files))).status
-FROM (SELECT string_agg('$q$' || file || '$q$', ', ') AS files FROM glob('~/.duck/lake/agent/**/*.parquet')
-      WHERE NOT starts_with(file_name(file), 'tmp_'))
+FROM (SELECT string_agg('$q$' || path || '$q$', ', ') AS files FROM agent.entries WHERE reader = 'read_parquet' AND NOT starts_with(name, 'tmp_'))
 WHERE files IS NOT NULL$$, '0 */5 * * * *');
 
 -- Boot marker for the Server Bootstrap Smoke workflow: it polls
