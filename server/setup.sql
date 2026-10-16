@@ -57,7 +57,8 @@ CALL enable_logging(['QueryLog', 'HTTP', 'Quack'], storage := 'file', storage_pa
 -- community list and every extension page it links are fetched again: one curl per url, four /sql bodies run in order.
 CREATE SCHEMA IF NOT EXISTS agents;
 CREATE OR REPLACE VIEW agents.ext_docs AS
-SELECT parse_filename(url, true) AS extension, url, fetched_at, response ->> 'status' AS status,
+SELECT urlpattern_extract('https://duckdb.org/community_extensions/extensions/:name.html', url, 'name') AS extension, url, fetched_at,
+       response ->> 'status' AS status,
        duck_blocks_to_md(html_to_duck_blocks((response ->> 'body')::HTML)) AS markdown
 FROM lake.agents.ext_fetch;
 SELECT cron($$
@@ -66,9 +67,10 @@ SELECT '%s' AS url, now() AS fetched_at, json_object('status', 200, 'body', cont
 FROM read_text('curl -sSL --fail --max-time 30 %s |')$s$, url, url), e';\n'))).status
 FROM (SELECT 'https://duckdb.org/community_extensions/list_of_extensions' AS url
       UNION
-      SELECT 'https://duckdb.org' || l.href FROM lake.agents.ext_fetch
-      CROSS JOIN UNNEST(html_extract_links(parse_html(response ->> 'body'))) AS u(l)
-      WHERE url = 'https://duckdb.org/community_extensions/list_of_extensions' AND starts_with(l.href, '/community_extensions/extensions/'))
+      SELECT url_resolve(f.url, l.href) AS url FROM lake.agents.ext_fetch f
+      CROSS JOIN UNNEST(html_extract_links(parse_html(f.response ->> 'body'))) AS u(l)
+      WHERE f.url = 'https://duckdb.org/community_extensions/list_of_extensions'
+        AND urlpattern_test('https://duckdb.org/community_extensions/extensions/:name.html', url_resolve(f.url, l.href)))
 GROUP BY hash(url) % 4
 $$, '0 15 3 * * *');
 
