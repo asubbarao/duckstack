@@ -70,7 +70,7 @@ COPY (SELECT $profile${{ profile_text }}$profile$) TO {{ target }} (FORMAT csv, 
 $copy$, c::JSON, autoescape := false)).status::VARCHAR AS saved_status
     FROM run c
 ), node AS (   -- every operator in the profile, in order; depth is how many children its path has
-    SELECT profile, path, saved_status, t.id AS idx, t.value ->> 'operator_name' AS name, len(string_split(t.path, 'children')) - 3 AS depth,
+    SELECT saved.profile, saved.path, saved.saved_status, t.id AS idx, t.value ->> 'operator_name' AS name, len(string_split(t.path, 'children')) - 3 AS depth,
            (t.value ->> 'operator_timing')::DOUBLE AS seconds, (t.value ->> 'operator_cardinality')::UBIGINT AS card,
            (t.value ->> 'operator_rows_scanned')::UBIGINT AS scanned, (t.value -> 'extra_info' ->> 'Estimated Cardinality') AS est,
            list_transform(list_filter(json_keys(t.value -> 'extra_info'), lambda k: k <> 'Estimated Cardinality'), lambda k: k || ': ' || (t.value -> 'extra_info' ->> k)) AS extra
