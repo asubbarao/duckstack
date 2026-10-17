@@ -1,5 +1,6 @@
 -- agents.ext_catalog: one row per community extension, each source a typed column: yml (description.yml), page (the
--- community page, HTML) and readme (the GitHub README, markdown), with functions and readme_functions parsed from them.
+-- community page, HTML) and readme (the GitHub README, markdown), with functions and readme_functions parsed from them, each
+-- function carrying its overloads (parameters, types, return type) from duckdb_functions() when its extension is loaded.
 -- Every 30 minutes one statement rebuilds it from the list page. Each URL is read by its own dispatched statement, so a
 -- missing or rate-limited URL fails alone. GitHub rate-limits, so READMEs are fetched only for extensions without one
 -- from the last day, and the rest carry over: the previous rows are read through a dispatch too, so on a fresh dev that
@@ -35,13 +36,26 @@ WITH links AS (
            coalesce(nullif(fresh.readme, ''), old.readme)::md AS readme,
            CASE WHEN nullif(fresh.readme, '') IS NOT NULL THEN now() ELSE old.fetched_at END AS fetched_at
     FROM fresh LEFT JOIN old USING (extension_name)
+), parsed AS (
+    SELECT merged.*,
+           flatten(list_transform(list_filter(html_extract_tables_json(page), lambda t: list_contains(t.headers, 'function_name')), lambda t:
+               list_transform(t.table_data, lambda r: {name: r[list_position(t.headers, 'function_name')], kind: r[list_position(t.headers, 'function_type')],
+                                                       description: r[list_position(t.headers, 'description')], examples: r[list_position(t.headers, 'examples')]}))) AS page_functions,
+           list_distinct(flatten(list_transform(md_extract_code_blocks(readme), lambda b:
+               list_transform(list_filter(parse_ast_list(b.code, 'sql'), lambda n: n.type = 'invocation'), lambda n: lower(n.name))))) AS readme_names
+    FROM merged
+), signatures AS (
+    SELECT function_name, list({kind: function_type, parameters: parameters, parameter_types: parameter_types, return_type: return_type}) AS overloads
+    FROM duckdb_functions() GROUP BY function_name
+), functions AS (
+    SELECT p.extension_name, list({name: f.name, kind: f.kind, description: f.description, examples: f.examples, overloads: s.overloads} ORDER BY f.name) AS functions
+    FROM parsed p CROSS JOIN UNNEST(p.page_functions) AS t(f) LEFT JOIN signatures s ON s.function_name = f.name GROUP BY p.extension_name
+), readme_functions AS (
+    SELECT p.extension_name, list({name: n, overloads: s.overloads} ORDER BY n) AS readme_functions
+    FROM parsed p CROSS JOIN UNNEST(p.readme_names) AS t(n) LEFT JOIN signatures s ON s.function_name = n GROUP BY p.extension_name
 )
-SELECT merged.*,
-       flatten(list_transform(list_filter(html_extract_tables_json(page), lambda t: list_contains(t.headers, 'function_name')), lambda t:
-           list_transform(t.table_data, lambda r: {name: r[list_position(t.headers, 'function_name')], kind: r[list_position(t.headers, 'function_type')],
-                                                   description: r[list_position(t.headers, 'description')], examples: r[list_position(t.headers, 'examples')]}))) AS functions,
-       list_distinct(flatten(list_transform(md_extract_code_blocks(readme), lambda b:
-           list_transform(list_filter(parse_ast_list(b.code, 'sql'), lambda n: n.type = 'invocation'), lambda n: lower(n.name))))) AS readme_functions,
+SELECT parsed.* EXCLUDE (page_functions, readme_names), functions.functions, readme_functions.readme_functions,
        e.installed, e.loaded, e.extension_version AS installed_version
-FROM merged LEFT JOIN duckdb_extensions() e USING (extension_name)
+FROM parsed LEFT JOIN functions USING (extension_name) LEFT JOIN readme_functions USING (extension_name)
+LEFT JOIN duckdb_extensions() e USING (extension_name)
 $$, '0 */30 * * * *');
