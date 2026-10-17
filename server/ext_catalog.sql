@@ -24,8 +24,9 @@ WITH calls AS (
     FROM links n JOIN links g ON g.i = n.i + 1 AND g.text = 'GitHub'
     WHERE urlpattern_test('https://duckdb.org/community_extensions/extensions/:name.html', n.url)
 ), previous AS (
-    SELECT o.* FROM (SELECT selfdispatch(previous_sql) AS r FROM calls)
-    CROSS JOIN UNNEST(from_json(r.body, '[{"extension_name": "VARCHAR", "readme": "VARCHAR", "fetched_at": "TIMESTAMPTZ"}]')) AS t(o)
+    SELECT o.* FROM (SELECT array_agg(selfdispatch(previous_sql)) AS receipts FROM calls)
+    CROSS JOIN UNNEST(receipts) AS t(r)
+    CROSS JOIN UNNEST(from_json(r.body, '[{"extension_name": "VARCHAR", "readme": "VARCHAR", "fetched_at": "TIMESTAMPTZ"}]')) AS b(o)
     WHERE r.status = 200
 ), rendered AS (
     SELECT extension_name, kind,
