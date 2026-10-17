@@ -4,6 +4,7 @@
 -- Rows of a killed group carry killed = true and the kill's receipt; host_process_history reads them all.
 WITH program AS (
     SELECT $reap$
+SELECT content FROM read_text($cmd$mkdir -p ~/.duck/logs/host/processes |$cmd$);
 COPY (
 WITH procs AS (
     FROM host_processes
