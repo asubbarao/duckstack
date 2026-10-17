@@ -114,50 +114,56 @@ CREATE OR REPLACE VIEW chrome_tabs AS
 SELECT window_id, tab_index, tab_id, url, title, loading, active, profile
 FROM chrome_all_tabs WHERE profile = 'work';
 
--- Grammar: a new Chrome action is a new row. A line is words, the target noun, preposition, argument, closing.
-CREATE OR REPLACE VIEW chrome_verbs AS
-SELECT 'open_url' AS verb, ['set opened to id of (make new tab at end of tabs of'] AS words, 'window' AS target, ['with properties {URL:'] AS preposition, ['})'] AS closing, 'text' AS argument_type UNION ALL
-SELECT 'return_opened', ['return opened'], 'none', [], [], 'none' UNION ALL
-SELECT 'set_active_tab_url', ['set URL of active tab of'], 'window', ['to'], [], 'text' UNION ALL
-SELECT 'set_url', ['set URL of'], 'tab', ['to'], [], 'text' UNION ALL
-SELECT 'execute_javascript', ['execute'], 'tab', ['javascript'], [], 'text' UNION ALL
-SELECT 'close_tab', ['close'], 'tab', [], [], 'none' UNION ALL
-SELECT 'activate_tab', ['set active tab index of'], 'window', ['to'], [], 'integer' UNION ALL
-SELECT 'repeat', ['repeat'], 'none', [], ['times'], 'integer' UNION ALL
-SELECT 'exit_repeat_when', ['if (execute'], 'tab', ['javascript'], [') then exit repeat'], 'text' UNION ALL
-SELECT 'delay', ['delay'], 'none', [], [], 'integer' UNION ALL
-SELECT 'end_repeat', ['end repeat'], 'none', [], [], 'none';
+-- Where an action happens: the app, and which of its tabs, as an AppleScript test on window w and tab t.
+CREATE OR REPLACE VIEW browser_surfaces AS
+SELECT 'staging-lens' AS surface, 'Google Chrome' AS application, 'URL of t starts with "https://broker.staging.inframerisk.net/"' AS tab_test UNION ALL
+SELECT 'demo-lens', 'Google Chrome', 'URL of t starts with "https://broker.demo.inframerisk.net/"' UNION ALL
+SELECT 'prod-lens', 'Google Chrome', 'URL of t starts with "https://broker.app.inframerisk.com/"' UNION ALL
+SELECT 'aws-console', 'Google Chrome', 'URL of t starts with "https://us-west-2.console.aws.amazon.com/"' UNION ALL
+SELECT 'aws-signin', 'Google Chrome', 'URL of t starts with "https://us-west-2.signin.aws.amazon.com/"' UNION ALL
+SELECT 'aws-callback', 'Google Chrome', 'URL of t starts with "http://127.0.0.1:" and URL of t contains "/oauth/callback"' UNION ALL
+SELECT 'work-window', 'Google Chrome', 'URL of t starts with "https://app.rippling.com/"' UNION ALL
+SELECT 'incognito-local-broker', 'Google Chrome', 'mode of w is "incognito" and URL of t starts with "http://localhost:"' UNION ALL
+SELECT 'safari-local-portal', 'Safari', 'URL of t starts with "http://local-portal:"';
 
--- What a target clause says; the ids are filled per row.
-CREATE OR REPLACE VIEW chrome_nouns AS
-SELECT 'window' AS target, ['window id', '{{ window_id }}'] AS words UNION ALL
-SELECT 'tab', ['tab id', '{{ tab_id }}', 'of window id', '{{ window_id }}'] UNION ALL
-SELECT 'none', [];
+-- What can be done to a located tab t in window w, per app; each sets r, the step's output.
+CREATE OR REPLACE VIEW browser_verbs AS
+SELECT 'Google Chrome' AS application, 'eval' AS verb, 'set r to (execute t javascript "{{ arg }}")' AS action UNION ALL
+SELECT 'Safari', 'eval', 'set r to (do JavaScript "{{ arg }}" in t)' UNION ALL
+SELECT 'Google Chrome', 'close', 'set r to URL of t
+close t' UNION ALL
+SELECT 'Safari', 'close', 'set r to URL of t
+close t' UNION ALL
+SELECT 'Google Chrome', 'open_beside', 'set r to id of (make new tab at end of tabs of w with properties {URL:"{{ arg }}"})
+exit repeat';
 
--- Each verb's line, assembled from the rows above.
-CREATE OR REPLACE VIEW chrome_grammar AS
-SELECT v.verb, list_reduce(list_concat(v.words, n.words, v.preposition,
-         CASE v.argument_type WHEN 'text' THEN ['"{{ arg }}"'] WHEN 'integer' THEN ['{{ arg }}'] ELSE [] END, v.closing),
-       (a, b) -> a || ' ' || b) AS line
-FROM chrome_verbs AS v JOIN chrome_nouns AS n USING (target);
-
--- The statement that runs a program (a list of {verb, arg} steps) on one tab; an AppleScript error is the output.
-CREATE OR REPLACE MACRO chrome_sql(window_id, tab_id, steps) AS (
-  SELECT tera_render($r$SELECT {{ window_id }} AS window_id, {{ tab_id }} AS tab_id, string_agg(content, '') AS out FROM read_lines($osa$osascript - 2>&1 <<'BRIDGE_EOF'
-tell application "Google Chrome"
-{{ program | join(sep="
-") }}
+-- One AppleScript program for a route: each step runs on every tab its surface matches, in order; a row per hit.
+CREATE OR REPLACE MACRO browser_sql(steps) AS (
+  SELECT tera_render($r$SELECT * FROM read_csv($osa$osascript - 2>&1 <<'BRIDGE_EOF'
+set out to ""
+{% for s in steps %}tell application "{{ s.application }}"
+  repeat with w in windows
+    repeat with t in tabs of w
+      if {{ s.tab_test }} then
+        {{ s.action }}
+        set out to out & "{{ s.surface }}" & tab & r & linefeed
+      end if
+    end repeat
+  end repeat
 end tell
+{% endfor %}return out
 BRIDGE_EOF
-{allowed_exit_codes=0,1}|$osa$, "trim" := true)$r$,
-    json_object('window_id', window_id, 'tab_id', tab_id, 'program', list(tera_render(g.line,
-      json_object('window_id', window_id, 'tab_id', tab_id, 'arg', u.s.arg), autoescape := false) ORDER BY u.i)),
+{allowed_exit_codes=0,1}|$osa$, delim := '\t', quote := '', header := false, columns := {'surface': 'VARCHAR', 'out': 'VARCHAR'})$r$,
+    json_object('steps', list(json_object('surface', b.surface, 'application', b.application, 'tab_test', b.tab_test,
+      'action', tera_render(v.action, json_object('arg', u.s.arg), autoescape := false)) ORDER BY u.i)),
     autoescape := false)
-  FROM UNNEST(steps) WITH ORDINALITY AS u(s, i) JOIN chrome_grammar AS g ON g.verb = u.s.verb
+  FROM UNNEST(steps) WITH ORDINALITY AS u(s, i)
+  JOIN browser_surfaces AS b ON b.surface = u.s.surface
+  JOIN browser_verbs AS v ON v.application = b.application AND v.verb = u.s.verb
 );
 
--- Run it: the receipt (status, body = [{window_id, tab_id, out}]).
-CREATE OR REPLACE MACRO chrome_run(window_id, tab_id, steps) AS selfdispatch(chrome_sql(window_id, tab_id, steps));
+-- Run a route: the receipt's body is its rows, [{surface, out}].
+CREATE OR REPLACE MACRO browser_run(steps) AS selfdispatch(browser_sql(steps));
 
 -- Processes and macOS diagnostics -------------------------------------------------------------------
 
