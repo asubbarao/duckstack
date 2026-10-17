@@ -30,6 +30,26 @@ SELECT q.timestamp, q.connection_id, q.query_id, q.query,
        v['TOTAL_BYTES_WRITTEN']::UBIGINT AS bytes_written, v['CHECKPOINT_LATENCY']::DOUBLE AS checkpoint_s,
        v['WRITE_TO_WAL_LATENCY']::DOUBLE AS wal_write_s, v AS metrics
 FROM meta.query_log q JOIN per_query USING (connection_id, query_id);
+-- macOS crash reports (*.ips in DiagnosticReports): each file is a one-line JSON header and a JSON body.
+-- One row per report: app, time, exception, faulting address, and the faulting thread's frames with the binary each
+-- frame is in (usedImages[imageIndex]); the whole body stays in report. The globs name whole folders, as in
+-- host_diagnostic_files: macOS rotates .ips away, and a glob matching nothing fails the view at boot.
+CREATE OR REPLACE VIEW meta.crash_reports AS
+WITH doc AS (
+    SELECT filename, try(decode(content)) AS txt, position($n$
+$n$ IN txt) AS nl
+    FROM read_blob(['/Library/Logs/DiagnosticReports/*', '~/Library/Logs/DiagnosticReports/*'])
+    WHERE ends_with(filename, '.ips') AND NOT starts_with(file_name(filename), 'JetsamEvent')
+), split AS (
+    SELECT filename, try(left(txt, nl - 1)::JSON) AS h, try(substr(txt, nl + 1)::JSON) AS b FROM doc
+)
+SELECT file_name(filename) AS file, h ->> 'app_name' AS app,
+       strptime(h ->> 'timestamp', '%Y-%m-%d %H:%M:%S.%f %z') AS crashed_at,
+       b ->> '$.exception.type' AS exception, b ->> '$.exception.signal' AS signal, b ->> '$.exception.subtype' AS address,
+       (b ->> '$.faultingThread')::INTEGER AS faulting_thread,
+       b -> 'threads' -> ((b ->> '$.faultingThread')::INTEGER) -> 'frames' AS frames, b -> 'usedImages' AS images,
+       b -> '$.asi' AS app_info, b AS report, filename AS path
+FROM split WHERE json_exists(b, '$.threads');
 -- GET /profile?sql=…: the query graph that `python -m duckdb.query_graph` draws. Runs the SQL (writes included) under
 -- EXPLAIN (ANALYZE, FORMAT json) through Quack, keeps the profile as ~/.duck/logs/profiles/<UTC time>.json (a COPY
 -- dispatched to /sql), and answers one HTML page: headline metrics, time per operator type, and the operator tree in
