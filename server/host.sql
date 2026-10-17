@@ -151,14 +151,14 @@ set out to ""
     repeat with t in tabs of w
       if {{ s.tab_test }} then
         {{ s.action }}
-        set out to out & "{{ s.surface }}" & tab & r & linefeed
+        set out to out & "{{ s.surface }}" & (ASCII character 9) & r & linefeed
       end if
     end repeat
   end repeat
 end tell
 {% endfor %}return out
 BRIDGE_EOF
-{allowed_exit_codes=0,1}|$osa$, delim := '\t', quote := '', header := false, columns := {'surface': 'VARCHAR', 'out': 'VARCHAR'})$r$,
+{allowed_exit_codes=0,1}|$osa$, auto_detect := false, delim := '\t', quote := '', header := false, null_padding := true, columns := {'surface': 'VARCHAR', 'out': 'VARCHAR'})$r$,
     json_object('steps', list(json_object('surface', b.surface, 'application', b.application, 'tab_test', b.tab_test,
       'action', tera_render(v.action, json_object('arg', u.s.arg), autoescape := false)) ORDER BY u.i)),
     autoescape := false)
