@@ -107,6 +107,16 @@ restart: export every table to Parquet, wipe the database file, start clean, imp
 back. It must be idempotent: running it twice, or after a crash halfway, ends in the same state,
 and an import that fails leaves the export in place to retry.
 
+## 9. Dev being down changes nothing
+
+Dev is one endpoint, not a dependency. When it refuses a call, the same work runs in a local
+`:memory:` client that `.read`s the boot files (`server/extensions.sql`, `server/macros.sql`,
+`server/host.sql`), and the agent stream is read straight from its Parquet under
+`~/.duck/lake/agent`. Flip the switch in the background; never wait on it or report it as a
+blocker. A query that can take dev down is the defect: broad scans of the transcript store go per
+session file through self-dispatch, or run locally. Anything a boot file creates must bind
+without launching an app or failing, because `CREATE VIEW` runs the reader once to bind it.
+
 ## Where this came from
 
 The ideas, not the code. `asubbarao/duckdb-chrome-bridge` and `asubbarao/duckdb-ops-toolkit`
