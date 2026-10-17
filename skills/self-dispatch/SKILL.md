@@ -1,37 +1,47 @@
 ---
 name: self-dispatch
-description: Generate readable SQL from rows, execute native JSON self-posts, and unnest receipts.
+description: Generate readable SQL from rows, execute native JSON self-posts, and unnest receipts. Five canonical templates (shell, pipeline, sql, network, loop) in templates/.
 ---
 
 # Self-dispatch
 
-SQL builds an `sql` column; execution posts it to the selected service, collects the
-receipts with `array_agg`, then `CROSS JOIN UNNEST` exposes them as rows.
+Every self-dispatch is the same three CTEs:
 
-Read the [compendium](references/compendium.md) for the construction and execution
-cases, actual-use inventory, named templates, quoting, inserts and failure handling.
-[inline.sql](references/inline.sql) contains runnable SQL-only, file-reader,
-command/CSV and repeated-pipeline/JSON examples. [review.sql](references/review.sql) lists
-every dispatch site in the repo, to review with the `duckstack-review` checks.
+```sql
+WITH c AS (                         -- 1. declare everything up front: rows, the command as text,
+    SELECT ...                      --    options as text, values prequoted (quote_literal)
+), rendered AS (                    -- 2. one statement per row; Tera only fills holes
+    SELECT tera_render('shell.tera', c::JSON, autoescape := false,
+                       template_path := '/Users/aloksubbarao/.duck/deploy/skills/self-dispatch/templates/*.tera') AS sql
+    FROM c
+), dispatched AS (                  -- 3. post them; the receipts come back as rows
+    SELECT array_agg(selfdispatch(sql)) AS receipts FROM rendered
+)
+SELECT receipt.* FROM dispatched CROSS JOIN UNNEST(receipts) AS t(receipt);
+```
 
-Use Tera to make the generated program look like ordinary SQL:
-`tera_render(template, c::JSON, autoescape := false)`. SQL owns selection, joins,
-filtering and values. Tera only substitutes: no loops, conditionals or logic. Use an
-existing template with `template_path :=`; write a new one only for a new statement shape.
-Someone should be able to replace Tera with plain SQL string construction without
-redesigning the program. This is a design goal, not a second implementation to maintain.
+Pick the template by what the statement does. `templates/canonical.sql` has a verified example of each.
 
-Prequoted columns such as `lit` are fine. `quote_literal(col)` wraps a value in single quotes;
-do not add a generic dispatch framework. No new macro without the user's approval.
-A reader that supports native correlation can be called directly. A literal-binding
-error in an ordinary table function calls for rendering and posting one statement per row.
+| template | for | row columns |
+|---|---|---|
+| `shell.tera` | one shell command (files, processes, osascript, git, gh) | reader, command, options |
+| `pipeline.tera` | a command piped through jq | command, jq |
+| `sql.tera` | in the database: SELECT, DDL, DML, PRAGMA, names from information_schema | table_schema, table_name, … |
+| `network.tera` | another host: curl through shellfs (or `quackapi_post` to another service) | reader, url, options |
+| `loop.tera` | a bash loop, when that really is simplest (rarely: rows usually replace it) | items, body |
 
-Dev here is `http://127.0.0.1:9495/sql`; send each statement with `selfdispatch(sql)`,
-which wraps `quackapi_post` with `url_build` and `:=` overrides (`port`, `hostname`,
-`pathname`, `headers`). Do not discover and cross join listeners or
-create another server. Preserve the generated SQL, source identity and full receipts
-when they are needed downstream. Empty input sends nothing. Arrays do not establish
-execution order; dependent writes belong in one ordered body. Never blindly retry
-an uncertain write.
+Rules:
 
-Historical transport measurements are in the [compendium](references/compendium.md#historical-transport-measurements).
+- **Declare first.** Everything the statement needs is a column of the first CTE. No `json_object(...)` built
+  inside later CTEs, no nested renders, no list arguments to a macro.
+- **Tera fills holes.** The template is the finished statement with `{{ holes }}`; no `{% if %}`, no logic,
+  no `extends`. `join(sep=" ")` on a declared list is fine.
+- **The dispatch is visible:** `array_agg(selfdispatch(sql))` then `CROSS JOIN UNNEST`. Never hide
+  `selfdispatch` inside a macro.
+- **Order:** an array of posts has no order. Steps that depend on each other go in one statement, or in the
+  next CTE's dispatch built from this one's receipts.
+- Dev is `http://127.0.0.1:9495/sql`; `selfdispatch(sql)` wraps `quackapi_post`. Empty input sends nothing.
+  Never blindly retry an uncertain write.
+
+Background: [compendium](references/compendium.md), [inline.sql](references/inline.sql),
+[review.sql](references/review.sql) (every dispatch site, for the `duckstack-review` checks).

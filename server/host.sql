@@ -114,61 +114,35 @@ CREATE OR REPLACE VIEW chrome_tabs AS
 SELECT window_id, tab_index, tab_id, url, title, loading, active, profile
 FROM chrome_all_tabs WHERE profile = 'work';
 
--- Where an action happens: the app, and which of its tabs, as an AppleScript test on window w and tab t.
+-- Safari's windows and tabs, one JXA call (empty when Safari is not running; nothing launches it).
+CREATE OR REPLACE VIEW safari_tabs AS
+WITH safari_read AS (
+    SELECT * FROM read_json($cmd$osascript -l JavaScript -e 'var A = Application("Safari"); function g(f) { try { return A.running() ? f() : []; } catch (e) { return []; } } JSON.stringify({window_id: g(() => A.windows.id()), url: g(() => A.windows.tabs.url())})' |$cmd$)
+), per_window AS (
+    SELECT unnest(window_id)::BIGINT AS window_id, unnest(url)::VARCHAR[] AS urls FROM safari_read
+)
+SELECT window_id, unnest(generate_series(1, len(urls))) AS tab_index, unnest(urls) AS url FROM per_window;
+
+-- Every browser tab: Chrome (any profile, incognito included) and Safari.
+CREATE OR REPLACE VIEW browser_tabs AS
+SELECT 'Google Chrome' AS application, profile, window_id, tab_id, tab_index, url FROM chrome_all_tabs
+UNION ALL BY NAME
+SELECT 'Safari' AS application, 'safari' AS profile, window_id, tab_index, url FROM safari_tabs;
+
+-- Where an action can happen. A new target is a new row.
 CREATE OR REPLACE VIEW browser_surfaces AS
-SELECT 'staging-lens' AS surface, 'Google Chrome' AS application, 'URL of t starts with "https://broker.staging.inframerisk.net/"' AS tab_test UNION ALL
-SELECT 'demo-lens', 'Google Chrome', 'URL of t starts with "https://broker.demo.inframerisk.net/"' UNION ALL
-SELECT 'prod-lens', 'Google Chrome', 'URL of t starts with "https://broker.app.inframerisk.com/"' UNION ALL
-SELECT 'aws-console', 'Google Chrome', 'URL of t starts with "https://us-west-2.console.aws.amazon.com/"' UNION ALL
-SELECT 'aws-signin', 'Google Chrome', 'URL of t starts with "https://us-west-2.signin.aws.amazon.com/"' UNION ALL
-SELECT 'aws-callback', 'Google Chrome', 'URL of t starts with "http://127.0.0.1:" and URL of t contains "/oauth/callback"' UNION ALL
-SELECT 'work-window', 'Google Chrome', 'URL of t starts with "https://app.rippling.com/"' UNION ALL
-SELECT 'incognito-local-broker', 'Google Chrome', 'mode of w is "incognito" and URL of t starts with "http://localhost:"' UNION ALL
-SELECT 'safari-local-portal', 'Safari', 'URL of t starts with "http://local-portal:"';
+SELECT 'staging-lens' AS surface, 'Google Chrome' AS application, 'work' AS profile, 'https://broker.staging.inframerisk.net/' AS url_prefix UNION ALL
+SELECT 'demo-lens', 'Google Chrome', 'work', 'https://broker.demo.inframerisk.net/' UNION ALL
+SELECT 'prod-lens', 'Google Chrome', 'work', 'https://broker.app.inframerisk.com/' UNION ALL
+SELECT 'aws-signin', 'Google Chrome', 'work', 'https://us-west-2.signin.aws.amazon.com/' UNION ALL
+SELECT 'aws-callback', 'Google Chrome', 'work', 'http://127.0.0.1:' UNION ALL
+SELECT 'incognito-local-broker', 'Google Chrome', 'incognito', 'http://localhost:' UNION ALL
+SELECT 'safari-local-portal', 'Safari', 'safari', 'http://local-portal:';
 
--- What can be done to a located tab t in window w, per app; each sets r, the step's output.
-CREATE OR REPLACE VIEW browser_verbs AS
-SELECT 'Google Chrome' AS application, 'eval' AS verb, 'set r to (execute t javascript "{{ arg }}")' AS action UNION ALL
-SELECT 'Safari', 'eval', 'set r to (do JavaScript "{{ arg }}" in t)' UNION ALL
-SELECT 'Google Chrome', 'close', 'set r to URL of t
-close t' UNION ALL
-SELECT 'Safari', 'close', 'set r to URL of t
-close t' UNION ALL
-SELECT 'Google Chrome', 'settle', 'repeat 60 times
-if not (loading of t) then exit repeat
-delay 0.25
-end repeat
-set r to URL of t' UNION ALL
-SELECT 'Google Chrome', 'open_beside', 'set r to id of (make new tab at end of tabs of w with properties {URL:"{{ arg }}"})
-exit repeat';
-
--- One AppleScript program for a route: each step runs on every tab its surface matches, in order; a row per hit.
-CREATE OR REPLACE MACRO browser_sql(steps) AS (
-  SELECT tera_render($r$SELECT * FROM read_csv($osa$osascript - 2>&1 <<'BRIDGE_EOF'
-set out to ""
-{% for s in steps %}tell application "{{ s.application }}"
-  repeat with w in windows
-    repeat with t in tabs of w
-      if {{ s.tab_test }} then
-        {{ s.action }}
-        set out to out & "{{ s.surface }}" & (ASCII character 9) & r & linefeed
-      end if
-    end repeat
-  end repeat
-end tell
-{% endfor %}return out
-BRIDGE_EOF
-{allowed_exit_codes=0,1}|$osa$, auto_detect := false, delim := '\t', quote := '', header := false, null_padding := true, columns := {'surface': 'VARCHAR', 'out': 'VARCHAR'})$r$,
-    json_object('steps', list(json_object('surface', b.surface, 'application', b.application, 'tab_test', b.tab_test,
-      'action', tera_render(v.action, json_object('arg', u.s.arg), autoescape := false)) ORDER BY u.i)),
-    autoescape := false)
-  FROM UNNEST(steps) WITH ORDINALITY AS u(s, i)
-  JOIN browser_surfaces AS b ON b.surface = u.s.surface
-  JOIN browser_verbs AS v ON v.application = b.application AND v.verb = u.s.verb
-);
-
--- Run a route: the receipt's body is its rows, [{surface, out}].
-CREATE OR REPLACE MACRO browser_run(steps) AS selfdispatch(browser_sql(steps));
+-- The tabs open on each surface right now.
+CREATE OR REPLACE VIEW browser_targets AS
+SELECT s.surface, t.* FROM browser_surfaces AS s
+JOIN browser_tabs AS t ON t.application = s.application AND t.profile = s.profile AND starts_with(t.url, s.url_prefix);
 
 -- Processes and macOS diagnostics -------------------------------------------------------------------
 
