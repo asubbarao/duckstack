@@ -28,6 +28,12 @@ LIMIT 7;
 ```
 
 Use `parse_ast(content, language)` for strings and `read_ast(path_or_glob)` for files.
+Text held in a column needs full node text, but `parse_ast_list` cuts each peek at 80 characters. Route the
+text through a ScalarFS path instead, never a temp file: `COPY (SELECT cmd ...) TO 'variable:cmd.sh'`, then
+`read_ast('variable:cmd.sh', 'bash', peek := 'full')`. `read_ast` skips a path whose name has no parser
+extension, even when the language is given, and fails with "needs at least one file to read". So name it
+`cmd.sh` and never use a bare `data+varchar:` path (verified 2026-10-17, build 803b35b).
+
 Inspect `duckdb_functions()` and `DESCRIBE` before assuming upstream fields or options
 match the installed version. Scope source files before parsing; bound output previews
 without confusing a result LIMIT with a parsing/resource limit.
