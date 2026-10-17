@@ -114,13 +114,41 @@ CREATE OR REPLACE VIEW chrome_tabs AS
 SELECT window_id, tab_index, tab_id, url, title, loading, active, profile
 FROM chrome_all_tabs WHERE profile = 'work';
 
--- Grammar: a new Chrome action is a new row. The target clause (window id / tab id) comes from SQL.
+-- Grammar: a new Chrome action is a new row. A line is words, the target noun, preposition, argument, closing.
 CREATE OR REPLACE VIEW chrome_verbs AS
-SELECT 'open_url' AS verb, ['make new tab at end of tabs of'] AS words, 'window' AS target, ['with properties {URL:'] AS preposition, ['}'] AS closing, 'text' AS argument_type UNION ALL
+SELECT 'open_url' AS verb, ['get id of (make new tab at end of tabs of'] AS words, 'window' AS target, ['with properties {URL:'] AS preposition, ['})'] AS closing, 'text' AS argument_type UNION ALL
 SELECT 'set_active_tab_url', ['set URL of active tab of'], 'window', ['to'], [], 'text' UNION ALL
+SELECT 'set_url', ['set URL of'], 'tab', ['to'], [], 'text' UNION ALL
 SELECT 'execute_javascript', ['execute'], 'tab', ['javascript'], [], 'text' UNION ALL
 SELECT 'close_tab', ['close'], 'tab', [], [], 'none' UNION ALL
-SELECT 'activate_tab', ['set active tab index of'], 'window', ['to'], [], 'integer';
+SELECT 'activate_tab', ['set active tab index of'], 'window', ['to'], [], 'integer' UNION ALL
+SELECT 'repeat', ['repeat'], 'none', [], ['times'], 'integer' UNION ALL
+SELECT 'exit_repeat_when', ['if (execute'], 'tab', ['javascript'], [') then exit repeat'], 'text' UNION ALL
+SELECT 'delay', ['delay'], 'none', [], [], 'integer' UNION ALL
+SELECT 'end_repeat', ['end repeat'], 'none', [], [], 'none';
+
+-- What a target clause says; the ids are filled per row.
+CREATE OR REPLACE VIEW chrome_nouns AS
+SELECT 'window' AS target, ['window id', '{{ window_id }}'] AS words UNION ALL
+SELECT 'tab', ['tab id', '{{ tab_id }}', 'of window id', '{{ window_id }}'] UNION ALL
+SELECT 'none', [];
+
+-- Each verb's line, assembled from the rows above.
+CREATE OR REPLACE VIEW chrome_grammar AS
+SELECT v.verb, list_reduce(list_concat(v.words, n.words, v.preposition,
+         CASE v.argument_type WHEN 'text' THEN ['"{{ arg }}"'] WHEN 'integer' THEN ['{{ arg }}'] ELSE [] END, v.closing),
+       (a, b) -> a || ' ' || b) AS line
+FROM chrome_verbs AS v JOIN chrome_nouns AS n USING (target);
+
+-- The statement a program's lines run in; its keys come back in the receipt.
+CREATE OR REPLACE VIEW chrome_readers AS
+SELECT 'osascript' AS reader, $r$SELECT {{ window_id }} AS window_id, {{ tab_id }} AS tab_id, {{ prior }} AS prior, string_agg(content, '') AS out FROM read_lines($osa$osascript - 2>&1 <<'BRIDGE_EOF'
+tell application "Google Chrome"
+{{ program | join(sep="
+") }}
+end tell
+BRIDGE_EOF
+|$osa$, "trim" := true)$r$ AS statement;
 
 -- Processes and macOS diagnostics -------------------------------------------------------------------
 
