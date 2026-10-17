@@ -49,7 +49,7 @@ CREATE OR REPLACE VIEW terminal_sessions AS
 WITH intent AS (          -- for each Terminal tab: every process holding its tty open
     SELECT window_id, tab_index, ['lsof', '-t', tty] AS cmd FROM terminal_tabs
 ), rendered AS (
-    SELECT tera_render($t$SELECT {{ window_id }} AS window_id, {{ tab_index }} AS tab_index, pid FROM read_csv($cmd${{ cmd | join(sep=" ") }} |$cmd$, header := false, columns := {'pid': 'BIGINT'})$t$,
+    SELECT tera_render($t$SELECT {{ window_id }} AS window_id, {{ tab_index }} AS tab_index, pid FROM read_csv($cmd${{ cmd | join(sep=" ") }} |$cmd$, header := false, names := ['pid'])$t$,
                        intent::JSON, autoescape := false) AS sql
     FROM intent
 ), dispatched AS (
