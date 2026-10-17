@@ -38,16 +38,10 @@ SELECT window_id, tab_index, line_number, line
 FROM per_tab CROSS JOIN UNNEST(string_split(screen, $n$
 $n$)) WITH ORDINALITY AS l(line, line_number);
 
--- One row per live claude process, written by Claude Code itself (~/.claude/sessions/<pid>.json).
--- Claude Code omits keys it has no value for (waitingFor), so the reader names the keys it needs;
--- a sniffed schema loses a key whenever no current file holds it.
+-- One row per live claude process, written by Claude Code itself (~/.claude/sessions/<pid>.json), with every key the
+-- files hold as a column. Nothing names a key, so a key Claude Code stops writing is simply absent.
 CREATE OR REPLACE VIEW claude_sessions AS
-SELECT pid, sessionId AS session_id, name, status, waitingFor AS waiting_for, kind, entrypoint, cwd,
-       make_timestamp(updatedAt * 1000) AS updated_at
-FROM read_json('/Users/aloksubbarao/.claude/sessions/*.json',
-               columns := {'pid': 'BIGINT', 'sessionId': 'VARCHAR', 'name': 'VARCHAR', 'status': 'VARCHAR', 'waitingFor': 'VARCHAR',
-                           'kind': 'VARCHAR', 'entrypoint': 'VARCHAR', 'cwd': 'VARCHAR', 'updatedAt': 'BIGINT'},
-               ignore_errors := true);   -- a file caught mid-write is empty
+SELECT * FROM read_json('/Users/aloksubbarao/.claude/sessions/*.json', union_by_name := true, ignore_errors := true);
 
 -- Each Terminal tab, the claude process holding its tty, and that session. pgrep -t ignores the tty
 -- on macOS; lsof -t <tty> lists exactly the processes on it, one pid per line.
@@ -64,8 +58,7 @@ WITH intent AS (          -- for each Terminal tab: every process holding its tt
     SELECT (row ->> 'window_id')::BIGINT AS window_id, (row ->> 'tab_index')::INT AS tab_index, (row ->> 'pid')::BIGINT AS pid
     FROM dispatched CROSS JOIN UNNEST(receipts) AS t(r) CROSS JOIN UNNEST(coalesce(try_cast(r.body AS JSON[]), [])) AS u(row)
 )
-SELECT t.window_id, t.window_index, t.tab_index, t.custom_title, t.tty, t.busy,
-       c.pid, c.session_id, c.name AS session_name, c.status, c.waiting_for, c.cwd, c.updated_at
+SELECT t.*, c.*
 FROM terminal_tabs AS t
 LEFT JOIN (tty_pids JOIN claude_sessions AS c USING (pid)) USING (window_id, tab_index);
 
