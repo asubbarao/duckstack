@@ -121,3 +121,75 @@ SELECT 'set_active_tab_url', ['set URL of active tab of'], 'window', ['to'], [],
 SELECT 'execute_javascript', ['execute'], 'tab', ['javascript'], [], 'text' UNION ALL
 SELECT 'close_tab', ['close'], 'tab', [], [], 'none' UNION ALL
 SELECT 'activate_tab', ['set active tab index of'], 'window', ['to'], [], 'integer';
+
+-- Processes and macOS diagnostics -------------------------------------------------------------------
+
+-- Every process now. footprint_mb is top's MEM, what Activity Monitor shows: it counts compressed and swapped pages,
+-- which ps's RSS does not. spawned_by names the agent behind a process group: 'claude' (the group leader is the zsh
+-- a Claude Bash call starts, sourcing ~/.claude/shell-snapshots), 'codex' (a child of codex outside its own install
+-- and MCP servers), 'orphan' (the leader is gone: an agent's call ended and left its job running). ps and date print
+-- local wall time, so age_s compares like with like.
+CREATE OR REPLACE VIEW host_processes AS
+WITH ps AS (
+    FROM read_csv($cmd$ps -axww -o pid=,ppid=,pgid=,rss=,lstart=,args= | awk -v now="$(date '+%Y-%m-%d %H:%M:%S')" '{a=$0; sub(/^ *[0-9]+ +[0-9]+ +[0-9]+ +[0-9]+ +[A-Z][a-z][a-z] +[A-Z][a-z][a-z] +[0-9]+ +[0-9:]+ +[0-9]+ +/, "", a); print now"\t"$1"\t"$2"\t"$3"\t"$4"\t"$5" "$6" "$7" "$8" "$9"\t"substr(a,1,2000)}' |$cmd$,
+                  delim := '\t', header := false, quote := '', escape := '',
+                  columns := {'observed_at': 'TIMESTAMP', 'pid': 'BIGINT', 'ppid': 'BIGINT', 'pgid': 'BIGINT', 'rss_kb': 'BIGINT',
+                              'lstart': 'VARCHAR', 'args': 'VARCHAR'})
+), top AS (
+    FROM read_csv($cmd$top -l 1 -stats pid,mem,cmprs | awk 'NR>12 {print $1"\t"$2"\t"$3}' |$cmd$, delim := '\t', header := false,
+                  columns := {'pid': 'BIGINT', 'mem': 'VARCHAR', 'cmprs': 'VARCHAR'})
+), procs AS (
+    SELECT ps.* EXCLUDE (lstart), strptime(lstart, '%a %b %d %H:%M:%S %Y') AS started_at,
+           date_diff('second', started_at, observed_at) AS age_s,
+           CASE right(rtrim(mem, '+-'), 1) WHEN 'G' THEN 1024 WHEN 'M' THEN 1 WHEN 'K' THEN 1/1024 ELSE 0 END
+             * TRY_CAST(rtrim(rtrim(mem, '+-'), 'BKMG') AS DOUBLE) AS footprint_mb,
+           CASE right(rtrim(cmprs, '+-'), 1) WHEN 'G' THEN 1024 WHEN 'M' THEN 1 WHEN 'K' THEN 1/1024 ELSE 0 END
+             * TRY_CAST(rtrim(rtrim(cmprs, '+-'), 'BKMG') AS DOUBLE) AS compressed_mb
+    FROM ps LEFT JOIN top USING (pid)
+)
+SELECT g.*, l.args AS leader_args, p.args AS parent_args,
+       CASE WHEN g.pgid <= 1 THEN NULL
+            WHEN l.pid IS NULL THEN 'orphan'
+            WHEN contains(l.args, '/.claude/shell-snapshots/') THEN 'claude'
+            WHEN p.args SIMILAR TO '.*/codex( .*)?' AND NOT starts_with(g.args, '/Applications/ChatGPT.app/')
+                 AND NOT starts_with(g.args, '/Users/aloksubbarao/.codex/')
+                 AND NOT starts_with(g.args, '/Users/aloksubbarao/.local/bin/') THEN 'codex'
+       END AS spawned_by
+FROM procs g LEFT JOIN procs l ON l.pid = g.pgid LEFT JOIN procs p ON p.pid = g.ppid;
+
+-- Every file macOS keeps in DiagnosticReports: crash reports (.ips), out-of-memory kills (JetsamEvent*.ips), resource
+-- reports (.diag: disk writes, CPU, wakeups). The globs name whole folders, which always hold files: a glob matching
+-- nothing fails the view. read_blob because some .ips are gzip archives, not text.
+CREATE OR REPLACE VIEW host_diagnostic_files AS
+SELECT filename AS path, file_name(filename) AS file, last_modified, content
+FROM read_blob(['/Library/Logs/DiagnosticReports/*', '~/Library/Logs/DiagnosticReports/*']);
+
+-- One row per process in each out-of-memory kill: what was resident when macOS ran out and started killing.
+CREATE OR REPLACE VIEW host_jetsam AS
+WITH doc AS (
+    SELECT file, decode(content) AS txt, substr(txt, position($n$
+$n$ IN txt) + 1)::JSON AS b
+    FROM host_diagnostic_files WHERE file LIKE 'JetsamEvent%.ips'
+)
+SELECT file, strptime(b ->> 'date', '%Y-%m-%d %H:%M:%S.%f %z') AS jetsam_at, b ->> 'largestProcess' AS largest_process,
+       p ->> 'name' AS name, (p ->> 'pid')::BIGINT AS pid,
+       ((p ->> 'rpages')::BIGINT * (b ->> '$.memoryStatus.pageSize')::BIGINT) >> 20 AS resident_mb,
+       p ->> 'reason' AS reason, p ->> 'coalition' AS coalition, p AS process
+FROM doc CROSS JOIN UNNEST(from_json(b -> 'processes', '["JSON"]')) AS t(p);
+
+-- One row per resource report: the process, the app that owns it (coalition), and what it exceeded.
+CREATE OR REPLACE VIEW host_resource_reports AS
+WITH kv AS (
+    SELECT file, trim(split_part(line, ':', 1)) AS k, arg_min(trim(substr(line, position(':' IN line) + 1)), n) AS v
+    FROM host_diagnostic_files
+    CROSS JOIN UNNEST(string_split(decode(content), $n$
+$n$)[1:45]) WITH ORDINALITY AS t(line, n)
+    WHERE file LIKE '%.diag' AND position(':' IN line) > 1 AND NOT starts_with(line, ' ')
+    GROUP BY ALL
+), h AS (
+    SELECT file, map_from_entries(list((k, v))) AS h FROM kv GROUP BY file
+)
+SELECT file, strptime(h['Date/Time'], '%Y-%m-%d %H:%M:%S.%f %z') AS reported_at, h['Command'] AS command,
+       h['PID']::BIGINT AS pid, split_part(trim(h['Resource Coalition'], '"'), '"', 1) AS coalition, h['Event'] AS event,
+       h['Action taken'] AS action, coalesce(h['Writes'], h['CPU'], h['Wakeups'], h['Footprint'], h['Memory']) AS detail, h AS header
+FROM h;
