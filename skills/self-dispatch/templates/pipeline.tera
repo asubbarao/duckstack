@@ -1,0 +1,2 @@
+{# 2. A command piped through jq; one JSON object per line. Row: command, jq. #}
+SELECT * FROM read_json($cmd${{ command }} | jq -c '{{ jq }}' |$cmd$, format := 'newline_delimited')

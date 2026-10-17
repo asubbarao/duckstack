@@ -1,0 +1,2 @@
+{# 1. One shell command. Row: reader (read_csv | read_json | read_lines), command, options (text, may be empty). #}
+SELECT * FROM {{ reader }}($cmd${{ command }} |$cmd${{ options }})

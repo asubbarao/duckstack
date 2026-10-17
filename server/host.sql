@@ -114,13 +114,35 @@ CREATE OR REPLACE VIEW chrome_tabs AS
 SELECT window_id, tab_index, tab_id, url, title, loading, active, profile
 FROM chrome_all_tabs WHERE profile = 'work';
 
--- Grammar: a new Chrome action is a new row. The target clause (window id / tab id) comes from SQL.
-CREATE OR REPLACE VIEW chrome_verbs AS
-SELECT 'open_url' AS verb, ['make new tab at end of tabs of'] AS words, 'window' AS target, ['with properties {URL:'] AS preposition, ['}'] AS closing, 'text' AS argument_type UNION ALL
-SELECT 'set_active_tab_url', ['set URL of active tab of'], 'window', ['to'], [], 'text' UNION ALL
-SELECT 'execute_javascript', ['execute'], 'tab', ['javascript'], [], 'text' UNION ALL
-SELECT 'close_tab', ['close'], 'tab', [], [], 'none' UNION ALL
-SELECT 'activate_tab', ['set active tab index of'], 'window', ['to'], [], 'integer';
+-- Safari's windows and tabs, one JXA call (empty when Safari is not running; nothing launches it).
+CREATE OR REPLACE VIEW safari_tabs AS
+WITH safari_read AS (
+    SELECT * FROM read_json($cmd$osascript -l JavaScript -e 'var A = Application("Safari"); function g(f) { try { return A.running() ? f() : []; } catch (e) { return []; } } JSON.stringify({window_id: g(() => A.windows.id()), url: g(() => A.windows.tabs.url())})' |$cmd$)
+), per_window AS (
+    SELECT unnest(window_id)::BIGINT AS window_id, unnest(url)::VARCHAR[] AS urls FROM safari_read
+)
+SELECT window_id, unnest(generate_series(1, len(urls))) AS tab_index, unnest(urls) AS url FROM per_window;
+
+-- Every browser tab: Chrome (any profile, incognito included) and Safari.
+CREATE OR REPLACE VIEW browser_tabs AS
+SELECT 'Google Chrome' AS application, profile, window_id, tab_id, tab_index, url FROM chrome_all_tabs
+UNION ALL BY NAME
+SELECT 'Safari' AS application, 'safari' AS profile, window_id, tab_index, url FROM safari_tabs;
+
+-- Where an action can happen. A new target is a new row.
+CREATE OR REPLACE VIEW browser_surfaces AS
+SELECT 'staging-lens' AS surface, 'Google Chrome' AS application, 'work' AS profile, 'https://broker.staging.inframerisk.net/' AS url_prefix UNION ALL
+SELECT 'demo-lens', 'Google Chrome', 'work', 'https://broker.demo.inframerisk.net/' UNION ALL
+SELECT 'prod-lens', 'Google Chrome', 'work', 'https://broker.app.inframerisk.com/' UNION ALL
+SELECT 'aws-signin', 'Google Chrome', 'work', 'https://us-west-2.signin.aws.amazon.com/' UNION ALL
+SELECT 'aws-callback', 'Google Chrome', 'work', 'http://127.0.0.1:' UNION ALL
+SELECT 'incognito-local-broker', 'Google Chrome', 'incognito', 'http://localhost:' UNION ALL
+SELECT 'safari-local-portal', 'Safari', 'safari', 'http://local-portal:';
+
+-- The tabs open on each surface right now.
+CREATE OR REPLACE VIEW browser_targets AS
+SELECT s.surface, t.* FROM browser_surfaces AS s
+JOIN browser_tabs AS t ON t.application = s.application AND t.profile = s.profile AND starts_with(t.url, s.url_prefix);
 
 -- Processes and macOS diagnostics -------------------------------------------------------------------
 

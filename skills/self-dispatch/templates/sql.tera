@@ -1,0 +1,2 @@
+{# 3. In the database: SELECT, DDL, DML or PRAGMA. Row: names from information_schema or other rows. #}
+SELECT * FROM {{ table_schema }}.{{ table_name }} LIMIT {{ row_limit }}
