@@ -22,7 +22,6 @@ SELECT content FROM read_text($u$/opt/homebrew/bin/duckdb -csv :memory: -c "SET 
 .read server/macros.sql
 CALL enable_logging(['QueryLog', 'HTTP', 'Quack', 'Metrics'], storage := 'file', storage_path := getenv('QUACK_NATIVE_LOG'), storage_buffer_size := 0);
 .read server/profile.sql
-.read server/docs.sql
 -- 9494 Quack.
 FROM quack_serve('quack:localhost:9494', token := getenv('QUACK_TOKEN'));
 

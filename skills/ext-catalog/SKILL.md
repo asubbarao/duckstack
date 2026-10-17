@@ -10,10 +10,10 @@ allowed-tools: mcp__dev__query
 
 # Extension catalog
 
-Use the selected dev service at `http://localhost:9495/sql`. `agents.ext_docs` is the
-agent entrypoint: `SELECT extension_name, readme FROM agents.ext_docs`.
+Use the selected dev service at `http://localhost:9495/sql`. `agents.ext_catalog` is the
+agent entrypoint: `SELECT extension_name, readme FROM agents.ext_catalog`.
 For a specific question, query matching lines or blocks first. Do not dump a whole README or save it
-to a temporary file to search it. Dev publishes no `ext_docs` tool (2026-10-09); query the view.
+to a temporary file to search it. Dev publishes no catalog tool; query the table.
 
 Preserve raw source data as a general rule. Derive parsed fields, previews and search indexes
 from it. An existing authoritative source does not require another raw copy. Never replace
@@ -29,12 +29,12 @@ INSTALL read_lines FROM community; LOAD read_lines;
 INSTALL scalarfs FROM community; LOAD scalarfs;
 
 SELECT extension_name
-FROM agents.ext_docs
+FROM agents.ext_catalog
 WHERE extension_name GLOB '*lines*'
 ORDER BY extension_name;
 
 SELECT e.extension_name, l.line_number, l.content
-FROM agents.ext_docs e
+FROM agents.ext_catalog e
 CROSS JOIN LATERAL read_lines_lateral(to_scalarfs_uri(e.readme), NULL, 'right') l
 WHERE e.extension_name GLOB '*lines*'
   AND l.content GLOB '*Parameter*'
@@ -62,7 +62,7 @@ enumerating them with `glob()` first.
 For the full named-parameter API, capture a single README and read it in the **same SQL body**:
 
 ```sql
-COPY (SELECT readme::VARCHAR FROM agents.ext_docs WHERE extension_name = 'read_lines')
+COPY (SELECT readme::VARCHAR FROM agents.ext_catalog WHERE extension_name = 'read_lines')
 TO 'variable:catalog_readme' (FORMAT variable, LIST none);
 
 SELECT line_number, content
@@ -90,7 +90,7 @@ Use these helpers rather than temporary files or manual URI/SQL escaping.
 INSTALL markdown FROM community; LOAD markdown;
 
 SELECT e.extension_name, b.*
-FROM agents.ext_docs e
+FROM agents.ext_catalog e
 CROSS JOIN UNNEST(parse_markdown_to_duck_blocks(e.readme)) t(b)
 WHERE e.extension_name = 'read_lines'
   AND b.element_type = 'table'
@@ -164,15 +164,11 @@ lengths, bounded links/headings and errors to the agent, not the entire fetched 
 | Object | Contents |
 |---|---|
 | `lake.agents.ext_fetch` | Table, one row per fetch: `url`, `fetched_at`, `response` JSON (`status`, `body`) |
-| `agents.ext_page` | View: the newest 200 response per url |
-| `agents.ext_url` | View: `extension_name`, `kind` (community, github, yaml), `url`, read off the list page |
-| `agents.ext_catalog` | View: `ext_url` joined to `ext_page`, one row per extension and kind with its `response` |
-| `agents.ext_docs` | View: extension name and README (the GitHub `<article>` of the `github` row, parsed by webbed) |
-| `agents.ext_stale` | View: urls missing or older than three days |
+| `agents.ext_catalog` | Table, one row per extension: README (markdown), description.yml (yaml), functions and examples (community page via webbed), readme_sql, readme_functions; rebuilt every 10 min by its job |
 
-The hourly cron in `server/setup.sql` fetches every url in `ext_stale` (curl through shellfs, one
-self-dispatched INSERT per url, 90 per run); pages expire after three days, and with nothing stale a
-run fetches and writes nothing. Reuse raw responses to add parsed columns. Catalog lookup comes first; inspect runtime signatures only
+The job in `server/ext_catalog.sql` runs every 10 minutes: it fetches the list page's extensions (community page,
+description.yml, GitHub repo) that are missing or older than a day in one parallel curl, stores them in
+`lake.agents.ext_fetch`, and rebuilds the table when new pages arrived or the table is missing. Reuse raw responses to add parsed columns. Catalog lookup comes first; inspect runtime signatures only
 to resolve a documentation gap or version mismatch, since READMEs may omit details.
 
 Verified on dev on 2026-09-24: glob search, correlated ScalarFS line reads, named line

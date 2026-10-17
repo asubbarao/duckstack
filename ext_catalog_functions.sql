@@ -24,7 +24,7 @@ WHERE list_contains(doc.headers,'function_name')
 CREATE OR REPLACE VIEW agents.ext_parameter_docs AS
 WITH blocks AS (
  SELECT extension_name, b.element_order, b.content
- FROM agents.ext_docs
+ FROM agents.ext_catalog
  CROSS JOIN UNNEST(parse_markdown_to_duck_blocks(readme)) t(b)
  WHERE b.element_type = 'table'
 ), tables AS (

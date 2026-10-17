@@ -22,7 +22,7 @@ program; it is two decisions — **crawl topology** (how the URL space is discov
 
 **curl through shellfs** fetches, **webbed** parses HTML, **JSONata or QuickJS** transform,
 **Tera** renders. Use only the parts that simplify the task. `urlpattern` and `netquack` for URL
-operations. Search `agents.ext_docs` for capabilities before checking live signatures.
+operations. Search `agents.ext_catalog` for capabilities before checking live signatures.
 
 Keep raw responses, source URLs and fetch times. Parse stored content again instead of fetching
 it again; refresh only missing or stale pages. Keep missing values NULL; `nullif(value, '')` is fine.

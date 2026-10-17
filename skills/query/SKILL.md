@@ -32,7 +32,7 @@ earns its keep, append it with one line saying when to reach for it.
 
 - Live SELECTs first; a saved file is an outcome of exploration. Reuse the source CTE and vary the
   later ones; `LIMIT 3` while shaping columns.
-- `DESCRIBE` the relation before selecting columns. `agents.ext_catalog` / `agents.ext_docs` before
+- `DESCRIBE` the relation before selecting columns. `agents.ext_catalog` before
   guessing an extension's functions; `INSTALL x FROM community; LOAD x;` the moment one is missing
   (`LOAD` is its own `execute` call before a batch that uses the extension's PRAGMAs or syntax).
 - Readers take globs; hostfs for discovery and sizes, shellfs for host commands; measure before

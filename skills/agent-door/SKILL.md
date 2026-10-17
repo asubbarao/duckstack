@@ -35,7 +35,7 @@ reach the same database. Give subagents the endpoint explicitly.
 | a repo at a ref | duck_tails `git_tree(repo, ref)` / `git_read(...)` / `git://` paths, see `/duckstack:duck-tails` |
 | a CI log zip | `read_duck_hunt_log('zip://' \|\| zip \|\| '/' \|\| glob, format)`, see `/duckstack:duck-hunt` |
 | a tera template | `tera_render(template, ctx::JSON, autoescape := false)`, see `/duckstack:tera` |
-| an extension's README | `agents.ext_docs`, see `/duckstack:ext-catalog` |
+| an extension's README | `agents.ext_catalog`, see `/duckstack:ext-catalog` |
 | telemetry | `otlp_logs`, `otlp_traces`, `otlp_metrics_gauge` / `_sum` / `_histogram` (what arrived on 4318) |
 | events posted to `/inbox` | `quackapi_jobs WHERE queue = 'inbox'` |
 
