@@ -129,20 +129,16 @@ representation: it does not replace the saved raw HTML or the source README.
 
 Every readthedocs.io page an extension README links to is saved raw in `lake.agents.ext_fetch`
 (`url`, `fetched_at`, `response` JSON with `effective_url` and `body`; 1,054 pages on 2026-10-09).
-`agents.ext_doc_sections` is a view over it: the saved HTML as markdown sections, one row per
-heading: `site`, `section_url` (page URL `#` heading id), `section_path`, `level`, `title`,
-`content`, `code` (the section's code blocks), `tables` (its tables as JSON). 5,075 sections over
-9 sites on 2026-10-09. The hourly catalog cron refreshes them with the rest of `ext_stale`.
+Read them as markdown sections straight from that table, one row per heading. Nothing refreshes these pages
+now; they are the 2026-10-09 fetch.
 
 ```sql
-SELECT section_url, level, title, len(code) AS code_blocks
-FROM agents.ext_doc_sections
-WHERE site = 'duck-hunt.readthedocs.io' AND level <= 2
+SELECT url_host(url) AS site, url || '#' || s.section_id AS section_url, s.level, s.title, s.content,
+       md_extract_code_blocks(s.content) AS code
+FROM lake.agents.ext_fetch
+CROSS JOIN UNNEST(md_extract_sections(duck_blocks_to_md(html_to_duck_blocks((response ->> 'body')::HTML)))) AS t(s)
+WHERE urlpattern_test('https://duck-hunt.readthedocs.io/*', url) AND s.level <= 2
 ORDER BY section_url LIMIT 7;
-
-SELECT title, content, code
-FROM agents.ext_doc_sections
-WHERE section_url = 'https://duck-hunt.readthedocs.io/en/latest/#compression-support';
 ```
 
 Preview with `len(content)` and `left(content, 240)` before returning a section. A heading can

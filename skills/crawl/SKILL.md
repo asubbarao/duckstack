@@ -86,8 +86,8 @@ Never return a page body to the conversation: lengths, heads, counts, and bounde
 1. **Did the page publish the datum as data?** JSON-LD (`<script type="application/ld+json">`),
    a search index JSON, a raw markdown source on GitHub → read it by JSON path, no selector.
 2. **Blocks**: `html_to_duck_blocks(body::HTML)` → headings, paragraphs, code, tables in page
-   order; `duck_blocks_to_md` renders them. `agents.ext_doc_sections` is this applied to every
-   readthedocs page on dev.
+   order; `duck_blocks_to_md` renders them. The ext-catalog skill applies this to the readthedocs
+   pages saved in `lake.agents.ext_fetch`.
 3. **Links**: `html_extract_links(body::HTML)` → `STRUCT(text, href, title, line_number)[]`,
    expanded once with `CROSS JOIN UNNEST`.
 4. **Tables**: `html_extract_tables(body::HTML)`; never walk `<tr>/<td>`.
