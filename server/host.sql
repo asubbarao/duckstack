@@ -116,7 +116,8 @@ FROM chrome_all_tabs WHERE profile = 'work';
 
 -- Grammar: a new Chrome action is a new row. A line is words, the target noun, preposition, argument, closing.
 CREATE OR REPLACE VIEW chrome_verbs AS
-SELECT 'open_url' AS verb, ['get id of (make new tab at end of tabs of'] AS words, 'window' AS target, ['with properties {URL:'] AS preposition, ['})'] AS closing, 'text' AS argument_type UNION ALL
+SELECT 'open_url' AS verb, ['set opened to id of (make new tab at end of tabs of'] AS words, 'window' AS target, ['with properties {URL:'] AS preposition, ['})'] AS closing, 'text' AS argument_type UNION ALL
+SELECT 'return_opened', ['return opened'], 'none', [], [], 'none' UNION ALL
 SELECT 'set_active_tab_url', ['set URL of active tab of'], 'window', ['to'], [], 'text' UNION ALL
 SELECT 'set_url', ['set URL of'], 'tab', ['to'], [], 'text' UNION ALL
 SELECT 'execute_javascript', ['execute'], 'tab', ['javascript'], [], 'text' UNION ALL
