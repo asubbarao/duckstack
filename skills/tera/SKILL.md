@@ -7,8 +7,16 @@ allowed-tools: mcp__dev__query, mcp__dev__execute
 
 # Tera
 
-Use the selected DuckDB MCP (`query`) and the native `tera_render` function; a named
-template file is rendered through `template_path`. Dev publishes no `render` tool (2026-10-09).
+Use the selected DuckDB MCP and native `tera_render(template, c::JSON, autoescape := false)`.
+Prefer a readable inline template. A separate named file and `template_path` are optional,
+for shared authoring that earns the indirection. Dev publishes no `render` tool.
+
+The [self-dispatch compendium](../self-dispatch/references/compendium.md) explains the construction and execution cases.
+The executed examples in [../self-dispatch/references/inline.sql](../self-dispatch/references/inline.sql)
+cover plain SQL, native file readers, Bash command/args, named `:=` params and repeated pipelines.
+Construct with Tera; execute with `array_agg(selfdispatch(sql))` and `CROSS JOIN UNNEST`.
+No handwritten JSON contexts, transport curl, or CASE tree inside a generic template.
+SQL owns selection and quoting. Tera owns punctuation, pipe separators and repetition.
 
 Templates own repeated syntax, not business logic. SQL selects, filters, joins
 and prepares the context. Call `read_csv`, `read_json`, or another reader directly
@@ -27,6 +35,8 @@ LOAD tera;
 -- template VARCHAR: inline body, or name when template_path is supplied.
 -- context JSON: object; pass '{}' explicitly when there are no variables.
 -- autoescape BOOLEAN := true; false for SQL, shell and other non-HTML text.
+--   A JSON value placed in the context renders as [object]; pass text (json_object(...)::VARCHAR)
+--   when the template must print the JSON itself (verified 2026-10-11, self-dispatch bodies).
 -- template_path VARCHAR: optional glob; absent means an inline template.
 SELECT tera_render(
     'reader.tera',
@@ -91,8 +101,8 @@ SELECT tera_render(
 ```
 
 Keep the context as data (`json_object`, structs, lists); do not hand-escape JSON.
-No new SQL or Tera macros. Include small named templates when actual repetition
-justifies them. Do not add Bash loops to replace relational SQL.
+Small quoting helpers are acceptable when explicitly authorized. Keep dispatch visible in SQL.
+Include small named templates when actual repetition justifies them. Do not add Bash loops to replace relational SQL.
 
 ## Stored templates for varying calls
 

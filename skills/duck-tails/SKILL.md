@@ -20,6 +20,39 @@ that readers can glob, seek into, and hive-partition. `git://data/**/*.parquet@H
 dataset as of five commits ago, with no checkout, no `git show >` to a temp file, and no
 second language in the data path.
 
+## Working-copy review
+
+[Verified code-analysis queries](../query/references/code-analysis.sql) combine
+selected committed files via `git_tree` → `git_read_each` → `parse_ast_list`,
+and include native status and diff calls for working files.
+
+Read the [diff reference](https://duck-tails.readthedocs.io/en/latest/reference/diff/)
+before composing a review handoff. Use the native diff operation:
+
+```sql
+SELECT * FROM read_git_diff('/absolute/repo/tracked.sql');
+SELECT * FROM read_git_diff('/dev/null', '/absolute/repo/new.sql');
+```
+
+One argument compares HEAD (old) with the working file (new). Two arguments are
+explicitly old, then new. Results already contain `path1`, `path2` and `diff_text`.
+Use `text_diff_stats(diff_text)` for additions/removals. For a small known file set,
+run one literal call per statement; do not rebuild this with broad file globs and
+before/after joins. New files need an explicit empty old side; missing files raise an error.
+For deletion use the HEAD URI as old and `/dev/null` as new.
+
+These table functions require literal arguments; there is no installed
+`read_git_diff_each`. Use `git_read_each` for correlated committed content, not as
+a substitute for the simpler native diff when reviewing a few known files.
+Working-copy diffs change over time and compare against each checkout's HEAD:
+they do not prove authorship or form an immutable PR artifact. Name the repo,
+checkout and baseline. For immutable evidence use explicit commit refs.
+
+Verified 2026-10-16 on dev: 12 individual comparisons succeeded. Combining the
+same calls with `UNION ALL` repeatedly lost the Quack connection. The cause is
+unresolved; use separate calls on this build and do not describe the combined
+form as verified.
+
 ## Upstream documentation and query patterns
 
 Use the [Duck Tails documentation](https://duck-tails.readthedocs.io/en/latest/) for

@@ -1,50 +1,36 @@
 ---
 name: self-dispatch
-description: Run SQL that writes SQL and runs it on the same dev DuckDB. Use when a table function refuses a column argument (ls, read_csv, read_lines, crawl on a path column), when work repeats per row, or when a stage depends on the rows of the one before.
+description: Generate readable SQL from rows, execute native JSON self-posts, and unnest receipts.
 ---
 
 # Self-dispatch
 
-A table function such as `ls(path)` takes a literal, not a column. Self-dispatch gets around it
-without a loop, a script or a second server: SQL writes the statement for each row, and dev runs it.
+SQL builds an `sql` column; execution posts it to the selected service, collects the
+receipts with `array_agg`, then `CROSS JOIN UNNEST` exposes them as rows.
 
-## The molecule
+Read the [compendium](references/compendium.md) for the construction and execution
+cases, actual-use inventory, named templates, quoting, inserts and failure handling.
+[inline.sql](references/inline.sql) contains runnable SQL-only, file-reader,
+command/CSV and repeated-pipeline/JSON examples.
 
-One `ls` per surviving folder per level, pruned by name before the next level is written. Never
-`lsr` on an unpruned folder: `lsr(child, 1)` lists the inside of `.venv` and `.pytest_cache` before
-any WHERE runs (measured 2026-10-09).
+Use Tera to make the generated program look like ordinary SQL:
+`tera_render(template, c::JSON, autoescape := false)`. SQL owns selection, joins,
+filtering and values. Tera supplies substitutions and repeated syntax. Prefer a
+short inline template; use a named SQL template when sharing it improves readability.
+Someone should be able to replace Tera with plain SQL string construction without
+redesigning the program. This is a design goal, not a second implementation to maintain.
 
-```sql
-WITH folders AS (
-    SELECT path FROM ls('/Users/aloksubbarao/duckdb-skills/skills')
-    WHERE is_dir(path) AND NOT starts_with(file_name(path), '.')
-), posted AS (
-    SELECT path AS folder,
-           from_json(http_post('http://127.0.0.1:9495/sql', MAP {'Content-Type': 'application/json'},
-                               json_object('sql', $$SELECT path FROM ls('$$ || path || $$')$$)),
-                     '{"status": "INTEGER", "body": "VARCHAR"}') AS receipt
-    FROM folders
-), listed AS (
-    SELECT folder, receipt.status, from_json(receipt.body, '[{"path": "VARCHAR"}]') AS entries FROM posted
-)
-SELECT folder, status, entry.path
-FROM listed CROSS JOIN UNNEST(entries) AS e(entry);
-```
+Prequoted columns such as `lit` are fine. `quote_literal(col)` wraps a value in single quotes;
+do not add a generic dispatch framework. No new macro without the user's approval.
+A reader that supports native correlation can be called directly. A literal-binding
+error in an ordinary table function calls for rendering and posting one statement per row.
 
-`http_post` returns JSON; `from_json` with the shape you expect turns it into a struct, so the
-receipt is `receipt.status` and `receipt.body`, and the body (itself a JSON string) becomes rows
-the same way. Verified on dev 2026-10-09: 36 folders → 36 receipts, all 200, 55 paths. Chain it:
-stage N+1 is written FROM stage N, so the data dependency is the order. The filter sits before the
-dispatch, so a pruned folder is never listed.
+Dev here is `http://127.0.0.1:9495/sql`; send each statement with `selfdispatch(sql)`,
+which wraps `quackapi_post` with `url_build` and `:=` overrides (`port`, `hostname`,
+`pathname`, `headers`). Do not discover and cross join listeners or
+create another server. Preserve the generated SQL, source identity and full receipts
+when they are needed downstream. Empty input sends nothing. Arrays do not establish
+execution order; dependent writes belong in one ordered body. Never blindly retry
+an uncertain write.
 
-## Rules
-
-- The statement is a dollar-quoted literal with the value concatenated in, as above. No printf and
-  no hand-built quoting.
-- `/sql` runs the statement untouched and returns its rows; a parse or bind error is a 422 receipt
-  with the message in `receipt.body`. Keep failed receipts as rows.
-- A single statement an agent wants run goes through the dev MCP `execute` tool, not through this.
-- Dependent DDL (create → alter → insert) is one ordered body, not parallel rows.
-- Large results: post one row each and tabulate `status`, instead of `array_agg` of tens of MB.
-- No session variables as orchestration, no recursive CTEs, no second server, no shell loop around
-  DuckDB. If dev misbehaves, restart it (`light-switch`) rather than working around it.
+Historical transport measurements are in the [compendium](references/compendium.md#historical-transport-measurements).

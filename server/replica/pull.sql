@@ -19,7 +19,7 @@ CALL pg_clear_cache();
 -- quackapi_post(url, body JSON) -> STRUCT(status, reason, body, headers, error, reused_connection); unlike
 -- http_client's http_post (status -1 at 10 s) it waits out a long copy (audit_log: ~2 s warm, 20-29 s from a cold
 -- Postgres cache).
-INSERT INTO pull_log BY NAME
+INSERT OR IGNORE INTO pull_log BY NAME
 WITH source AS (
     -- Base tables from the source's own catalog; the attach's duckdb_tables() also lists its 6 views.
     -- pull_log's table_name is schema-qualified (public.x, bp_records.x) so the four schemas never collide.
@@ -41,13 +41,16 @@ WITH source AS (
     ORDER BY l.due_at NULLS FIRST, s.key
     LIMIT 4
 ), statements AS (
-    SELECT table_name, run_started, run_id, array_to_string([
-        'CREATE OR REPLACE TEMP TABLE ' || mark || ' AS SELECT ' || lit || ' AS table_name, now() AS started',
-        'CREATE OR REPLACE TABLE ' || ident || ' AS FROM ' || origin,
-        'SELECT m.started, now() AS finished, n.rows FROM ' || mark || ' m JOIN (SELECT ' || lit
-            || ' AS table_name, coalesce(len(array_agg(true)), 0) AS rows FROM ' || ident || ') n USING (table_name)',
-        'DROP TABLE ' || mark], ';' || chr(10)) AS statement
-    FROM due
+    SELECT table_name, run_started, run_id, tera_render($t$
+CREATE OR REPLACE TEMP TABLE {{ mark }} AS SELECT {{ lit }} AS table_name, now() AS started;
+CREATE OR REPLACE TABLE {{ ident }} AS FROM {{ origin }};
+SELECT m.started, now() AS finished, n.rows
+FROM {{ mark }} m JOIN (
+    SELECT {{ lit }} AS table_name, coalesce(len(array_agg(true)), 0) AS rows FROM {{ ident }}
+) n USING (table_name);
+DROP TABLE {{ mark }};
+$t$, c::JSON, autoescape := false) AS statement
+    FROM due c
 ), posted AS (
     SELECT array_agg({table_name: table_name, run_started: run_started, run_id: run_id, statement: statement,
         receipt: quackapi_post('http://127.0.0.1:9511/sql', json_object('sql', statement))}) AS receipts
