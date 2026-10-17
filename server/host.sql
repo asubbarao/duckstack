@@ -141,15 +141,23 @@ SELECT v.verb, list_reduce(list_concat(v.words, n.words, v.preposition,
        (a, b) -> a || ' ' || b) AS line
 FROM chrome_verbs AS v JOIN chrome_nouns AS n USING (target);
 
--- The statement a program's lines run in; its keys come back in the receipt.
-CREATE OR REPLACE VIEW chrome_readers AS
-SELECT 'osascript' AS reader, $r$SELECT {{ window_id }} AS window_id, {{ tab_id }} AS tab_id, {{ prior }} AS prior, string_agg(content, '') AS out FROM read_lines($osa$osascript - 2>&1 <<'BRIDGE_EOF'
+-- The statement that runs a program (a list of {verb, arg} steps) on one tab; an AppleScript error is the output.
+CREATE OR REPLACE MACRO chrome_sql(window_id, tab_id, steps) AS (
+  SELECT tera_render($r$SELECT {{ window_id }} AS window_id, {{ tab_id }} AS tab_id, string_agg(content, '') AS out FROM read_lines($osa$osascript - 2>&1 <<'BRIDGE_EOF'
 tell application "Google Chrome"
 {{ program | join(sep="
 ") }}
 end tell
 BRIDGE_EOF
-{allowed_exit_codes=0,1}|$osa$, "trim" := true)$r$ AS statement;
+{allowed_exit_codes=0,1}|$osa$, "trim" := true)$r$,
+    json_object('window_id', window_id, 'tab_id', tab_id, 'program', list(tera_render(g.line,
+      json_object('window_id', window_id, 'tab_id', tab_id, 'arg', u.s.arg), autoescape := false) ORDER BY u.i)),
+    autoescape := false)
+  FROM UNNEST(steps) WITH ORDINALITY AS u(s, i) JOIN chrome_grammar AS g ON g.verb = u.s.verb
+);
+
+-- Run it: the receipt (status, body = [{window_id, tab_id, out}]).
+CREATE OR REPLACE MACRO chrome_run(window_id, tab_id, steps) AS selfdispatch(chrome_sql(window_id, tab_id, steps));
 
 -- Processes and macOS diagnostics -------------------------------------------------------------------
 
