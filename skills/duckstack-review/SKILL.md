@@ -29,6 +29,10 @@ that works but is ugly, slow or unreusable is a finding. The contract is
 
 Report every hit with file:line, the rule, and the rewrite.
 
+The baseline: a query under ~50 lines that has no bash loop, no tera loop or conditional, and no
+pile of new tables or views is assumed good. Self-dispatch is the usual shape, not a requirement.
+Spend the review on what breaks that baseline.
+
 ### 1. Self-dispatch, or the lack of it (the main failure)
 
 Self-dispatch is `array_agg` of posts to self, then `CROSS JOIN UNNEST` of the receipts.
@@ -38,7 +42,8 @@ Across a month of transcripts this was the owner's most repeated complaint, and 
 
 Flag:
 - A lateral join on a table function, a `read_*_lateral`, a column passed into `read_csv` or
-  `read_text`, or a comment explaining a binder error away. A binder error means: self-dispatch.
+  `read_text`, or a comment explaining a binder error away ("only accepts a literal"). A binder
+  error means: self-dispatch.
 - A `UNION ALL` of N hand-written statements, one per input.
 - A bash loop, `xargs`, a `.sh` file or a Python loop that runs one command per row.
 - An inputs-times-endpoint cross join, listener discovery joined into the dispatch, or any
@@ -71,8 +76,9 @@ Flag:
 - No intent CTE. The first CTE should say what is being done, as values and arrays, so a reader
   who knows neither tera nor self-dispatch can tell.
 - CTE soup: steps instead of named relations of 4–8 lines.
-- Transactions and row-by-row inserts or updates where `CREATE OR REPLACE TABLE t AS SELECT … FROM t`
-  would do.
+- Transactions and row-by-row inserts or updates where one set-based statement would do.
+- A `CREATE TABLE` inside a dispatched statement. Dispatched statements read, or insert into
+  a table that already exists.
 - Polling loops, queues or recursive walks where a set read, or a filtered listing dispatched per
   level, would do.
 - A query that can't be lost and rewritten from its relations, or that changes state when re-run.
@@ -86,6 +92,9 @@ verb relation, a host-state view. Flag:
   restates a table at another grain.
 - A new table or macro created without a proposal to the owner.
 
+The shape to look for: a relation that carries just the keys (urls, paths, ids) and feeds the
+next self-dispatch, which fills a different table.
+
 The reference for doing this right is inframe PR #1576: everything set-based and declarative, a
 reader chosen per file type by data.
 
@@ -94,13 +103,16 @@ reader chosen per file type by data.
 Flag quote-building from character codes, printf-style plumbing, nested quotes, doubled quotes
 and escapes. Statements come from word arrays and `quote_literal`, or a generic tera template
 that only substitutes. Templates with loops, conditionals or business logic are findings: logic
-lives in SQL.
+lives in SQL. Tera constructs a statement and nothing else. A new template file is a finding
+unless the statement's shape is new: call an existing one with `template_path :=`.
 
-### 7. Hand-written field extraction
+### 7. Defined schemas
 
-Flag chains of arrow operators digging into JSON, schema strings passed to a JSON parser, and
-path-taking extractors in committed code. One upstream view holds the keys as columns, and
-everything downstream selects them.
+Flag any schema the code writes out: `columns := {...}`, `from_json` structure strings, typed
+NULL columns, `CREATE TABLE` column lists, named-key lists that break when a key goes missing.
+DuckDB infers it (`read_json`, `read_csv`, `json_tree`). If it can't, the data stays raw
+(`read_lines`, text, JSON) and gets parsed at use. When the change touches a hand-typed schema
+someone else left, the fix removes it too.
 
 ### 8. Banned habits
 
@@ -125,8 +137,8 @@ view (fix the view), and inserts where a COPY would do.
 
 ```sql
 WITH intent AS (                          -- what is being done, as data
-    SELECT path, ['find', path, '-maxdepth', '1', '-type', 'd'] AS cmd
-    FROM UNNEST(['/tmp', '/Users/aloksubbarao/inframe']) AS t(path)
+    SELECT parent AS path, ['git', '-C', parent, 'log', '--oneline', '-5'] AS cmd
+    FROM fs.folders WHERE name = '.git'
 ), rendered AS (                          -- generic template, substitution only
     SELECT path, tera_render('reader-shellfs.tera', intent::JSON, autoescape := false,
                              template_path := '<templates>/*.tera') AS sql

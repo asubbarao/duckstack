@@ -11,12 +11,13 @@ receipts with `array_agg`, then `CROSS JOIN UNNEST` exposes them as rows.
 Read the [compendium](references/compendium.md) for the construction and execution
 cases, actual-use inventory, named templates, quoting, inserts and failure handling.
 [inline.sql](references/inline.sql) contains runnable SQL-only, file-reader,
-command/CSV and repeated-pipeline/JSON examples.
+command/CSV and repeated-pipeline/JSON examples. [review.sql](references/review.sql) lists
+every dispatch site in the repo, to review with the `duckstack-review` checks.
 
 Use Tera to make the generated program look like ordinary SQL:
 `tera_render(template, c::JSON, autoescape := false)`. SQL owns selection, joins,
-filtering and values. Tera supplies substitutions and repeated syntax. Prefer a
-short inline template; use a named SQL template when sharing it improves readability.
+filtering and values. Tera only substitutes: no loops, conditionals or logic. Use an
+existing template with `template_path :=`; write a new one only for a new statement shape.
 Someone should be able to replace Tera with plain SQL string construction without
 redesigning the program. This is a design goal, not a second implementation to maintain.
 
