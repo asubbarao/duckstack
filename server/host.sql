@@ -148,7 +148,7 @@ tell application "Google Chrome"
 ") }}
 end tell
 BRIDGE_EOF
-|$osa$, "trim" := true)$r$ AS statement;
+{allowed_exit_codes=0,1}|$osa$, "trim" := true)$r$ AS statement;
 
 -- Processes and macOS diagnostics -------------------------------------------------------------------
 
