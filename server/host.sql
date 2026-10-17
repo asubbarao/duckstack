@@ -134,6 +134,11 @@ SELECT 'Google Chrome', 'close', 'set r to URL of t
 close t' UNION ALL
 SELECT 'Safari', 'close', 'set r to URL of t
 close t' UNION ALL
+SELECT 'Google Chrome', 'settle', 'repeat 60 times
+if not (loading of t) then exit repeat
+delay 0.25
+end repeat
+set r to URL of t' UNION ALL
 SELECT 'Google Chrome', 'open_beside', 'set r to id of (make new tab at end of tabs of w with properties {URL:"{{ arg }}"})
 exit repeat';
 
