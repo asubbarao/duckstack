@@ -1,65 +1,42 @@
--- agents.ext_catalog: one row per community extension, each source a typed column: yml (description.yml), page (the
--- community page, HTML) and readme (the GitHub README, markdown), with functions and readme_functions parsed from them,
--- each function carrying its overloads from duckdb_functions() when its extension is loaded.
--- Every 30 minutes one statement rebuilds it. The list page gives the extensions; quackapi_fetch reads each
--- (extension, source) URL as a row, so a missing or rate-limited URL is just a row with its status; the bodies are
--- parsed here. READMEs are rate-limited by GitHub, so one is fetched only when the previous row has none from the
--- last day; the previous rows are read through a self-dispatch, so on a fresh dev that read fails and yields none.
+-- agents.ext_catalog: one row per community extension, from the newest fetches in lake.agents.ext_fetch: yml
+-- (description.yml), page (the community page as HTML), functions (its tables) and readme (the GitHub README as
+-- markdown). Agents query it; nobody fetches docs. The refresh fetches, with quackapi_fetch, every page, description.yml
+-- and repo the list page names that has no fetch from the last day. Both statements are self-dispatched at boot, so a
+-- lake failure is a failed receipt and dev keeps serving; the refresh also runs daily.
 CREATE SCHEMA IF NOT EXISTS agents;
-DROP VIEW IF EXISTS agents.ext_catalog;
-DROP VIEW IF EXISTS agents.ext_docs;
-SELECT cron($$
-CREATE OR REPLACE TABLE agents.ext_catalog AS
-WITH calls AS (
-    SELECT 'SELECT extension_name, readme::VARCHAR AS readme, fetched_at FROM agents.ext_catalog WHERE readme IS NOT NULL' AS previous_sql
-), links AS (
-    SELECT i, url_resolve('https://duckdb.org/community_extensions/list_of_extensions', l.href) AS url, l.text
-    FROM read_html_objects('https://duckdb.org/community_extensions/list_of_extensions')
-    CROSS JOIN UNNEST(html_extract_links(html)) WITH ORDINALITY AS u(l, i)
-), ext AS (
-    SELECT urlpattern_extract('https://duckdb.org/community_extensions/extensions/:name.html', n.url, 'name') AS extension_name,
-           'https://raw.githubusercontent.com/duckdb/community-extensions/main/extensions/' || extension_name || '/description.yml' AS yml,
-           n.url AS page, g.url AS readme
-    FROM links n JOIN links g ON g.i = n.i + 1 AND g.text = 'GitHub'
-    WHERE urlpattern_test('https://duckdb.org/community_extensions/extensions/:name.html', n.url)
-), previous AS (
-    SELECT o.* FROM (SELECT array_agg(selfdispatch(previous_sql)) AS receipts FROM calls)
-    CROSS JOIN UNNEST(receipts) AS t(r)
-    CROSS JOIN UNNEST(from_json(r.body, '[{"extension_name": "VARCHAR", "readme": "VARCHAR", "fetched_at": "TIMESTAMPTZ"}]')) AS b(o)
-    WHERE r.status = 200
-), fetched AS (
-    SELECT extension_name, kind, quackapi_fetch(url) AS response
-    FROM (UNPIVOT ext ON yml, page, readme INTO NAME kind VALUE url)
-    ANTI JOIN (SELECT extension_name, 'readme' AS kind FROM previous WHERE fetched_at > now() - INTERVAL 1 DAY) USING (extension_name, kind)
-), fresh AS (
-    PIVOT (SELECT extension_name, kind, response.body AS body FROM fetched WHERE response.status = 200)
-    ON kind IN ('yml', 'page', 'readme') USING max(body)
-), merged AS (
-    SELECT extension_name, yaml_to_json(fresh.yml::YAML)::JSON AS yml, fresh.page::HTML AS page,
-           coalesce(nullif(duck_blocks_to_md(html_to_duck_blocks(xml_extract_elements(parse_html(fresh.readme), '//article')[1]::VARCHAR)), ''),
-                    previous.readme)::md AS readme,
-           CASE WHEN fresh.readme IS NOT NULL THEN now() ELSE previous.fetched_at END AS fetched_at
-    FROM fresh LEFT JOIN previous USING (extension_name)
-), parsed AS (
-    SELECT merged.*,
-           flatten(list_transform(list_filter(html_extract_tables_json(page), lambda t: list_contains(t.headers, 'function_name')), lambda t:
-               list_transform(t.table_data, lambda r: {name: r[list_position(t.headers, 'function_name')], kind: r[list_position(t.headers, 'function_type')],
-                                                       description: r[list_position(t.headers, 'description')], examples: r[list_position(t.headers, 'examples')]}))) AS page_functions,
-           list_distinct(flatten(list_transform(md_extract_code_blocks(readme), lambda b:
-               list_transform(list_filter(parse_ast_list(b.code, 'sql'), lambda n: n.type = 'invocation'), lambda n: lower(n.name))))) AS readme_names
-    FROM merged
-), signatures AS (
-    SELECT function_name, list({kind: function_type, parameters: parameters, parameter_types: parameter_types, return_type: return_type}) AS overloads
-    FROM duckdb_functions() GROUP BY function_name
-), functions AS (
-    SELECT p.extension_name, list({name: f.name, kind: f.kind, description: f.description, examples: f.examples, overloads: s.overloads} ORDER BY f.name) AS functions
-    FROM parsed p CROSS JOIN UNNEST(p.page_functions) AS t(f) LEFT JOIN signatures s ON s.function_name = f.name GROUP BY p.extension_name
-), readme_functions AS (
-    SELECT p.extension_name, list({name: n, overloads: s.overloads} ORDER BY n) AS readme_functions
-    FROM parsed p CROSS JOIN UNNEST(p.readme_names) AS t(n) LEFT JOIN signatures s ON s.function_name = n GROUP BY p.extension_name
+WITH program AS (
+    SELECT 'view' AS step, $v$CREATE OR REPLACE VIEW agents.ext_catalog AS
+WITH newest AS (
+    SELECT url, arg_max(response ->> 'body', fetched_at) AS body FROM lake.agents.ext_fetch WHERE response ->> 'status' = '200' GROUP BY url
+), yml AS (
+    SELECT urlpattern_extract('https://raw.githubusercontent.com/duckdb/community-extensions/main/extensions/:name/description.yml', url, 'name') AS extension_name,
+           yaml_to_json(body::YAML) AS yml
+    FROM newest WHERE urlpattern_test('https://raw.githubusercontent.com/duckdb/community-extensions/main/extensions/:name/description.yml', url)
+), page AS (
+    SELECT urlpattern_extract('https://duckdb.org/community_extensions/extensions/:name.html', url, 'name') AS extension_name, body::HTML AS page
+    FROM newest WHERE urlpattern_test('https://duckdb.org/community_extensions/extensions/:name.html', url)
+), readme AS (
+    SELECT url, duck_blocks_to_md(html_to_duck_blocks(xml_extract_elements(parse_html(body), '//article')[1]::VARCHAR))::md AS readme
+    FROM newest WHERE starts_with(url, 'https://github.com/')
 )
-SELECT parsed.* EXCLUDE (page_functions, readme_names), functions.functions, readme_functions.readme_functions,
-       e.installed, e.loaded, e.extension_version AS installed_version
-FROM parsed LEFT JOIN functions USING (extension_name) LEFT JOIN readme_functions USING (extension_name)
-LEFT JOIN duckdb_extensions() e USING (extension_name)
-$$, '0 */30 * * * *');
+SELECT extension_name, yml, page, html_extract_tables_json(page) AS functions, readme.readme
+FROM yml FULL JOIN page USING (extension_name) LEFT JOIN readme ON readme.url = 'https://github.com/' || (yml ->> '$.repo.github')$v$ AS sql
+    UNION ALL
+    SELECT 'refresh', $r$INSERT INTO lake.agents.ext_fetch BY NAME
+WITH links AS (
+    SELECT i, url_resolve('https://duckdb.org/community_extensions/list_of_extensions', l.href) AS url, l.text
+    FROM read_html_objects('https://duckdb.org/community_extensions/list_of_extensions') CROSS JOIN UNNEST(html_extract_links(html)) WITH ORDINALITY AS u(l, i)
+), pages AS (
+    SELECT url, urlpattern_extract('https://duckdb.org/community_extensions/extensions/:name.html', url, 'name') AS name
+    FROM links WHERE urlpattern_test('https://duckdb.org/community_extensions/extensions/:name.html', url)
+), urls AS (
+    SELECT url FROM pages
+    UNION ALL SELECT 'https://raw.githubusercontent.com/duckdb/community-extensions/main/extensions/' || name || '/description.yml' FROM pages
+    UNION ALL SELECT url FROM links WHERE text = 'GitHub'
+)
+SELECT url, now() AS fetched_at, to_json(quackapi_fetch(url)) AS response
+FROM urls ANTI JOIN (FROM lake.agents.ext_fetch WHERE fetched_at > now() - INTERVAL 1 DAY) USING (url)$r$
+), posted AS (
+    SELECT step, sql, array_agg(selfdispatch(sql)) AS receipts FROM program GROUP BY ALL
+)
+SELECT step, CASE step WHEN 'refresh' THEN cron(sql, '0 0 4 * * *') END AS job, r.status FROM posted CROSS JOIN UNNEST(receipts) AS t(r);
