@@ -57,7 +57,7 @@ FROM header JOIN body USING (filename);
 -- GET /profile?sql=…: the query graph that `python -m duckdb.query_graph` draws. Runs the SQL (writes included) under
 -- EXPLAIN (ANALYZE, FORMAT json) through Quack, keeps the profile as ~/.duck/logs/profiles/<UTC time>.json (a COPY
 -- dispatched to /sql), and answers one HTML page: headline metrics, time per operator type, and the operator tree in
--- preorder with each node's share of operator time. jsonata walks the children; the EXPLAIN_ANALYZE wrapper is skipped.
+-- preorder with each node's share of operator time. json_tree lists the operators; the EXPLAIN_ANALYZE wrapper is skipped.
 SELECT content FROM read_text('mkdir -p ~/.duck/logs/profiles |');
 CREATE OR REPLACE ROUTE profile GET '/profile' AS
 WITH run AS (
@@ -69,16 +69,13 @@ WITH run AS (
 COPY (SELECT $profile${{ profile_text }}$profile$) TO {{ target }} (FORMAT csv, HEADER false, QUOTE '', ESCAPE '');
 $copy$, c::JSON, autoescape := false)).status::VARCHAR AS saved_status
     FROM run c
-), node AS (
-    SELECT profile, path, saved_status, unnest(from_json(jsonata($j$(
-        $walk := function($n, $d) { $n.operator_type = "EXPLAIN_ANALYZE" ? $n.children.$walk($, $d) :
-            [{"name": $n.operator_name, "depth": $d, "seconds": $n.operator_timing, "card": $n.operator_cardinality,
-              "scanned": $n.operator_rows_scanned, "est": $n.extra_info.`Estimated Cardinality`,
-              "extra": [$each($sift($n.extra_info, function($v, $k) { $k != "Estimated Cardinality" }), function($v, $k) { $k & ": " & $join([$v], ", ") })]},
-             $n.children.$walk($, $d + 1)] };
-        $map([children.$walk($, 0)], function($n, $i) { $merge([{"idx": $i}, $n]) })
-    )$j$, profile), '[{"idx": "INTEGER", "name": "VARCHAR", "depth": "INTEGER", "seconds": "DOUBLE", "card": "UBIGINT", "scanned": "UBIGINT", "est": "VARCHAR", "extra": ["VARCHAR"]}]'), recursive := true)
-    FROM saved
+), node AS (   -- every operator in the profile, in order; depth is how many children its path has
+    SELECT profile, path, saved_status, t.id AS idx, t.value ->> 'operator_name' AS name, len(string_split(t.path, 'children')) - 3 AS depth,
+           (t.value ->> 'operator_timing')::DOUBLE AS seconds, (t.value ->> 'operator_cardinality')::UBIGINT AS card,
+           (t.value ->> 'operator_rows_scanned')::UBIGINT AS scanned, (t.value -> 'extra_info' ->> 'Estimated Cardinality') AS est,
+           list_transform(list_filter(json_keys(t.value -> 'extra_info'), lambda k: k <> 'Estimated Cardinality'), lambda k: k || ': ' || (t.value -> 'extra_info' ->> k)) AS extra
+    FROM saved CROSS JOIN LATERAL json_tree(saved.profile) t
+    WHERE json_exists(t.value, '$.operator_name') AND (t.value ->> 'operator_type') <> 'EXPLAIN_ANALYZE'
 ), share AS (
     SELECT *, seconds / sum(seconds) OVER () AS part FROM node
 ), phase AS (
