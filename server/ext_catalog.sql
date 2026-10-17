@@ -1,11 +1,10 @@
 -- agents.ext_catalog: one row per community extension, each source a typed column: yml (description.yml), page (the
 -- community page, HTML) and readme (the GitHub README, markdown), with functions and readme_functions parsed from them,
 -- each function carrying its overloads from duckdb_functions() when its extension is loaded.
--- Every 30 minutes one statement rebuilds it. calls declares the previous rows' query it dispatches.
--- The list page gives the extensions; each (extension, source) URL renders the tera skill's fetch_shellfs.tera and is
--- self-dispatched, so a missing or rate-limited URL fails alone; the bodies are parsed here. READMEs are rate-limited by
--- GitHub, so one is fetched only when the previous row has none from the last day; on a fresh dev the previous-rows
--- query fails and yields none.
+-- Every 30 minutes one statement rebuilds it. The list page gives the extensions; quackapi_fetch reads each
+-- (extension, source) URL as a row, so a missing or rate-limited URL is just a row with its status; the bodies are
+-- parsed here. READMEs are rate-limited by GitHub, so one is fetched only when the previous row has none from the
+-- last day; the previous rows are read through a self-dispatch, so on a fresh dev that read fails and yields none.
 CREATE SCHEMA IF NOT EXISTS agents;
 DROP VIEW IF EXISTS agents.ext_catalog;
 DROP VIEW IF EXISTS agents.ext_docs;
@@ -28,17 +27,12 @@ WITH calls AS (
     CROSS JOIN UNNEST(receipts) AS t(r)
     CROSS JOIN UNNEST(from_json(r.body, '[{"extension_name": "VARCHAR", "readme": "VARCHAR", "fetched_at": "TIMESTAMPTZ"}]')) AS b(o)
     WHERE r.status = 200
-), rendered AS (
-    SELECT extension_name, kind,
-           tera_render('fetch_shellfs.tera', json_object('url', url, 'user_agent', 'duckstack-ext-catalog/1.0', 'timeout', 30, 'max_bytes', 20000000, 'headers', [], 'params', []), autoescape := false,
-                       template_path := getenv('HOME') || '/.duck/deploy/skills/tera/references/*.tera') AS sql
+), fetched AS (
+    SELECT extension_name, kind, quackapi_fetch(url) AS response
     FROM (UNPIVOT ext ON yml, page, readme INTO NAME kind VALUE url)
     ANTI JOIN (SELECT extension_name, 'readme' AS kind FROM previous WHERE fetched_at > now() - INTERVAL 1 DAY) USING (extension_name, kind)
-), posted AS (
-    SELECT array_agg({'extension_name': extension_name, 'kind': kind, 'receipt': selfdispatch(sql)}) AS receipts FROM rendered
 ), fresh AS (
-    PIVOT (SELECT p.extension_name, p.kind, json_extract_string(p.receipt.body, '$[0].body') AS body
-           FROM posted CROSS JOIN UNNEST(receipts) AS t(p) WHERE p.receipt.status = 200)
+    PIVOT (SELECT extension_name, kind, response.body AS body FROM fetched WHERE response.status = 200)
     ON kind IN ('yml', 'page', 'readme') USING max(body)
 ), merged AS (
     SELECT extension_name, yaml_to_json(fresh.yml::YAML)::JSON AS yml, fresh.page::HTML AS page,
