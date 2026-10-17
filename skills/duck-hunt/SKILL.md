@@ -35,15 +35,108 @@ loaded there). Recipes are views, never macros. A page built from them is
 
 ## Recipes: `recipes.sql`
 
-Land each job's log as `raw/joblog-<job_id>.txt`:
+**Why is CI red on these PRs?** One statement on dev, no files, no shell loop. The only input is the
+`prs` rows: any repos, any PRs. Stage 1 sends one `gh pr checks` per PR and stage 2 one job-log read per
+failing check, each to dev's `/sql` (self-dispatch). Every failed Actions step ends in an `##[error]`
+annotation; `context` returns the lines around it, which hold the cause whatever the tool.
 
-```bash
-gh api --allow-escape-sequences repos/o/r/actions/jobs/<id>/logs > raw/joblog-<id>.txt
+```sql
+WITH prs(repo, pr) AS (VALUES ('<owner>/<repo>', <pr>)),
+checks AS (
+  SELECT repo, pr, quackapi_post('http://localhost:9495/sql', json_object('sql', printf(
+    $s$SELECT name, workflow, link FROM read_json('gh pr checks %d -R %s --json name,workflow,bucket,link; true |', hive_partitioning := false) WHERE bucket = 'fail'$s$,
+    pr, repo))::VARCHAR).body AS body
+  FROM prs
+), jobs AS (
+  SELECT repo, pr, c.workflow, c.name AS job, string_split(c.link, '/')[-1]::BIGINT AS job_id
+  FROM checks CROSS JOIN UNNEST(from_json(body, '[{"name":"VARCHAR","workflow":"VARCHAR","link":"VARCHAR"}]')) AS t(c)
+), logs AS (
+  SELECT *, quackapi_post('http://localhost:9495/sql', json_object('sql', printf(
+    $s$SELECT log_line_start, message, [c.content FOR c IN context] AS around FROM read_duck_hunt_log('gh api --allow-escape-sequences repos/%s/actions/jobs/%d/logs |', 'regexp:\S+Z ##\[error\](?P<message>.*)', context := 20)$s$,
+    repo, job_id))::VARCHAR).body AS body
+  FROM jobs
+)
+SELECT repo, pr, workflow, job, job_id, e.message, e.around
+FROM logs CROSS JOIN UNNEST(from_json(body, '[{"log_line_start":"BIGINT","message":"VARCHAR","around":"VARCHAR[]"}]')) AS t(e)
+WHERE NOT starts_with(e.message, 'No matches found');
 ```
 
-Then, from that folder, `duckdb :memory: -cmd "LOAD duck_hunt" -f <skill dir>/recipes.sql -c "FROM gha_errors"`
-(any view in place of `gha_errors`). Every view carries `job_id`,
-parsed from the file name, so you can join it back to the jobs API.
+Verified 2026-10-16 on two repos: a clang-format diff and a `Failed to create directory "/Users"` came back
+in `around`. A PR whose failing job is being re-run returns no row (its check is `pending`). For a branch
+instead of a PR, stage 1 is `gh run list -b <branch> --status failure --json databaseId` then
+`gh run view <id> --json jobs`. `gh` uses its active account; prefix `GH_TOKEN=…` when the repo needs another.
+Once the cause is known, a tool reader (`gcc_text`, `pytest_text`, `make_error`, …) on the same source gives typed rows.
+
+**Why did this run fail, and whose test is it?** The same statement started from a run (the Slack
+"Integration tests FAILED — view run" link, a nightly, any `actions/runs/<id>` URL) and carried back
+into the code. Stage 1 lists the run's failed jobs; stage 2 reads each job's pytest short-summary
+`FAILED <file>::<test> - <error>` lines with duck_hunt; stage 3 fetches the run's commit and, per failure,
+finds the test's span with sitting_duck (`parse_ast_list` over the duck_tails blob, so a path pytest prints
+relative to its rootdir still resolves), blames those lines, and lists every file at that commit whose
+text holds the error message (a `RAISE EXCEPTION`, an `assert` message, a `raise ValueError(...)`).
+Inputs are the `runs` rows: repo, its local clone, run id.
+
+```sql
+WITH runs(repo, root, run_id) AS (SELECT '<owner>/<repo>', '<abs local clone>', <run_id>::BIGINT),
+run AS (
+  SELECT repo, root, run_id, quackapi_post('http://localhost:9495/sql', json_object('sql', printf(
+    $s$SELECT headSha, headBranch, event, [{'name': j.name, 'id': j.databaseId} FOR j IN jobs IF j.conclusion = 'failure'] AS failed FROM read_json('gh run view %d -R %s --json headSha,headBranch,event,jobs; true |', hive_partitioning := false)$s$,
+    run_id, repo))::VARCHAR).body AS body
+  FROM runs
+), jobs AS (
+  SELECT repo, root, run_id, r.headSha AS sha, r.headBranch AS branch, r.event, f.name AS job, f.id AS job_id
+  FROM run CROSS JOIN UNNEST(from_json(body, '[{"headSha":"VARCHAR","headBranch":"VARCHAR","event":"VARCHAR","failed":[{"name":"VARCHAR","id":"BIGINT"}]}]')) AS t(r)
+  CROSS JOIN UNNEST(r.failed) AS u(f)
+), logs AS (
+  SELECT *, quackapi_post('http://localhost:9495/sql', json_object('sql', printf(
+    $s$SELECT ref_file, test_name, message FROM read_duck_hunt_log('gh api --allow-escape-sequences repos/%s/actions/jobs/%d/logs |', 'regexp:\S+Z FAILED (?P<file>[^:\s]+)::(?P<test_name>\S+) - (?P<message>.*)') WHERE NOT starts_with(message, 'No matches found')$s$,
+    repo, job_id))::VARCHAR).body AS body
+  FROM jobs
+), failures AS (
+  SELECT repo, root, run_id, sha, branch, event, job, job_id, e.ref_file, e.test_name, e.message,
+         string_split(string_split(e.test_name, '::')[-1], '[')[1] AS test_fn,   -- drop the class and any [param]
+         string_split(e.message, ') ')[-1] AS needle                              -- the text after "(psycopg.errors.X) "
+  FROM logs CROSS JOIN UNNEST(from_json(body, '[{"ref_file":"VARCHAR","test_name":"VARCHAR","message":"VARCHAR"}]')) AS t(e)
+), fetched AS (
+  SELECT root, sha, quackapi_post('http://localhost:9495/sql', json_object('sql', printf(
+    $s$SELECT content FROM read_lines('git -C %s fetch -q origin %s; echo "exit=$?" |')$s$, root, sha))::VARCHAR).body AS receipt
+  FROM (SELECT DISTINCT root, sha FROM failures)
+), code AS (
+  SELECT f.*, quackapi_post('http://localhost:9495/sql', json_object('sql', printf(
+    $s$WITH t AS (SELECT file_path, git_uri FROM git_tree('%s', '%s') WHERE file_ext IN ('.py', '.sql')),
+    span AS (
+      SELECT t.file_path, t.git_uri, n.start_line, n.end_line
+      FROM t, LATERAL git_read_each(t.git_uri) g, LATERAL (SELECT unnest(parse_ast_list(g.text, 'python')) AS n)
+      WHERE ends_with(t.file_path, '/%s') AND n.type = 'function_definition' AND n.name = '%s'
+    ), test_rows AS (
+      SELECT 'test' AS kind, span.file_path, printf('%%d-%%d', span.start_line, span.end_line) AS lines,
+             array_agg(DISTINCT b.commit_hash[:9] || ' ' || b.author_name || ' ' || b.author_date::DATE) AS who
+      FROM span, LATERAL git_blame_each(span.git_uri) b
+      WHERE b.line_number BETWEEN span.start_line AND span.end_line GROUP BY ALL
+    ), raised AS (
+      SELECT 'raised' AS kind, t.file_path, NULL AS lines, NULL::VARCHAR[] AS who
+      FROM t, LATERAL git_read_each(t.git_uri) g WHERE contains(g.text, $q$%s$q$)
+    )
+    FROM test_rows UNION ALL FROM raised$s$,
+    f.root, f.sha, f.ref_file, f.test_fn, f.needle))::VARCHAR).body AS body
+  FROM failures f JOIN fetched x USING (root, sha)
+  WHERE contains(x.receipt, 'exit=0')
+)
+SELECT run_id, branch, event, job, ref_file, test_name, message, c.kind, c.file_path, c.lines, c.who
+FROM code CROSS JOIN UNNEST(from_json(body, '[{"kind":"VARCHAR","file_path":"VARCHAR","lines":"VARCHAR","who":"VARCHAR[]"}]')) AS t(c);
+```
+
+Verified 2026-10-17 on inframe nightly run 39028546590 (Slack: "Integration tests FAILED"): one failure,
+`test_rls_portal_scopes.py::TestTenantIsolation::test_one_customer_cannot_read_anothers_condition_answers`,
+lines 412-471 all from `0965c169c ohad-inframe` (merged the night before), the error raised in
+`alembic/versions/0017_add_contact_person.py` and `0199.py` (the `trg_user_requires_contact_person` trigger).
+The test creates a `CLIENT_ADMIN` user in a client org with no `ContactPerson`. Code stage ≈6 s on a ~20k-file
+tree. A job with no pytest `FAILED` line (a crash, a migration error before tests ran) returns no row here:
+fall back to the `##[error]` context recipe above for that job.
+
+The other views read landed logs, `raw/joblog-<job_id>.txt`, for a log you already hold or one too big to
+re-fetch on each query. From that folder: `duckdb :memory: -cmd "LOAD duck_hunt" -f <skill dir>/recipes.sql -c "FROM gha_errors"`.
+Every view carries `job_id`, parsed from the file name, so you can join it back to the jobs API.
 
 | View | Question | Verified 2026-09-23 |
 |---|---|---|
@@ -69,9 +162,16 @@ Dated one-liners. Add to this list; don't rewrite it.
   artifact produced 350.0-468.7 s observed test walls. Gate on measured slowest/fastest wall ratio
   and record artifact age/coverage, rather than treating equal file or test counts as success.
 
+- 2026-10-15: a local backend check log (ruff, mypy, pytest -q in one file), INF-1535. `mypy_text` returned all
+  4 errors with file:line; `ruff_text` on `--output-format=concise` returned only the `Found N errors` summary rows,
+  never the F821 lines, so run ruff with `--output-format=json` and read `ruff_json`. `pytest_text` on `-q` read the
+  17 FAILED rows exactly (matching `17 failed, 2538 passed`) but **missed** a failure in a run made with `-rs`: `-r`
+  restricted to skips prints no `FAILED` short-summary line. Read the `^_{3,} <test> _{3,}$` FAILURES headers with
+  `regexp:` + `context := 14`, or never pass a `-r` that drops `f`. Always cross-check rows against each summary line.
 - 2026-09-23: fetching per-job logs.
   - Save the per-job log to a file first with `gh api --allow-escape-sequences …/jobs/<id>/logs > f`,
-    then read the file. Piping gh straight into shellfs failed.
+    then read the file. Piping gh straight into shellfs failed. (Superseded 2026-09-29/10-16: the pipe
+    works with `--allow-escape-sequences`; read it directly, see `failed_job_lines`.)
   - The per-job log needs no zip and no zipfs.
 - 2026-09-23: `regexp:` readers and globs.
   - `regexp:` readers take a glob and fill `log_file`, although the docs say globs are unsupported.
@@ -125,6 +225,26 @@ Dated one-liners. Add to this list; don't rewrite it.
   the list. `context := N` came back NULL on this parser.
 - 2026-09-26: sqllogictest prints "FAILED: explicitly with message: 0". The `0` is the runner's
   `FAIL_LINE` marker; the reason is a separate stderr block ("1. test/sql/x.test:72 / Wrong result…").
+- 2026-10-15: local `/ship` check logs (inframe INF-1576). No `vitest`, `biome` or `tsc` format exists;
+  `auto` on vitest output returns jsdom noise ("Not implemented: window.scrollTo") as ERROR rows, not
+  failures. `pytest_text` returns 0 rows on `-q` dot output. Read pass/fail from the summary and
+  `<check>=<exit>` lines with `regexp:` (Test Files / Tests / "N files already formatted" / "Success: no
+  issues"), then join findings to the changed files from duck_tails `git_status_each`.
+- 2026-10-15: sitting_duck maps `.tsx` to its TypeScript grammar, which has no JSX (301 ERROR nodes on
+  one component). Copy the file to `.jsx` and `read_ast` it: `jsx_opening_element` + child `jsx_attribute`
+  rows then answer "does every `<Button size=\"sm\">` carry class X". `parse_ast` takes literals only.
+- 2026-10-16: `auto` on a GitHub Actions job log returned only `Process completed with exit code N`. The cause is
+  in the `context` of the `##[error]` line. Don't guess error keywords (`Error|FAILED|…`): that is tool-specific
+  and misses lines. A `read_json` source shaped `X=… cmd |` grows a hive column `X`: pass `hive_partitioning := false`.
+  `gh pr checks` exits non-zero when a check fails, and shellfs then returns **0 rows with no error** (quackapi
+  #49, failing Format Check, read empty). End the command with `; true`.
+  `printf('%s', <BIGINT>)` errors; use `%d`.
+- 2026-10-17: from a failed test back to its code. `read_ast('git:///<repo>/<path>@<sha>', 'python')` reads a blob
+  straight off duck_tails, but takes a literal path; inside a lateral chain use `parse_ast_list(g.text, 'python')` over
+  `git_read_each`. `git_blame_each(git_uri)` takes a column; its `min_line`/`max_line` named params do not bind in
+  LATERAL, so filter `line_number BETWEEN start_line AND end_line`. pytest prints paths relative to its rootdir
+  (`app/tests/…`, not `platform/backend/app/tests/…`): match the tree with `ends_with(file_path, '/' || ref_file)`.
+  A scheduled run's sha may be absent from the local clone: `git fetch origin <sha>` before `git_tree`.
 - 2026-09-23: `status_badge(status)` and `status_badge(errors, warnings[, running])` return `[FAIL]`,
   `[WARN]`, `[ OK ]`, `[ .. ]` or `[ ?? ]`. Useful as a page's status column.
 

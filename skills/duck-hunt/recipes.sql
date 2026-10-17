@@ -173,3 +173,12 @@ WITH marked AS (
 SELECT string_split(parse_filename(m.file_path, true), '-')[2]::BIGINT AS job_id, e.ref_file AS src_file
 FROM marked m, LATERAL parse_duck_hunt_log(m.text, 'regexp:\S+Z Found differences in file (?P<file>\S+)') e
 WHERE e.ref_file <> '';
+
+-- ctest_failures — which CTest tests failed, and how (Failed, Timeout, Subprocess aborted)? The "  N - name (kind)"
+-- lines under "The following tests FAILED:".
+-- verified 2026-10-16, quackapi #47: post_http_contract Timeout at 316ffc7, Failed at 3cef991/9539ce4/1cc2a33.
+CREATE OR REPLACE VIEW ctest_failures AS
+SELECT string_split(parse_filename(log_file, true), '-')[2]::BIGINT AS job_id, test_name, message AS kind
+FROM read_duck_hunt_log('raw/joblog-*.txt', 'regexp:\S+Z\s+\d+ - (?P<test_name>\S+) \((?P<message>[^)]+)\)$')
+WHERE test_name <> '';
+
