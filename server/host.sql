@@ -175,7 +175,7 @@ SELECT file, strptime(b ->> 'date', '%Y-%m-%d %H:%M:%S.%f %z') AS jetsam_at, b -
        p ->> 'name' AS name, (p ->> 'pid')::BIGINT AS pid,
        ((p ->> 'rpages')::BIGINT * (b ->> '$.memoryStatus.pageSize')::BIGINT) >> 20 AS resident_mb,
        p ->> 'reason' AS reason, p ->> 'coalition' AS coalition, p AS process
-FROM doc CROSS JOIN UNNEST(from_json(b -> 'processes', '["JSON"]')) AS t(p);
+FROM doc CROSS JOIN UNNEST((b -> 'processes')::JSON[]) AS t(p);
 
 -- One row per resource report: the process, the app that owns it (coalition), and what it exceeded.
 CREATE OR REPLACE VIEW host_resource_reports AS

@@ -46,12 +46,7 @@ SELECT file_name(filename) AS file, h ->> 'app_name' AS app,
        strptime(h ->> 'timestamp', '%Y-%m-%d %H:%M:%S.%f %z') AS crashed_at,
        b ->> '$.exception.type' AS exception, b ->> '$.exception.signal' AS signal, b ->> '$.exception.subtype' AS address,
        (b ->> '$.faultingThread')::INTEGER AS faulting_thread,
-       from_json(jsonata($j$(
-           $imgs := usedImages;
-           $ft := faultingThread;
-           threads[$ft].frames.($f := $; {"image": $imgs[$f.imageIndex].($exists(name) ? name : path),
-                                          "symbol": $f.symbol, "offset": $f.imageOffset})
-       )$j$, b), '[{"image": "VARCHAR", "symbol": "VARCHAR", "offset": "UBIGINT"}]') AS frames,
+       b -> 'threads' -> ((b ->> '$.faultingThread')::INTEGER) -> 'frames' AS frames, b -> 'usedImages' AS images,
        b -> '$.asi' AS app_info, b AS report, filename AS path
 FROM header JOIN body USING (filename);
 -- GET /profile?sql=…: the query graph that `python -m duckdb.query_graph` draws. Runs the SQL (writes included) under
