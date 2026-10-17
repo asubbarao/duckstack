@@ -14,8 +14,9 @@ CREATE SCHEMA IF NOT EXISTS bp_records; CREATE SCHEMA IF NOT EXISTS bp_graph; CR
 -- The attach caches the source catalog; clearing it lets a table or column added upstream arrive.
 CALL pg_clear_cache();
 
--- Rows -> statements -> quackapi_post to this process's /sql -> array_agg -> UNNEST -> pull_log.
--- Each body records its start in a temp table (connection-local), copies, then returns start, finish and rows.
+-- Rows -> statements -> quackapi_post to this process's /sql -> array_agg -> UNNEST. Each body copies its table and
+-- writes its own ok row to pull_log (start in a connection-local temp table, finish, rows); this statement adds a row
+-- only for a post that failed, with its error as returned.
 -- quackapi_post(url, body JSON) -> STRUCT(status, reason, body, headers, error, reused_connection); unlike
 -- http_client's http_post (status -1 at 10 s) it waits out a long copy (audit_log: ~2 s warm, 20-29 s from a cold
 -- Postgres cache).
@@ -44,7 +45,8 @@ WITH source AS (
     SELECT table_name, run_started, run_id, tera_render($t$
 CREATE OR REPLACE TEMP TABLE {{ mark }} AS SELECT {{ lit }} AS table_name, now() AS started;
 CREATE OR REPLACE TABLE {{ ident }} AS FROM {{ origin }};
-SELECT m.started, now() AS finished, n.rows
+INSERT OR IGNORE INTO pull_log BY NAME
+SELECT '{{ run_id }}' AS run_id, '{{ run_started }}'::TIMESTAMPTZ AS run_started, n.table_name, n.rows, m.started, now() AS finished, 'ok' AS status
 FROM {{ mark }} m JOIN (
     SELECT {{ lit }} AS table_name, coalesce(len(array_agg(true)), 0) AS rows FROM {{ ident }}
 ) n USING (table_name);
@@ -55,14 +57,9 @@ $t$, c::JSON, autoescape := false) AS statement
     SELECT array_agg({table_name: table_name, run_started: run_started, run_id: run_id, statement: statement,
         receipt: quackapi_post('http://127.0.0.1:9511/sql', json_object('sql', statement))}) AS receipts
     FROM statements
-), landed AS (
-    SELECT unnest(r), r.receipt.status AS http_status,
-        from_json(CASE WHEN http_status = 200 THEN r.receipt.body END,
-            '[{"started": "TIMESTAMPTZ", "finished": "TIMESTAMPTZ", "rows": "BIGINT"}]')[1] AS result
-    FROM posted CROSS JOIN UNNEST(receipts) AS u(r)
 )
-SELECT run_id, run_started, table_name, result.rows AS rows, result.started AS started, result.finished AS finished,
-    CASE WHEN result.rows IS NOT NULL THEN 'ok' ELSE 'error' END AS status, http_status,
-    CASE WHEN result.rows IS NULL THEN coalesce(receipt.error, receipt.body) END AS error,
-    receipt.headers['X-Request-ID'] AS request_id, statement, receipt.body AS receipt_body
-FROM landed;
+SELECT r.run_id, r.run_started, r.table_name, 'error' AS status, r.receipt.status AS http_status,
+    coalesce(r.receipt.error, r.receipt.body) AS error, r.receipt.headers['X-Request-ID'] AS request_id, r.statement,
+    r.receipt.body AS receipt_body
+FROM posted CROSS JOIN UNNEST(receipts) AS u(r)
+WHERE r.receipt.status IS DISTINCT FROM 200;

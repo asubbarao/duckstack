@@ -13,7 +13,7 @@ allowed-tools: mcp__dev__query
 Use the selected dev service at `http://localhost:9495/sql`. `agents.ext_catalog` is the
 agent entrypoint: `SELECT extension_name, readme FROM agents.ext_catalog`.
 For a specific question, query matching lines or blocks first. Do not dump a whole README or save it
-to a temporary file to search it. Dev publishes no catalog tool; query the table.
+to a temporary file to search it. Dev publishes no catalog tool; query the view.
 
 Preserve raw source data as a general rule. Derive parsed fields, previews and search indexes
 from it. An existing authoritative source does not require another raw copy. Never replace
@@ -114,8 +114,8 @@ INSTALL webbed FROM community; LOAD webbed;
 
 SELECT c.extension_name, b.*
 FROM agents.ext_catalog c
-CROSS JOIN UNNEST(html_to_duck_blocks(parse_html(c.response ->> 'body'))) t(b)
-WHERE c.extension_name = 'read_lines' AND c.kind = 'github'
+CROSS JOIN UNNEST(html_to_duck_blocks(c.page)) t(b)
+WHERE c.extension_name = 'read_lines'
   AND b.element_type = 'heading'
 ORDER BY b.element_order;
 ```
@@ -160,11 +160,10 @@ lengths, bounded links/headings and errors to the agent, not the entire fetched 
 | Object | Contents |
 |---|---|
 | `lake.agents.ext_fetch` | Table, one row per fetch: `url`, `fetched_at`, `response` JSON (`status`, `body`) |
-| `agents.ext_catalog` | Table, one row per extension: README (markdown), description.yml (yaml), functions and examples (community page via webbed), readme_sql, readme_functions; rebuilt every 10 min by its job |
+| `agents.ext_catalog` | View, one row per extension from the newest fetches: `yml` (description.yml), `page` (community page HTML), `functions` (its tables), `readme` (GitHub README, markdown) |
 
-The job in `server/ext_catalog.sql` runs every 10 minutes: it fetches the list page's extensions (community page,
-description.yml, GitHub repo) that are missing or older than a day in one parallel curl, stores them in
-`lake.agents.ext_fetch`, and rebuilds the table when new pages arrived or the table is missing. Reuse raw responses to add parsed columns. Catalog lookup comes first; inspect runtime signatures only
+`server/ext_catalog.sql` refreshes `lake.agents.ext_fetch` at boot and daily: every page, description.yml and repo the
+list page names that has no fetch from the last day, fetched with `quackapi_fetch`. Reuse raw responses to add parsed columns. Catalog lookup comes first; inspect runtime signatures only
 to resolve a documentation gap or version mismatch, since READMEs may omit details.
 
 Verified on dev on 2026-09-24: glob search, correlated ScalarFS line reads, named line

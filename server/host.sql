@@ -38,16 +38,10 @@ SELECT window_id, tab_index, line_number, line
 FROM per_tab CROSS JOIN UNNEST(string_split(screen, $n$
 $n$)) WITH ORDINALITY AS l(line, line_number);
 
--- One row per live claude process, written by Claude Code itself (~/.claude/sessions/<pid>.json).
--- Claude Code omits keys it has no value for (waitingFor), so the reader names the keys it needs;
--- a sniffed schema loses a key whenever no current file holds it.
+-- One row per live claude process, written by Claude Code itself (~/.claude/sessions/<pid>.json), with every key the
+-- files hold as a column. Nothing names a key, so a key Claude Code stops writing is simply absent.
 CREATE OR REPLACE VIEW claude_sessions AS
-SELECT pid, sessionId AS session_id, name, status, waitingFor AS waiting_for, kind, entrypoint, cwd,
-       make_timestamp(updatedAt * 1000) AS updated_at
-FROM read_json('/Users/aloksubbarao/.claude/sessions/*.json',
-               columns := {'pid': 'BIGINT', 'sessionId': 'VARCHAR', 'name': 'VARCHAR', 'status': 'VARCHAR', 'waitingFor': 'VARCHAR',
-                           'kind': 'VARCHAR', 'entrypoint': 'VARCHAR', 'cwd': 'VARCHAR', 'updatedAt': 'BIGINT'},
-               ignore_errors := true);   -- a file caught mid-write is empty
+SELECT * FROM read_json('/Users/aloksubbarao/.claude/sessions/*.json', union_by_name := true, ignore_errors := true);
 
 -- Each Terminal tab, the claude process holding its tty, and that session. pgrep -t ignores the tty
 -- on macOS; lsof -t <tty> lists exactly the processes on it, one pid per line.
@@ -55,7 +49,7 @@ CREATE OR REPLACE VIEW terminal_sessions AS
 WITH intent AS (          -- for each Terminal tab: every process holding its tty open
     SELECT window_id, tab_index, ['lsof', '-t', tty] AS cmd FROM terminal_tabs
 ), rendered AS (
-    SELECT tera_render($t$SELECT {{ window_id }} AS window_id, {{ tab_index }} AS tab_index, pid FROM read_csv($cmd${{ cmd | join(sep=" ") }} |$cmd$, header := false, columns := {'pid': 'BIGINT'})$t$,
+    SELECT tera_render($t$SELECT {{ window_id }} AS window_id, {{ tab_index }} AS tab_index, pid FROM read_csv($cmd${{ cmd | join(sep=" ") }} |$cmd$, header := false, names := ['pid'])$t$,
                        intent::JSON, autoescape := false) AS sql
     FROM intent
 ), dispatched AS (
@@ -64,8 +58,7 @@ WITH intent AS (          -- for each Terminal tab: every process holding its tt
     SELECT (row ->> 'window_id')::BIGINT AS window_id, (row ->> 'tab_index')::INT AS tab_index, (row ->> 'pid')::BIGINT AS pid
     FROM dispatched CROSS JOIN UNNEST(receipts) AS t(r) CROSS JOIN UNNEST(coalesce(try_cast(r.body AS JSON[]), [])) AS u(row)
 )
-SELECT t.window_id, t.window_index, t.tab_index, t.custom_title, t.tty, t.busy,
-       c.pid, c.session_id, c.name AS session_name, c.status, c.waiting_for, c.cwd, c.updated_at
+SELECT t.*, c.*
 FROM terminal_tabs AS t
 LEFT JOIN (tty_pids JOIN claude_sessions AS c USING (pid)) USING (window_id, tab_index);
 
@@ -128,3 +121,113 @@ SELECT 'set_active_tab_url', ['set URL of active tab of'], 'window', ['to'], [],
 SELECT 'execute_javascript', ['execute'], 'tab', ['javascript'], [], 'text' UNION ALL
 SELECT 'close_tab', ['close'], 'tab', [], [], 'none' UNION ALL
 SELECT 'activate_tab', ['set active tab index of'], 'window', ['to'], [], 'integer';
+
+-- Processes and macOS diagnostics -------------------------------------------------------------------
+
+-- Every process now. footprint_mb is top's MEM, what Activity Monitor shows: it counts compressed and swapped pages,
+-- which ps's RSS does not. spawned_by names the agent behind a process group: 'claude' (the group leader is the zsh
+-- a Claude Bash call starts, sourcing ~/.claude/shell-snapshots), 'codex' (a child of codex outside its own install
+-- and MCP servers), 'orphan' (the leader is gone: an agent's call ended and left its job running). ps and date print
+-- local wall time, so age_s compares like with like.
+CREATE OR REPLACE VIEW host_processes AS
+WITH ps AS (
+    FROM read_csv($cmd$ps -axww -o pid=,ppid=,pgid=,rss=,lstart=,args= | awk -v now="$(date '+%Y-%m-%d %H:%M:%S')" '{a=$0; sub(/^ *[0-9]+ +[0-9]+ +[0-9]+ +[0-9]+ +[A-Z][a-z][a-z] +[A-Z][a-z][a-z] +[0-9]+ +[0-9:]+ +[0-9]+ +/, "", a); print now"\t"$1"\t"$2"\t"$3"\t"$4"\t"$5" "$6" "$7" "$8" "$9"\t"substr(a,1,2000)}' |$cmd$,
+                  delim := '\t', header := false, quote := '', escape := '',
+                  columns := {'observed_at': 'TIMESTAMP', 'pid': 'BIGINT', 'ppid': 'BIGINT', 'pgid': 'BIGINT', 'rss_kb': 'BIGINT',
+                              'lstart': 'VARCHAR', 'args': 'VARCHAR'})
+), top AS (
+    FROM read_csv($cmd$top -l 1 -stats pid,mem,cmprs | awk 'NR>12 {print $1"\t"$2"\t"$3}' |$cmd$, delim := '\t', header := false,
+                  columns := {'pid': 'BIGINT', 'mem': 'VARCHAR', 'cmprs': 'VARCHAR'})
+), procs AS (
+    SELECT ps.* EXCLUDE (lstart), strptime(lstart, '%a %b %d %H:%M:%S %Y') AS started_at,
+           date_diff('second', started_at, observed_at) AS age_s,
+           CASE right(rtrim(mem, '+-'), 1) WHEN 'G' THEN 1024 WHEN 'M' THEN 1 WHEN 'K' THEN 1/1024 ELSE 0 END
+             * TRY_CAST(rtrim(rtrim(mem, '+-'), 'BKMG') AS DOUBLE) AS footprint_mb,
+           CASE right(rtrim(cmprs, '+-'), 1) WHEN 'G' THEN 1024 WHEN 'M' THEN 1 WHEN 'K' THEN 1/1024 ELSE 0 END
+             * TRY_CAST(rtrim(rtrim(cmprs, '+-'), 'BKMG') AS DOUBLE) AS compressed_mb
+    FROM ps LEFT JOIN top USING (pid)
+)
+SELECT g.*, l.args AS leader_args, p.args AS parent_args,
+       CASE WHEN g.pgid <= 1 THEN NULL
+            WHEN l.pid IS NULL THEN 'orphan'
+            WHEN contains(l.args, '/.claude/shell-snapshots/') THEN 'claude'
+            WHEN p.args SIMILAR TO '.*/codex( .*)?' AND NOT starts_with(g.args, '/Applications/ChatGPT.app/')
+                 AND NOT starts_with(g.args, '/Users/aloksubbarao/.codex/')
+                 AND NOT starts_with(g.args, '/Users/aloksubbarao/.local/bin/') THEN 'codex'
+       END AS spawned_by
+FROM procs g LEFT JOIN procs l ON l.pid = g.pgid LEFT JOIN procs p ON p.pid = g.ppid;
+
+-- Every file macOS keeps in DiagnosticReports: crash reports (.ips), out-of-memory kills (JetsamEvent*.ips), resource
+-- reports (.diag: disk writes, CPU, wakeups). The globs name whole folders, which always hold files: a glob matching
+-- nothing fails the view. read_blob because some .ips are gzip archives, not text.
+CREATE OR REPLACE VIEW host_diagnostic_files AS
+SELECT filename AS path, file_name(filename) AS file, last_modified, content
+FROM read_blob(['/Library/Logs/DiagnosticReports/*', '~/Library/Logs/DiagnosticReports/*']);
+
+-- One row per process in each out-of-memory kill: what was resident when macOS ran out and started killing.
+CREATE OR REPLACE VIEW host_jetsam AS
+WITH doc AS (
+    SELECT file, decode(content) AS txt, substr(txt, position($n$
+$n$ IN txt) + 1)::JSON AS b
+    FROM host_diagnostic_files WHERE file LIKE 'JetsamEvent%.ips'
+)
+SELECT file, strptime(b ->> 'date', '%Y-%m-%d %H:%M:%S.%f %z') AS jetsam_at, b ->> 'largestProcess' AS largest_process,
+       p ->> 'name' AS name, (p ->> 'pid')::BIGINT AS pid,
+       ((p ->> 'rpages')::BIGINT * (b ->> '$.memoryStatus.pageSize')::BIGINT) >> 20 AS resident_mb,
+       p ->> 'reason' AS reason, p ->> 'coalition' AS coalition, p AS process
+FROM doc CROSS JOIN UNNEST((b -> 'processes')::JSON[]) AS t(p);
+
+-- The unified log's out-of-memory lines from the last 30 minutes (~3 s to read; a 24 h window takes ~110 s). On this
+-- macOS the kernel persists no "memorystatus" lines, even with --info, around a real kill; "jetsam" catches the kill
+-- itself (ReportSystemMemory: "Process X [pid] killed by jetsam reason …") and runningboard's priority updates.
+-- read_lines, not read_json: an empty window is only log's {"count":0} trailer, which a schema could not bind to.
+CREATE OR REPLACE VIEW host_kernel_memory_log AS
+WITH l AS (
+    SELECT content::JSON AS e
+    FROM read_lines($cmd$log show --last 30m --style ndjson --predicate 'eventMessage CONTAINS[c] "jetsam" AND process != "log"' |$cmd$)
+)
+SELECT strptime(e ->> 'timestamp', '%Y-%m-%d %H:%M:%S.%f%z') AS logged_at, file_name(e ->> 'processImagePath') AS process,
+       (e ->> 'processID')::BIGINT AS pid, e ->> 'messageType' AS message_type, e ->> 'subsystem' AS subsystem,
+       e ->> 'category' AS category, e ->> 'eventMessage' AS message, e AS event
+FROM l WHERE e ->> 'eventMessage' IS NOT NULL;
+
+-- One row per resource report: the process, the app that owns it (coalition), and what it exceeded.
+CREATE OR REPLACE VIEW host_resource_reports AS
+WITH kv AS (
+    SELECT file, trim(split_part(line, ':', 1)) AS k, arg_min(trim(substr(line, position(':' IN line) + 1)), n) AS v
+    FROM host_diagnostic_files
+    CROSS JOIN UNNEST(string_split(decode(content), $n$
+$n$)[1:45]) WITH ORDINALITY AS t(line, n)
+    WHERE file LIKE '%.diag' AND position(':' IN line) > 1 AND NOT starts_with(line, ' ')
+    GROUP BY ALL
+), h AS (
+    SELECT file, map_from_entries(list((k, v))) AS h FROM kv GROUP BY file
+)
+SELECT file, strptime(h['Date/Time'], '%Y-%m-%d %H:%M:%S.%f %z') AS reported_at, h['Command'] AS command,
+       h['PID']::BIGINT AS pid, split_part(trim(h['Resource Coalition'], '"'), '"', 1) AS coalition, h['Event'] AS event,
+       h['Action taken'] AS action, coalesce(h['Writes'], h['CPU'], h['Wakeups'], h['Footprint'], h['Memory']) AS detail, h AS header
+FROM h;
+
+-- The whole Mac's memory now, one row: free, compressor, wired, swap, and the kernel's own pressure reading
+-- (kern.memorystatus_level is the percent of memory it counts as available; vm.memory_pressure 0 normal, 1 warn, 2 critical).
+-- observed_at is local wall time, like host_processes.
+CREATE OR REPLACE VIEW host_memory AS
+WITH kv AS (
+    SELECT trim(split_part(content, ':', 1), ' "') AS k, rtrim(trim(substr(content, position(':' IN content) + 1)), '.') AS v
+    FROM read_lines($cmd$echo "observed_at: $(date '+%Y-%m-%d %H:%M:%S')"; sysctl hw.memsize hw.pagesize kern.memorystatus_level vm.memory_pressure; sysctl -n vm.swapusage | awk '{print "swap_total: "$3; print "swap_used: "$6}'; vm_stat |$cmd$, "trim" := true)
+    WHERE position(':' IN content) > 0
+), h AS (
+    SELECT map_from_entries(list((k, v))) AS h FROM kv
+)
+SELECT h['observed_at']::TIMESTAMP AS observed_at,
+       h['hw.memsize']::UBIGINT >> 20 AS ram_mb,
+       h['kern.memorystatus_level']::INT AS memorystatus_free_pct,
+       h['vm.memory_pressure']::INT AS memory_pressure,
+       h['hw.pagesize']::BIGINT AS page_bytes,
+       (h['Pages free']::BIGINT * page_bytes) >> 20 AS free_mb,
+       (h['Pages occupied by compressor']::BIGINT * page_bytes) >> 20 AS compressor_mb,
+       (h['Pages stored in compressor']::BIGINT * page_bytes) >> 20 AS compressed_data_mb,
+       (h['Pages wired down']::BIGINT * page_bytes) >> 20 AS wired_mb,
+       rtrim(h['swap_total'], 'M')::DOUBLE AS swap_total_mb, rtrim(h['swap_used'], 'M')::DOUBLE AS swap_used_mb,
+       h['Swapins']::BIGINT AS swapins, h['Swapouts']::BIGINT AS swapouts, h AS counters
+FROM h;

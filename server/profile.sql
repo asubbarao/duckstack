@@ -30,10 +30,29 @@ SELECT q.timestamp, q.connection_id, q.query_id, q.query,
        v['TOTAL_BYTES_WRITTEN']::UBIGINT AS bytes_written, v['CHECKPOINT_LATENCY']::DOUBLE AS checkpoint_s,
        v['WRITE_TO_WAL_LATENCY']::DOUBLE AS wal_write_s, v AS metrics
 FROM meta.query_log q JOIN per_query USING (connection_id, query_id);
+-- macOS crash reports (~/Library/Logs/DiagnosticReports/*.ips): each file is a one-line JSON header and a JSON body.
+-- One row per report: app, time, exception, faulting address, and the faulting thread's frames with the binary each
+-- frame is in (usedImages[imageIndex]); the whole body stays in report.
+CREATE OR REPLACE VIEW meta.crash_reports AS
+WITH doc AS (
+    SELECT filename, json FROM read_json_objects('~/Library/Logs/DiagnosticReports/*.ips', format := 'unstructured',
+                                                 filename := true, maximum_object_size := 67108864)
+), header AS (
+    SELECT filename, json AS h FROM doc WHERE NOT json_exists(json, '$.threads')
+), body AS (
+    SELECT filename, json AS b FROM doc WHERE json_exists(json, '$.threads')
+)
+SELECT file_name(filename) AS file, h ->> 'app_name' AS app,
+       strptime(h ->> 'timestamp', '%Y-%m-%d %H:%M:%S.%f %z') AS crashed_at,
+       b ->> '$.exception.type' AS exception, b ->> '$.exception.signal' AS signal, b ->> '$.exception.subtype' AS address,
+       (b ->> '$.faultingThread')::INTEGER AS faulting_thread,
+       b -> 'threads' -> ((b ->> '$.faultingThread')::INTEGER) -> 'frames' AS frames, b -> 'usedImages' AS images,
+       b -> '$.asi' AS app_info, b AS report, filename AS path
+FROM header JOIN body USING (filename);
 -- GET /profile?sql=…: the query graph that `python -m duckdb.query_graph` draws. Runs the SQL (writes included) under
 -- EXPLAIN (ANALYZE, FORMAT json) through Quack, keeps the profile as ~/.duck/logs/profiles/<UTC time>.json (a COPY
 -- dispatched to /sql), and answers one HTML page: headline metrics, time per operator type, and the operator tree in
--- preorder with each node's share of operator time. jsonata walks the children; the EXPLAIN_ANALYZE wrapper is skipped.
+-- preorder with each node's share of operator time. json_tree lists the operators; the EXPLAIN_ANALYZE wrapper is skipped.
 SELECT content FROM read_text('mkdir -p ~/.duck/logs/profiles |');
 CREATE OR REPLACE ROUTE profile GET '/profile' AS
 WITH run AS (
@@ -45,16 +64,13 @@ WITH run AS (
 COPY (SELECT $profile${{ profile_text }}$profile$) TO {{ target }} (FORMAT csv, HEADER false, QUOTE '', ESCAPE '');
 $copy$, c::JSON, autoescape := false)).status::VARCHAR AS saved_status
     FROM run c
-), node AS (
-    SELECT profile, path, saved_status, unnest(from_json(jsonata($j$(
-        $walk := function($n, $d) { $n.operator_type = "EXPLAIN_ANALYZE" ? $n.children.$walk($, $d) :
-            [{"name": $n.operator_name, "depth": $d, "seconds": $n.operator_timing, "card": $n.operator_cardinality,
-              "scanned": $n.operator_rows_scanned, "est": $n.extra_info.`Estimated Cardinality`,
-              "extra": [$each($sift($n.extra_info, function($v, $k) { $k != "Estimated Cardinality" }), function($v, $k) { $k & ": " & $join([$v], ", ") })]},
-             $n.children.$walk($, $d + 1)] };
-        $map([children.$walk($, 0)], function($n, $i) { $merge([{"idx": $i}, $n]) })
-    )$j$, profile), '[{"idx": "INTEGER", "name": "VARCHAR", "depth": "INTEGER", "seconds": "DOUBLE", "card": "UBIGINT", "scanned": "UBIGINT", "est": "VARCHAR", "extra": ["VARCHAR"]}]'), recursive := true)
-    FROM saved
+), node AS (   -- every operator in the profile, in order; depth is how many children its path has
+    SELECT saved.profile, saved.path, saved.saved_status, t.id AS idx, t.value ->> 'operator_name' AS name, len(string_split(t.path, 'children')) - 3 AS depth,
+           (t.value ->> 'operator_timing')::DOUBLE AS seconds, (t.value ->> 'operator_cardinality')::UBIGINT AS card,
+           (t.value ->> 'operator_rows_scanned')::UBIGINT AS scanned, (t.value -> 'extra_info' ->> 'Estimated Cardinality') AS est,
+           list_transform(list_filter(json_keys(t.value -> 'extra_info'), lambda k: k <> 'Estimated Cardinality'), lambda k: k || ': ' || (t.value -> 'extra_info' ->> k)) AS extra
+    FROM saved CROSS JOIN LATERAL json_tree(saved.profile) t
+    WHERE json_exists(t.value, '$.operator_name') AND (t.value ->> 'operator_type') <> 'EXPLAIN_ANALYZE'
 ), share AS (
     SELECT *, seconds / sum(seconds) OVER () AS part FROM node
 ), phase AS (
