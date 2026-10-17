@@ -177,6 +177,20 @@ SELECT file, strptime(b ->> 'date', '%Y-%m-%d %H:%M:%S.%f %z') AS jetsam_at, b -
        p ->> 'reason' AS reason, p ->> 'coalition' AS coalition, p AS process
 FROM doc CROSS JOIN UNNEST((b -> 'processes')::JSON[]) AS t(p);
 
+-- The unified log's out-of-memory lines from the last 30 minutes (~3 s to read; a 24 h window takes ~110 s). On this
+-- macOS the kernel persists no "memorystatus" lines, even with --info, around a real kill; "jetsam" catches the kill
+-- itself (ReportSystemMemory: "Process X [pid] killed by jetsam reason …") and runningboard's priority updates.
+-- read_lines, not read_json: an empty window is only log's {"count":0} trailer, which a schema could not bind to.
+CREATE OR REPLACE VIEW host_kernel_memory_log AS
+WITH l AS (
+    SELECT content::JSON AS e
+    FROM read_lines($cmd$log show --last 30m --style ndjson --predicate 'eventMessage CONTAINS[c] "jetsam" AND process != "log"' |$cmd$)
+)
+SELECT strptime(e ->> 'timestamp', '%Y-%m-%d %H:%M:%S.%f%z') AS logged_at, file_name(e ->> 'processImagePath') AS process,
+       (e ->> 'processID')::BIGINT AS pid, e ->> 'messageType' AS message_type, e ->> 'subsystem' AS subsystem,
+       e ->> 'category' AS category, e ->> 'eventMessage' AS message, e AS event
+FROM l WHERE e ->> 'eventMessage' IS NOT NULL;
+
 -- One row per resource report: the process, the app that owns it (coalition), and what it exceeded.
 CREATE OR REPLACE VIEW host_resource_reports AS
 WITH kv AS (
