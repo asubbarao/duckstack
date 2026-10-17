@@ -1,7 +1,7 @@
--- Dev only (agents' clients do not read this file). Every 15 minutes, and once at boot: append host_processes to
--- ~/.duck/logs/processes/day=…/ as Parquet, and kill every process group an agent spawned (host_processes.spawned_by)
--- that has run 10 minutes or more. An orphaned group whose first process is an app or system helper is kept.
--- Rows of a killed group carry killed = true and the kill's receipt; host_process_history reads them all.
+-- Dev only (agents' clients do not read this file). Every 5 minutes, and once at boot: append host_processes to
+-- ~/.duck/logs/processes/day=…/ and host_memory to ~/.duck/logs/memory/day=…/ as Parquet, and kill every process group
+-- an agent spawned (host_processes.spawned_by) that has run 10 minutes or more. An orphaned group whose first process
+-- is an app or system helper is kept. Rows of a killed group carry killed = true and the kill's receipt.
 WITH program AS (
     SELECT $reap$
 COPY (
@@ -23,11 +23,16 @@ WITH procs AS (
 SELECT p.*, d.pgid IS NOT NULL AS killed, d.receipt.body AS kill_receipt, strftime(p.observed_at, '%Y-%m-%d') AS day
 FROM procs p LEFT JOIN killed d USING (pgid)
 ) TO '~/.duck/logs/processes' (FORMAT parquet, PARTITION_BY (day), APPEND, FILENAME_PATTERN 'snap_{uuid}');
+COPY (SELECT *, strftime(observed_at, '%Y-%m-%d') AS day FROM host_memory)
+TO '~/.duck/logs/memory' (FORMAT parquet, PARTITION_BY (day), APPEND, FILENAME_PATTERN 'snap_{uuid}');
 $reap$ AS sql
 ), posted AS (
     SELECT sql, array_agg(selfdispatch(sql)) AS receipts FROM program GROUP BY sql
 )
-SELECT cron(sql, '0 */15 * * * *') AS job, r.status FROM posted CROSS JOIN UNNEST(receipts) AS t(r);
+SELECT cron(sql, '0 */5 * * * *') AS job, r.status FROM posted CROSS JOIN UNNEST(receipts) AS t(r);
 
 CREATE OR REPLACE VIEW host_process_history AS
 FROM read_parquet('~/.duck/logs/processes/*/*.parquet', hive_partitioning := true, union_by_name := true);
+
+CREATE OR REPLACE VIEW host_memory_history AS
+FROM read_parquet('~/.duck/logs/memory/*/*.parquet', hive_partitioning := true, union_by_name := true);

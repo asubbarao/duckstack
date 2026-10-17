@@ -193,3 +193,27 @@ SELECT file, strptime(h['Date/Time'], '%Y-%m-%d %H:%M:%S.%f %z') AS reported_at,
        h['PID']::BIGINT AS pid, split_part(trim(h['Resource Coalition'], '"'), '"', 1) AS coalition, h['Event'] AS event,
        h['Action taken'] AS action, coalesce(h['Writes'], h['CPU'], h['Wakeups'], h['Footprint'], h['Memory']) AS detail, h AS header
 FROM h;
+
+-- The whole Mac's memory now, one row: free, compressor, wired, swap, and the kernel's own pressure reading
+-- (kern.memorystatus_level is the percent of memory it counts as available; vm.memory_pressure 0 normal, 1 warn, 2 critical).
+-- observed_at is local wall time, like host_processes.
+CREATE OR REPLACE VIEW host_memory AS
+WITH kv AS (
+    SELECT trim(split_part(content, ':', 1), ' "') AS k, rtrim(trim(substr(content, position(':' IN content) + 1)), '.') AS v
+    FROM read_lines($cmd$echo "observed_at: $(date '+%Y-%m-%d %H:%M:%S')"; sysctl hw.memsize hw.pagesize kern.memorystatus_level vm.memory_pressure; sysctl -n vm.swapusage | awk '{print "swap_total: "$3; print "swap_used: "$6}'; vm_stat |$cmd$, "trim" := true)
+    WHERE position(':' IN content) > 0
+), h AS (
+    SELECT map_from_entries(list((k, v))) AS h FROM kv
+)
+SELECT h['observed_at']::TIMESTAMP AS observed_at,
+       h['hw.memsize']::UBIGINT >> 20 AS ram_mb,
+       h['kern.memorystatus_level']::INT AS memorystatus_free_pct,
+       h['vm.memory_pressure']::INT AS memory_pressure,
+       h['hw.pagesize']::BIGINT AS page_bytes,
+       (h['Pages free']::BIGINT * page_bytes) >> 20 AS free_mb,
+       (h['Pages occupied by compressor']::BIGINT * page_bytes) >> 20 AS compressor_mb,
+       (h['Pages stored in compressor']::BIGINT * page_bytes) >> 20 AS compressed_data_mb,
+       (h['Pages wired down']::BIGINT * page_bytes) >> 20 AS wired_mb,
+       rtrim(h['swap_total'], 'M')::DOUBLE AS swap_total_mb, rtrim(h['swap_used'], 'M')::DOUBLE AS swap_used_mb,
+       h['Swapins']::BIGINT AS swapins, h['Swapouts']::BIGINT AS swapouts, h AS counters
+FROM h;
