@@ -124,38 +124,48 @@ SELECT 'activate_tab', ['set active tab index of'], 'window', ['to'], [], 'integ
 
 -- Processes and macOS diagnostics -------------------------------------------------------------------
 
--- Every process now. footprint_mb is top's MEM, what Activity Monitor shows: it counts compressed and swapped pages,
--- which ps's RSS does not. spawned_by names the agent behind a process group: 'claude' (the group leader is the zsh
--- a Claude Bash call starts, sourcing ~/.claude/shell-snapshots), 'codex' (a child of codex outside its own install
--- and MCP servers), 'orphan' (the leader is gone: an agent's call ended and left its job running). ps and date print
--- local wall time, so age_s compares like with like.
+-- Every process now. ps gives the numbers and the command line; awk only puts tabs between fields. age_s comes from
+-- ps's etime ([[dd-]hh:]mm:ss), so no clock is compared. footprint_mb is top's MEM, what Activity Monitor shows: it
+-- counts compressed and swapped pages, which ps's RSS does not. spawned_by names the agent behind a process: 'claude'
+-- (its group leader is the zsh a Claude Bash call starts, sourcing ~/.claude/shell-snapshots), 'codex' (a child of
+-- codex outside its own install and MCP servers), 'orphan' (the group leader is gone: an agent's call ended and left
+-- its job running). reap marks every process of a group the reaper kills: the group's oldest process was spawned by
+-- an agent, the group is 10 minutes old, and it is not an orphaned app or system helper.
 CREATE OR REPLACE VIEW host_processes AS
 WITH ps AS (
-    FROM read_csv($cmd$ps -axww -o pid=,ppid=,pgid=,rss=,lstart=,args= | awk -v now="$(date '+%Y-%m-%d %H:%M:%S')" '{a=$0; sub(/^ *[0-9]+ +[0-9]+ +[0-9]+ +[0-9]+ +[A-Z][a-z][a-z] +[A-Z][a-z][a-z] +[0-9]+ +[0-9:]+ +[0-9]+ +/, "", a); print now"\t"$1"\t"$2"\t"$3"\t"$4"\t"$5" "$6" "$7" "$8" "$9"\t"substr(a,1,2000)}' |$cmd$,
+    FROM read_csv($cmd$ps -axww -o pid=,ppid=,pgid=,etime=,args= | awk '{p=$1; q=$2; g=$3; e=$4; $1=$2=$3=$4=""; print p"\t"q"\t"g"\t"e"\t"substr($0,5,2000)}' |$cmd$,
                   delim := '\t', header := false, quote := '', escape := '',
-                  columns := {'observed_at': 'TIMESTAMP', 'pid': 'BIGINT', 'ppid': 'BIGINT', 'pgid': 'BIGINT', 'rss_kb': 'BIGINT',
-                              'lstart': 'VARCHAR', 'args': 'VARCHAR'})
+                  columns := {'pid': 'BIGINT', 'ppid': 'BIGINT', 'pgid': 'BIGINT', 'etime': 'VARCHAR', 'args': 'VARCHAR'})
 ), top AS (
-    FROM read_csv($cmd$top -l 1 -stats pid,mem,cmprs | awk 'NR>12 {print $1"\t"$2"\t"$3}' |$cmd$, delim := '\t', header := false,
-                  columns := {'pid': 'BIGINT', 'mem': 'VARCHAR', 'cmprs': 'VARCHAR'})
+    FROM read_csv($cmd$top -l 1 -stats pid,mem | awk 'NR>12 {print $1"\t"$2}' |$cmd$, delim := '\t', header := false,
+                  columns := {'pid': 'BIGINT', 'mem': 'VARCHAR'})
 ), procs AS (
-    SELECT ps.* EXCLUDE (lstart), strptime(lstart, '%a %b %d %H:%M:%S %Y') AS started_at,
-           date_diff('second', started_at, observed_at) AS age_s,
+    SELECT ps.*, string_split(etime, '-') AS day_split, list_reverse(string_split(day_split[-1], ':')) AS smh,
+           CASE len(day_split) WHEN 2 THEN day_split[1]::BIGINT ELSE 0 END * 86400
+             + coalesce(smh[3]::BIGINT, 0) * 3600 + smh[2]::BIGINT * 60 + smh[1]::BIGINT AS age_s,
            CASE right(rtrim(mem, '+-'), 1) WHEN 'G' THEN 1024 WHEN 'M' THEN 1 WHEN 'K' THEN 1/1024 ELSE 0 END
-             * TRY_CAST(rtrim(rtrim(mem, '+-'), 'BKMG') AS DOUBLE) AS footprint_mb,
-           CASE right(rtrim(cmprs, '+-'), 1) WHEN 'G' THEN 1024 WHEN 'M' THEN 1 WHEN 'K' THEN 1/1024 ELSE 0 END
-             * TRY_CAST(rtrim(rtrim(cmprs, '+-'), 'BKMG') AS DOUBLE) AS compressed_mb
+             * TRY_CAST(rtrim(rtrim(mem, '+-'), 'BKMG') AS DOUBLE) AS footprint_mb
     FROM ps LEFT JOIN top USING (pid)
+), owned AS (
+    SELECT g.* EXCLUDE (day_split, smh), now() AS observed_at, l.args AS leader_args, p.args AS parent_args,
+           CASE WHEN g.pgid <= 1 THEN NULL
+                WHEN l.pid IS NULL THEN 'orphan'
+                WHEN contains(l.args, '/.claude/shell-snapshots/') THEN 'claude'
+                WHEN p.args SIMILAR TO '.*/codex( .*)?' AND NOT starts_with(g.args, '/Applications/ChatGPT.app/')
+                     AND NOT starts_with(g.args, '/Users/aloksubbarao/.codex/')
+                     AND NOT starts_with(g.args, '/Users/aloksubbarao/.local/bin/') THEN 'codex'
+           END AS spawned_by
+    FROM procs g LEFT JOIN procs l ON l.pid = g.pgid LEFT JOIN procs p ON p.pid = g.ppid
+), grouped AS (
+    SELECT *, arg_max(spawned_by, age_s) OVER (PARTITION BY pgid) AS group_spawned_by,
+           arg_max(args, age_s) OVER (PARTITION BY pgid) AS group_root_args, max(age_s) OVER (PARTITION BY pgid) AS group_age_s
+    FROM owned
 )
-SELECT g.*, l.args AS leader_args, p.args AS parent_args,
-       CASE WHEN g.pgid <= 1 THEN NULL
-            WHEN l.pid IS NULL THEN 'orphan'
-            WHEN contains(l.args, '/.claude/shell-snapshots/') THEN 'claude'
-            WHEN p.args SIMILAR TO '.*/codex( .*)?' AND NOT starts_with(g.args, '/Applications/ChatGPT.app/')
-                 AND NOT starts_with(g.args, '/Users/aloksubbarao/.codex/')
-                 AND NOT starts_with(g.args, '/Users/aloksubbarao/.local/bin/') THEN 'codex'
-       END AS spawned_by
-FROM procs g LEFT JOIN procs l ON l.pid = g.pgid LEFT JOIN procs p ON p.pid = g.ppid;
+SELECT *, coalesce(group_spawned_by IS NOT NULL AND group_age_s >= 600
+                   AND NOT (group_spawned_by = 'orphan'
+                            AND len(list_filter(['%.app/Contents/%', '/System/%', '/usr/%', '/Library/%', '/opt/homebrew/Cellar/podman/%'],
+                                                k -> group_root_args LIKE k)) > 0), false) AS reap
+FROM grouped;
 
 -- Every file macOS keeps in DiagnosticReports: crash reports (.ips), out-of-memory kills (JetsamEvent*.ips), resource
 -- reports (.diag: disk writes, CPU, wakeups). The globs name whole folders, which always hold files: a glob matching
@@ -210,16 +220,16 @@ FROM h;
 
 -- The whole Mac's memory now, one row: free, compressor, wired, swap, and the kernel's own pressure reading
 -- (kern.memorystatus_level is the percent of memory it counts as available; vm.memory_pressure 0 normal, 1 warn, 2 critical).
--- observed_at is local wall time, like host_processes.
+-- observed_at is now(), like host_processes.
 CREATE OR REPLACE VIEW host_memory AS
 WITH kv AS (
     SELECT trim(split_part(content, ':', 1), ' "') AS k, rtrim(trim(substr(content, position(':' IN content) + 1)), '.') AS v
-    FROM read_lines($cmd$echo "observed_at: $(date '+%Y-%m-%d %H:%M:%S')"; sysctl hw.memsize hw.pagesize kern.memorystatus_level vm.memory_pressure; sysctl -n vm.swapusage | awk '{print "swap_total: "$3; print "swap_used: "$6}'; vm_stat |$cmd$, "trim" := true)
+    FROM read_lines($cmd$sysctl hw.memsize hw.pagesize kern.memorystatus_level vm.memory_pressure; sysctl -n vm.swapusage | awk '{print "swap_total: "$3; print "swap_used: "$6}'; vm_stat |$cmd$, "trim" := true)
     WHERE position(':' IN content) > 0
 ), h AS (
     SELECT map_from_entries(list((k, v))) AS h FROM kv
 )
-SELECT h['observed_at']::TIMESTAMP AS observed_at,
+SELECT now() AS observed_at,
        h['hw.memsize']::UBIGINT >> 20 AS ram_mb,
        h['kern.memorystatus_level']::INT AS memorystatus_free_pct,
        h['vm.memory_pressure']::INT AS memory_pressure,
