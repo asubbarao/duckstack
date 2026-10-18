@@ -56,7 +56,8 @@ FROM fs.files f;
 WITH program AS (
     SELECT $refresh$
 WITH roots AS (
-  SELECT unnest([getenv('HOME'), getenv('HOME') || '/Library/LaunchAgents']) AS path
+  -- A root that does not exist (~/Library/LaunchAgents off a Mac, or CI's empty HOME) has nothing to list.
+  SELECT path FROM (SELECT unnest([getenv('HOME'), getenv('HOME') || '/Library/LaunchAgents']) AS path) t WHERE path_exists(path)
 ), worklist AS (
   SELECT path, f.modified, 'any' AS scope,
          CASE WHEN f.depth IS NULL THEN 'list'
@@ -75,7 +76,7 @@ WITH roots AS (
   SELECT action, tera_render(CASE action
     WHEN 'gone' THEN $t$DELETE FROM fs.dirs WHERE starts_with(path || '/', $p${{ path }}/$p$);
 DELETE FROM fs.filelist WHERE starts_with(path, $p${{ path }}/$p$);$t$
-    WHEN 'list' THEN $t$INSERT OR REPLACE INTO fs.dirs SELECT $p${{ path }}$p$ AS path, '{{ now_modified }}'::TIMESTAMP AS modified;
+    WHEN 'list' THEN $t$INSERT OR REPLACE INTO fs.dirs SELECT $p${{ path }}$p$ AS path, TRY_CAST('{{ now_modified }}' AS TIMESTAMP) AS modified;
 INSERT OR IGNORE INTO fs.dirs SELECT path, '-infinity'::TIMESTAMP AS modified FROM ls($p${{ path }}$p$) WHERE is_dir(path);
 DELETE FROM fs.filelist WHERE folder = $p${{ path }}$p$;
 INSERT OR IGNORE INTO fs.filelist SELECT path, $p${{ path }}$p$ AS folder FROM ls($p${{ path }}$p$) WHERE is_file(path);$t$

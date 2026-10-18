@@ -6,6 +6,9 @@
 -- expired. 30 days here.
 WITH program AS (
     SELECT $lake$
+-- The catalog's directory may not exist on a fresh machine (or in CI's empty HOME); DuckLake creates the
+-- catalog file but not its parents, so ensure the directory first.
+SELECT content FROM read_text($u$mkdir -p ~/.duck/lake/duckstack |$u$) LIMIT 1;
 ATTACH IF NOT EXISTS 'ducklake:~/.duck/lake/duckstack/catalog.ducklake' AS lake (DATA_INLINING_ROW_LIMIT 0);
 CREATE SCHEMA IF NOT EXISTS lake.otel;
 FROM otlp_serve('otlp:127.0.0.1:4318', catalog := 'lake', schema := 'otel', disable_auth := true, maintenance_retention_ms := 2592000000);

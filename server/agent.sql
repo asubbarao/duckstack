@@ -24,12 +24,15 @@ WHERE f.ext IN ('.jsonl', '.zst', '.parquet');
 -- agent.docs: every memory, plan and instruction file Claude and Codex keep, one row per file, read live.
 CREATE OR REPLACE VIEW agent.docs AS
 SELECT filename AS path, file_name(filename) AS name, size, last_modified, content
-FROM read_text(['/Users/aloksubbarao/.claude/projects/*/memory/*.md', '/Users/aloksubbarao/.claude/plans/*.md',
-    '/Users/aloksubbarao/.codex/memories/*.md', '/Users/aloksubbarao/.codex/memories/*/*/*/*.md',
-    '/Users/aloksubbarao/.claude/CLAUDE.md', '/Users/aloksubbarao/AGENTS.md', '/Users/aloksubbarao/.codex/AGENTS.md']);
+FROM read_text([getenv('HOME') || '/.claude/projects/*/memory/*.md', getenv('HOME') || '/.claude/plans/*.md',
+    getenv('HOME') || '/.codex/memories/*.md', getenv('HOME') || '/.codex/memories/*/*/*/*.md',
+    getenv('HOME') || '/.claude/CLAUDE.md', getenv('HOME') || '/AGENTS.md', getenv('HOME') || '/.codex/AGENTS.md']);
 -- agent.titles: Codex thread names from ~/.codex/session_index.jsonl; id is the session id in the rollout file name.
-CREATE OR REPLACE VIEW agent.titles AS
-SELECT id, thread_name AS title, updated_at::TIMESTAMPTZ AS updated_at FROM read_json(getenv('HOME') || '/.codex/session_index.jsonl', format := 'newline_delimited');
+-- The file only exists where Codex runs, and CREATE VIEW binds read_json eagerly, so a missing file must skip the DDL.
+SELECT selfdispatch($t$CREATE OR REPLACE VIEW agent.titles AS
+SELECT id, thread_name AS title, updated_at::TIMESTAMPTZ AS updated_at
+FROM read_json(getenv('HOME') || '/.codex/session_index.jsonl', format := 'newline_delimited');$t$) AS titles_receipt
+WHERE path_exists(getenv('HOME') || '/.codex/session_index.jsonl');
 -- One refresh program, run once now and every five minutes. Each session with a file newer than its stored copy (or
 -- none stored) is copied whole, one post per session, run at the same time: an empty store takes 980 sessions (3.6 GB,
 -- ~45 s; failed posts are retried by the next run), a 5-minute run the few active ones (~13 MB, 0.5 s). agent.lines is

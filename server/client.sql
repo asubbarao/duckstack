@@ -13,8 +13,8 @@ LOAD duckdb_mcp;
 -- Every transcript line, read live from the .jsonl files: one raw json column, parsed at use (json ->> 'timestamp').
 CREATE SCHEMA IF NOT EXISTS agent;
 CREATE OR REPLACE VIEW agent.lines AS
-SELECT filename, json FROM read_json_objects(['/Users/aloksubbarao/.claude/projects/*/*.jsonl',
-    '/Users/aloksubbarao/.claude/projects/*/*/subagents/*.jsonl', '/Users/aloksubbarao/.codex/sessions/*/*/*/*.jsonl'],
+SELECT filename, json FROM read_json_objects([getenv('HOME') || '/.claude/projects/*/*.jsonl',
+    getenv('HOME') || '/.claude/projects/*/*/subagents/*.jsonl', getenv('HOME') || '/.codex/sessions/*/*/*/*.jsonl'],
     format := 'newline_delimited', filename := true, ignore_errors := true, maximum_object_size := 268435456);
 -- Every memory, plan and instruction file Claude and Codex keep, one row per file, read live.
 CREATE OR REPLACE VIEW agent.docs AS
