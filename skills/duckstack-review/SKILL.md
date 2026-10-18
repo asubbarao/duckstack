@@ -152,7 +152,7 @@ the review checks these points in that one place:
    `row_to_json`. The bash loop template is a fallback and needs a reason.
 3. **The macro.** `array_agg(selfdispatch(sql)) AS receipts`. Never a hand-written `quackapi_post` to /sql, a
    curl to /sql, a `quack_query` back to dev, or a lone post.
-4. **One `CROSS JOIN UNNEST(receipts)` per step**, never `unnest()` in a SELECT list, and nothing joined back
+4. **One `CROSS JOIN UNNEST(receipts)` per step**, never `unnest(receipts)` in a SELECT list, and nothing joined back
    to the source afterwards.
 5. **Receipts read as columns.** `receipt.*` gives status, body and error. No `->>` ladders and no `from_json` /
    `::JSON[]` over the body.
@@ -178,7 +178,7 @@ WITH tables AS (                          -- real rows, every value a column
     FROM information_schema.tables WHERE table_schema = 'fs'
 ), rendered AS (                          -- a canonical template by name; Tera only fills holes
     SELECT tera_render('sql.tera', c::JSON, autoescape := false,
-                       template_path := '/Users/aloksubbarao/.duck/deploy/skills/self-dispatch/templates/*.tera') AS sql
+                       template_path := concat_ws('/', getenv('HOME'), '.duck/deploy/skills/self-dispatch/templates/*.tera')) AS sql
     FROM tables AS c
 ), dispatched AS (                        -- visible self-dispatch
     SELECT array_agg(selfdispatch(sql)) AS receipts FROM rendered
@@ -215,12 +215,12 @@ SELECT TRY_CAST(content AS JSON) FROM read_lines($cmd$for f in a35d1dd0-… 1f83
 ```sql
 -- GOOD: the sessions are rows; one statement per row through shell.tera; receipts unnested
 WITH sessions AS (
-    SELECT 'read_json' AS reader, ', format := ''newline_delimited''' AS options,
+    SELECT 'read_json' AS reader, $opt$, format := 'newline_delimited'$opt$ AS options,
            [concat_ws('/', getenv('HOME'), '.claude/projects', translate(cwd, '/.', '--'), concat(sessionId, '.jsonl'))] AS sources
     FROM terminal_sessions WHERE sessionId IS NOT NULL
 ), rendered AS (
     SELECT tera_render('shell.tera', c::JSON, autoescape := false,
-                       template_path := '/Users/aloksubbarao/.duck/deploy/skills/self-dispatch/templates/*.tera') AS sql
+                       template_path := concat_ws('/', getenv('HOME'), '.duck/deploy/skills/self-dispatch/templates/*.tera')) AS sql
     FROM sessions AS c
 ), dispatched AS (
     SELECT array_agg(selfdispatch(sql)) AS receipts FROM rendered

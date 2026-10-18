@@ -15,7 +15,8 @@ writing SQL on this machine.
 2. **Each pair of CTEs is one orchestration step.** The next step's statements are built from the previous
    step's receipts: "a single selfdispatch, flicks on it, then the SUBSEQUENT SELF DISPATCH clicks on the
    next link … each duo of selfdispatch is an orchestration" (10-17). Order comes from that dependency;
-   inside one array use `WITH ORDINALITY` / `array_sort` only when order matters, otherwise it is async (09-24, 10-08).
+   inside one array use `array_agg(… ORDER BY …)` / `array_sort` only when order matters; `WITH ORDINALITY` only
+   numbers the elements; otherwise it is async (09-24, 10-08, 10-14).
 3. **Self-dispatch is the escape hatch for every binder error.** "self-disaptch works in all cases. it BYPASSES
    all binder errors and allows concatenating col params into table functions" (09-24). Never claim a reader
    "needs a literal", never `SET VARIABLE`/`getvariable` hand-offs, never `query()`/`query_table` (09-20, 10-08, 10-13).
@@ -68,7 +69,7 @@ writing SQL on this machine.
     `{% for %}` only for output that is genuinely loop-shaped (an osascript or bash loop) when that is
     simpler (09-28, 10-15).
 17. **A few canonical templates by shape**, called by name with `template_path :=` and the row as context
-    (`c::JSON`): `templates/` here holds shell, pipeline, sql, network and loop (10-16, 10-17). "if tera dont
+    (`c::JSON`): `templates/` here holds `shell.tera`, `sql.tera` and the fallback `bash_loop_fallback_method.tera` (10-16, 10-17). "if tera dont
     help reduce complexity, we will toss" (10-08). Someone without the `.tera` files must find the SQL easy
     to rewrite without Tera (10-16).
 
@@ -120,10 +121,9 @@ receipt problems below have one place to be checked.
     rows behind a flag. A timeout, an error status or an empty or unparsed body counts as a failure, not as
     an empty result (10-14, 10-16). Judge by `receipt.status`: a failed statement comes back as a 500 with the
     error in the body and `receipt.error` NULL (verified 2026-10-18).
-30. **One array, one `CROSS JOIN UNNEST` per step**, never `unnest()` in a SELECT list. A receipt stays on its
+30. **One array, one `CROSS JOIN UNNEST(receipts)` per step**, never `unnest(receipts)` in a SELECT list. A receipt stays on its
     source row, so nothing joins back afterwards (10-12, 10-13).
 31. **Source rows are real rows** (catalog, hostfs, a table), never `range()` / `generate_series` (hook, 10-12).
-    Order with `array_agg(… ORDER BY …)` or `array_sort`. `WITH ORDINALITY` only numbers the elements (10-14).
     No sleep or wait rows (hook, 10-17).
 32. **Post through the macro.** Use `selfdispatch(sql)`, never `quackapi_post('…:9495/sql', …)` by hand (hook).
     Never curl /sql from a reader (hook, 10-16). Never `quack_query` back to dev (10-09, 10-14). Never add a

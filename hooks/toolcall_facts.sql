@@ -209,6 +209,9 @@ stmts AS (
          flatten(list(function_calls)) AS sql_function_calls,
          flatten(list(table_function_calls)) AS sql_table_function_calls,
          list_sort(list_distinct(flatten(list([t.name FOR t IN table_function_calls])))) AS sql_table_functions,
+         -- the words of every shellfs command (a table-function literal ending in '|'), split on shell punctuation
+         list_distinct(flatten(list(flatten([flatten([string_split(translate(l, E'|;&\t\n()', '        '), ' ') FOR l IN t.literals IF ends_with(rtrim(l), '|')])
+                                             FOR t IN table_function_calls])))) AS sql_shellfs_pipe_words,
          list_distinct(flatten(list(cte_names))) AS sql_cte_names,
          bool_or(has_count_star) AS sql_has_count_star,
          bool_or(has_filter_clause) AS sql_has_filter_clause,
