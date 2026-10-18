@@ -155,8 +155,7 @@ needed a regex and grew to 74 lines.
 **The verification is one self-dispatched agent-log COPY that runs both sides.** The inputs and
 the signature are declared once, in the first CTE. The dispatched statement is the agent-log COPY,
 so both sides run as typed columns inside it and land as signed rows. The receipt says only
-whether the write happened, and the readback reads the rows as columns (compendium: "each
-statement writes them and the next stage reads the files").
+whether the write happened; the agent-log is the record, read back like any other log.
 ```sql
 WITH verification AS (     -- 1. plain values, declared once
     SELECT [<inputs>] AS raws, to_json(raws)::VARCHAR AS raws_json,
