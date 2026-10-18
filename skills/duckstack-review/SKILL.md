@@ -149,11 +149,102 @@ WITH intent AS (                          -- what is being done, as data
 SELECT r.* FROM dispatched CROSS JOIN UNNEST(receipts) AS t(r);
 ```
 
+The owner's own examples (2026-10-17). The first CTE declares everything; tera only substitutes; the
+reader is `SELECT *` and brings its own columns; the result is `receipt.*`:
+
+```sql
+WITH c AS (
+    SELECT unnest(['/tmp', '/Users/aloksubbarao/inframe']) AS path
+), rendered AS (
+    SELECT tera_render(
+        $tera$
+        SELECT * FROM read_csv(
+            $cmd$find "{{ path }}" -maxdepth 1 -type d |$cmd$,
+            header := false
+        )
+        $tera$,
+        c::JSON,
+        autoescape := false
+    ) AS sql
+    FROM c
+), dispatched AS (
+    SELECT array_agg(
+        quackapi_post(
+            'http://127.0.0.1:9495/sql',
+            json_object('sql', sql)::VARCHAR
+        )
+    ) AS receipts
+    FROM rendered
+)
+SELECT receipt.*
+FROM dispatched
+CROSS JOIN UNNEST(receipts) AS t(receipt);
+```
+
+```sql
+-- a template file
+SELECT tera_render('select.tera', c::JSON, autoescape := false, template_path := './templates/*.tera') AS sql
+FROM information_schema.columns AS c;
+
+-- an inline template; the row is the context
+SELECT tera_render('SELECT {{ column_name }} FROM {{ table_schema }}.{{ table_name }}', c::JSON, autoescape := false)
+FROM information_schema.columns AS c;
+```
+
+## Bad, then good: real failures
+
+Each of these was written by an agent and rejected. Flag the left side on sight.
+
+**Bash loop over hardcoded ids, JSON built with sed** (check 1, 2):
+```sql
+-- BAD
+SELECT TRY_CAST(content AS JSON) FROM read_lines($cmd$for f in a35d1dd0-… 1f833096-… 8bd35984-…; do
+  tail -n 300 ~/.claude/projects/-Users-aloksubbarao-inframe/$f.jsonl | sed "s/^/{\"_s\":\"$f\",\"_l\":/; s/\$/}/"; done |$cmd$)
+```
+```sql
+-- GOOD: the ids are rows; one statement per row; receipts unnested
+WITH c AS (
+    SELECT name, getenv('HOME') AS home, replace(cwd, '/', '-') AS project, sessionId AS session_id
+    FROM terminal_sessions WHERE sessionId IS NOT NULL
+), rendered AS (
+    SELECT tera_render($tera$
+        SELECT * FROM read_json($cmd$tail -n 200 "{{ home }}/.claude/projects/{{ project }}/{{ session_id }}.jsonl" |$cmd$,
+                                format := 'newline_delimited')
+    $tera$, c::JSON, autoescape := false) AS sql
+    FROM c
+), dispatched AS (
+    SELECT array_agg(selfdispatch(sql)) AS receipts FROM rendered
+)
+SELECT receipt.* FROM dispatched CROSS JOIN UNNEST(receipts) AS t(receipt);
+```
+
+**printf building a path, the reader's schema declared, arrows digging into the result** (checks 6, 7):
+```sql
+-- BAD
+SELECT printf('%s/.claude/projects/%s/%s.jsonl', getenv('HOME'), replace(cwd, '/', '-'), sessionId) AS path …
+… read_json(…, columns := {'type': 'VARCHAR', 'timestamp': 'VARCHAR', 'message': 'JSON'}) …
+… read_json(…, maximum_depth := 1) WHERE type ->> '$' IN ('user', 'assistant') …
+… CASE json_type(message -> 'content') WHEN 'VARCHAR' THEN message ->> 'content' ELSE message ->> '$.content[0].text' END
+```
+GOOD is the query above: values in the first CTE, the template substitutes them, `SELECT *`, `receipt.*`.
+
+**Parquet snapshots in the hot path of a one-query job** (checks 9, 10):
+```sql
+-- BAD: a reaper that COPYs every process to Parquet every 5 minutes before it kills anything
+COPY (SELECT *, strftime(observed_at, '%Y-%m-%d') AS day FROM host_processes) TO '~/.duck/logs/processes' (…);
+```
+```sql
+-- GOOD: the kill is one query over the live view; nothing is stored
+WITH targets AS (SELECT list(DISTINCT '-' || pgid) AS groups FROM host_processes WHERE reap) …
+```
+
 A live view straight over a CLI reader is fine and readable:
 `CREATE OR REPLACE VIEW gh_open_prs AS SELECT 'asubbarao' AS account, * FROM read_json($cmd$gh search prs … --json …|$cmd$)`.
 
 ## How to run it
 
+0. Run [references/audit.sql](references/audit.sql) on dev: one query, every rule hit in skills/ and server/ as
+   file:line:rule. New antipattern named by the owner = one more row in its `rules` CTE.
 1. Read SQL-MANIFESTO.md, then the diff (`duck_tails`, or `gh pr diff` read through shellfs).
 2. Go through checks 1–10 in order. Run what can be run on dev: `EXPLAIN`, row counts as
    `len(array_agg(…))`, timing. A claim about speed needs a measurement.

@@ -59,24 +59,29 @@ duckdb -c "
 LOAD httpfs;
 <SECRET_SETUP>
 DESCRIBE FROM '<URL>';
-SELECT count(*) AS row_count FROM '<URL>';
+SUMMARIZE FROM '<URL>';   -- the row count is each column's count, with min/max/nulls beside it
 FROM '<URL>' LIMIT 20;
 "
 ```
 
-For **Parquet files**, get row counts and sizes from metadata (no data download):
+For **Parquet files**, get row counts and sizes from metadata (no data download).
+`parquet_metadata` has one row per column chunk, so summing its `row_group_num_rows` multiplies the
+count by the number of columns; `parquet_file_metadata` has one row per file:
 
 ```bash
 duckdb -c "
 LOAD httpfs;
 <SECRET_SETUP>
-SELECT file_name,
-       sum(row_group_num_rows) AS total_rows,
-       (sum(row_group_compressed_bytes) / 1024 / 1024)::DECIMAL(10,1) AS compressed_mb
-FROM parquet_metadata('<URL>')
-GROUP BY file_name;
+SELECT m.file_name, m.num_rows, m.num_row_groups, (b.size / 1024 / 1024)::DECIMAL(10,1) AS size_mb
+FROM parquet_file_metadata('<URL>') AS m
+JOIN read_blob('<URL>') AS b ON b.filename = m.file_name;
 "
 ```
+
+Verified 2026-10-17 on the public Overture bucket (`theme=divisions/type=division_area/*`): the
+listing and this metadata query read only footers and sizes (129,358 rows, 686.3 MB in part 0).
+A glob with no file extension in a bare `FROM '<URL>'` can be claimed by another extension's
+replacement scan (dev's `markdown` returned `content md`); name the reader, `read_parquet('<URL>')`.
 
 ## Step 3 — Answer the question
 

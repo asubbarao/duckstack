@@ -7,8 +7,8 @@ description: >
   and all). The history tables (`git_log`, `git_tree`, `git_read`, `git_status`, blame, diffs) are
   the other half. Use when asked to read a repo at a revision, read data committed to a repo,
   compare a dataset across commits, inventory what a repo contains, or when about to shell out to
-  `git show`/`git archive`, `gh api` or curl to get a file's bytes — including a file in a GitHub
-  repo, which is `git clone --bare` first, then read here (dev MCP tools: git_tree, git_read).
+  `git show`/`git archive` to get a local file's bytes (dev MCP tools: git_tree, git_read). A
+  GitHub repo's files are read over HTTPS with curl through shellfs (`/duckstack:git-github`).
   Read `/duckstack:duck` first — its SQL process rules apply to git data too.
 argument-hint: "<repo path> [file | ref | question]"
 allowed-tools: Bash
@@ -75,8 +75,8 @@ are unnecessary just to discover the root or read committed files.
 `/duckstack:git-github` is the companion: `gh` for **remote** GitHub, `gh` CLI for private repos.
 This skill is the **local** repository, and it corrects three things `git-github` states wrongly.
 
-**Reading a repo — any repo, including one on GitHub — is this skill, not `gh api`, curl,
-`git show` or a scratch download.** On the dev MCP it is two tools (`/duckstack:agent-door`):
+**Reading a local repo is this skill, not `git show` or a scratch copy.** A GitHub repo's files
+are a curl reader through shellfs (`/duckstack:git-github`), no clone. On the dev MCP it is two tools (`/duckstack:agent-door`):
 `git_tree(repo, ref)` → `file_path, file_ext, kind, size_bytes, git_uri`, and
 `git_read(repo, path, ref)` → `file_path, text`.
 
@@ -86,7 +86,9 @@ A remote URL is not a repository to `duck_tails`. In the local client (742af7b, 
 `git_tree('https://github.com/o/r', 'HEAD')`, `git_log(repo_path := <url>)`, `git_read('git://https://…')`
 and `read_text('git://github.com/…@HEAD')` all fail with *No git repository found … found no .git
 directory*; earlier the same day a remote read came back as **zero rows with no error**. Either
-way the answer is the same: get the object store local, then read it.
+way the answer is the same. For a GitHub repo's current files, read them with curl through
+shellfs (`/duckstack:git-github`). Clone only when the question needs local history (log, blame,
+diffs across revisions):
 
 ```bash
 # private repos clone over the personal-account SSH alias
@@ -122,8 +124,9 @@ Two spellings, both verified, both usable from any working directory:
 | `git:///<abs-repo-path>/<path>@<ref>` | anywhere — this is exactly what `git_tree`'s `git_uri` column hands you |
 
 `<ref>` is anything git resolves: `HEAD`, `HEAD~1`, a branch, a tag, a full or short SHA. The
-argument binds at parse time, so a literal, `getenv()`, `getvariable()` or pure concatenation of
-those is fine — **a column is not** (see §5).
+argument binds at parse time, so write the whole URI as a literal (or a literal list) —
+**a column is not** accepted (see §5), and a URI assembled from pieces is a self-dispatch with a
+tera hole, not a `||` chain.
 
 ## 2. Parquet: yes. Verified, not inferred
 
@@ -131,53 +134,41 @@ The question "can `duck_tails` read Parquet?" is answered by running it. Corpus:
 hive-partitioned Parquet files committed to a real repo (`nlp_findings`, one commit `f7179e7`),
 `/…/scratchpad/readrepos/nlp_findings/nlp_sessions_archaeology/findings/<family>/signature=<hash>/<uuid>.parquet`.
 
-```bash
-export CORPUS_REPO=/private/tmp/claude-501/-Users-aloksubbarao-inframe/37bb1b7c-d200-4459-a2bf-637b6d8daba2/scratchpad/readrepos/nlp_findings
-duckdb :memory: -f duck_tails_parquet.sql
-```
-
 ```sql
 LOAD duck_tails;
 
 -- git_tree(repo_path, ref, "array" := NULL, untracked := false)
 --   repo_path and ref are POSITIONAL in that order (neither is a named parameter);
 --   one arg means repo and ref defaults to HEAD
-CREATE OR REPLACE VIEW bank_blobs AS
-SELECT git_uri, file_path, file_ext, kind, is_text, encoding, size_bytes, blob_hash, commit_hash, ref
-FROM git_tree(getenv('CORPUS_REPO'), 'HEAD');
-
 SELECT file_ext, kind, encoding,
        array_agg(DISTINCT is_text) AS is_text_values,
        len(array_agg(file_path))   AS n_blobs
-FROM bank_blobs
+FROM git_tree('<repo>', 'HEAD')
 WHERE file_ext = '.parquet'
 GROUP BY ALL;
 -- .parquet | file | binary | [false] | 66
 
 -- read_parquet(path, binary_as_string := false, filename := false, file_row_number := false,
 --              hive_partitioning := auto, hive_types_autocast := true, union_by_name := false)
-CREATE OR REPLACE VIEW bank AS
-SELECT *
-FROM read_parquet('git://' || getenv('CORPUS_REPO')
-                  || '/nlp_sessions_archaeology/findings/**/*.parquet@HEAD',
-                  union_by_name := true, filename := true);
-
-DESCRIBE bank;
-
 SELECT agent_angle,
        array_agg(DISTINCT query_name ORDER BY query_name) AS query_names, len(query_names) AS n_queries,
        len(array_agg(DISTINCT signature))                 AS n_signatures,
        len(array_agg(DISTINCT filename))                  AS n_blobs
-FROM bank
+FROM read_parquet('git:///<repo>/nlp_sessions_archaeology/findings/**/*.parquet@HEAD',
+                  union_by_name := true, filename := true)
 GROUP BY ALL
 ORDER BY agent_angle;
 ```
+
+The corpus clone is gone; the glob-over-a-commit shape was re-run 2026-10-17 on inframe:
+`read_csv('git:///Users/aloksubbarao/inframe/platform/backend/app/alembic/data/*.csv@HEAD', union_by_name := true, filename := true)`
+→ 6 files, one `filename` each.
 
 What that run actually proved (2026-09-18, `duck_tails` 742af7b, DuckDB 1.5.5 osx_arm64):
 
 | Claim | Evidence |
 |---|---|
-| Readers work over `git://` | `DESCRIBE bank` → 28 typed columns; 138,336 distinct `row_id`s across all 66 blobs |
+| Readers work over `git://` | `DESCRIBE` of the `read_parquet` → 28 typed columns; 138,336 distinct `row_id`s across all 66 blobs |
 | Globs resolve inside a commit | `**/*.parquet@HEAD` → 66 files, 11 families, no file list written by hand |
 | **Hive keys survive** | `signature` is a column; set `hive_partitioning := false` and it **disappears** — it is derived from the `git://` path, not stored in the file |
 | `union_by_name` folds heterogeneous schemas | 11 families with different columns land in one relation |
@@ -190,15 +181,16 @@ InFrame repo:
 ```sql
 LOAD duck_tails;
 -- read_csv(path, header := auto, delim := auto, all_varchar := false, sample_size := 20480, ...)
-SELECT 'HEAD'  AS ref, len(array_agg(DISTINCT name)) AS n_carriers
-FROM read_csv('git://platform/backend/app/alembic/data/carriers.csv@HEAD', header := true, all_varchar := true)
-UNION ALL BY NAME
-SELECT 'first' AS ref, len(array_agg(DISTINCT name)) AS n_carriers
-FROM read_csv('git://platform/backend/app/alembic/data/carriers.csv@<first-sha>', header := true, all_varchar := true);
--- HEAD 6432 | first 964
+-- one reader over a literal list of revisions; filename is the revision's git:// URI
+SELECT filename, len(array_agg(DISTINCT name)) AS n_carriers
+FROM read_csv(['git:///<repo>/platform/backend/app/alembic/data/carriers.csv@HEAD',
+               'git:///<repo>/platform/backend/app/alembic/data/carriers.csv@<first-sha>'],
+              header := true, all_varchar := true, union_by_name := true, filename := true)
+GROUP BY ALL;
+-- …@HEAD 6432 | …@<first-sha> 964 (2026-09-18); the list form re-run 2026-10-17 on inframe → 2 rows
 ```
 
-That is the whole point: **a dataset's history is a `WHERE ref = …`, not a checkout.**
+That is the whole point: **a dataset's history is a `WHERE filename = …`, not a checkout.**
 
 Caveat stated plainly: the 66-blob corpus has exactly **one commit**, so there is no earlier
 revision of it to diff. The revision mechanism is proved on `carriers.csv` above, and the
@@ -267,24 +259,29 @@ record what was actually tested. Select the recipe that answers the current ques
 The documented `_each` twins accept correlated columns. Prefer the native correlated
 function when available; use self-dispatch for literal-only readers without a suitable twin.
 Inspect installed overloads instead of assuming every function shares one signature.
-Previously verified reading all 19 `.md` files of this fork in one statement:
+Every `.md` file of a repo in one statement (verified 2026-10-17 on `~/duckdb-skills`: 58 | 58):
 
 ```sql
 LOAD duck_tails;
 SELECT len(array_agg(DISTINCT r.file_path)) AS n_files, len(array_agg(r.text)) AS n_texts
-FROM (SELECT git_uri FROM git_tree('.', 'HEAD') WHERE file_ext = '.md' AND kind = 'file') t,
-     git_read_each(t.git_uri) r;
--- 19 | 19
+FROM (SELECT git_uri FROM git_tree('<repo>', 'HEAD') WHERE file_ext = '.md' AND kind = 'file') AS md_files
+CROSS JOIN LATERAL git_read_each(md_files.git_uri) AS r;
 ```
 
-Any repo, from anywhere (verified 2026-09-28 on the bare clone of `closure`): pass `git_uri`, filter in
-the WHERE before the join, and read a big file a slice at a time by splitting it into lines:
+Any repo, from anywhere: pass `git_uri`, filter the tree before the read, and read a big file a
+slice at a time by splitting its text into lines (verified 2026-10-17 on inframe: the two `def`
+lines of `platform/backend/app/main.py`):
 
 ```sql
-SELECT t.file_path, u.n, u.line
-FROM git_tree('/Users/aloksubbarao/reviews/closure.git', 'HEAD') t, git_read_each(t.git_uri) r,
-     unnest(string_split(r.text, E'\n')) WITH ORDINALITY AS u(line, n)
-WHERE t.file_path IN ('server/routes.sql', 'server/views.sql') AND starts_with(upper(trim(u.line)), 'CREATE')
+WITH selected_files AS (
+    SELECT file_path, git_uri FROM git_tree('<repo>', 'HEAD')
+    WHERE file_path IN ('server/routes.sql', 'server/views.sql')
+)
+SELECT s.file_path, u.n, u.line
+FROM selected_files AS s
+CROSS JOIN LATERAL git_read_each(s.git_uri) AS r
+CROSS JOIN UNNEST(string_split(r.text, E'\n')) WITH ORDINALITY AS u(line, n)
+WHERE starts_with(upper(trim(u.line)), 'CREATE')
 LIMIT 100;
 ```
 
@@ -313,7 +310,8 @@ Source: `asubbarao/origin-agents-take-home`, `sql/` (`laws.sql`, `scan_and_audit
    scan stays a live view). `laws.sql` is CSV → views, nothing else.
 2. **`row_number()` on every face; evidence as ordered `array_agg`; never a count as identity.**
    Their words: *"add cols, row_number, ordered arrays — no count laundry as identity."*
-   `misses.sql` carries the whole shape: `array_agg(case_id ORDER BY case_id) FILTER (WHERE cell = 'FN') AS fn_ids`.
+   The shape: `SELECT cell, array_agg(case_id ORDER BY case_id) AS case_ids … GROUP BY cell`
+   (`misses.sql` wrote it with an aggregate `FILTER`, which is reserved for data-quality checks).
    The list is the fact; the number is `len(...)` of it.
 3. **Window AFTER `GROUP BY`** — stated twice as a Duck constraint, because DuckDB forbids
    grouping on a window expression. The shape is always
@@ -374,8 +372,8 @@ select by name and the string surgery disappears. Hive keys under `git://` arriv
 - **No writes.** `git://` is read-only, and `COPY … TO` it raises an INTERNAL Error that stops the
   statement chain (§3). Producing a commit is `git`'s job, outside the query.
 - **No remotes.** Local object store only — a ref must already be fetched (§0). GitHub
-  *metadata* (issues, PRs, runs) is `/duckstack:git-github`; a repo's *files* are a bare clone
-  read here.
+  *metadata* (issues, PRs, runs) and current files are `/duckstack:git-github`; a bare clone is
+  read here when the question needs history.
 - **Where it runs.** `~/duckdb-skills/server/setup.sql` loads `duck_tails` on dev, and the dev
   MCP publishes `git_tree` / `git_read` over it. In your own `:memory:` client
   `INSTALL duck_tails FROM community; LOAD duck_tails;` is always allowed. Dev reads paths on

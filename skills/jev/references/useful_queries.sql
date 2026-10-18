@@ -1,6 +1,5 @@
 -- Selected dev. Replace SELECT input with a file reader; preserve source rows.
--- Real inference requires TypeSafe credentials. Binding checks: jev_explain.sql.
--- Previous notebook: archive/2026-09-29-original/jev_useful_queries.sql.
+-- Real inference requires TypeSafe credentials. Binding checks: explain.sql; diagnostics: rejected_queries.sql.
 INSTALL jev FROM community;
 LOAD jev;
 

@@ -1,2 +1,0 @@
-SELECT * FROM read_csv($cmd$find {{ args | join(sep=" ") }} |$cmd$
-{% for name, value in params %}, {{ name }} := {{ value }}{% endfor %});

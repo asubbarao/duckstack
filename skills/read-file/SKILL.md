@@ -17,11 +17,10 @@ Question: `${1:-describe the data}`
 
 ## Step 1 — Read it
 
-`RESOLVED_PATH` is `$0`. If the user gave a bare filename (no `/`), resolve it to a full path with `find` first.
+`RESOLVED_PATH` is `$0`. A bare filename (no `/`) is `$PWD/$0`; if that is missing, list the folder with hostfs
+(`/duckstack:hostfs-ls`) and ask which file was meant.
 
-Run a single DuckDB command that defines the `read_any` macro inline and reads the file.
-
-For **remote files**, prepend the necessary LOAD/SECRET before the macro:
+For **remote files**, prepend the necessary LOAD/SECRET before the reader:
 
 | Protocol | Prepend |
 |---|---|

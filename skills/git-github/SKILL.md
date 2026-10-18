@@ -3,22 +3,21 @@ name: git-github
 description: >
   Git history and GitHub as tables — "readable git". duck_tails for any local repository
   (git_log, git_tree, git_read, git_status, blame, diffs, git:// paths at any revision), the gh
-  extension for public GitHub metadata and gh:// file reads, and the gh CLI (authenticated) for
-  private repos and raw file contents landed into DuckDB. Use when asked to read a repo, look at
+  extension for public GitHub metadata and gh:// file reads, and curl through shellfs with the gh
+  CLI's token for private repos and raw file contents, read straight into DuckDB readers. Use when asked to read a repo, look at
   what changed, hit a GitHub URL, list issues/PRs, or compare files across commits.
 argument-hint: "<repo path | owner/repo | github URL> [question]"
 allowed-tools: Bash
 ---
 
-Use both: the extensions when the data is public or local, `gh` when it is private or needs
-your login. Everything lands as rows; `SQL-and-join beats stdout`. Read `/duckstack:duck`
+Use both: the extensions when the data is public or local, curl with `gh auth token` when it is
+private or needs your login. Everything lands as rows; `SQL-and-join beats stdout`. Read `/duckstack:duck`
 §4 for the process rules — they apply to git data too (no `regexp_*` on messages, keep the
 whole row, `array_agg` over `count`).
 
-Both extensions are installed in `~/.duckdb/extensions` for the local client (verified 2026-09-17,
-DuckDB 1.5.5: `duck_tails` 742af7b, `gh` 10d642a). They are **not** on the dev server; run
-these in the `:memory:` client and, if a result should persist, a `quack_query` body (`/duckstack:quack`)
-from a `COPY`/`INSERT … SELECT` of the client-side result, or attach dev and insert.
+Both extensions are loaded on the dev server (verified 2026-10-17: `duck_tails`, `gh` and
+`shellfs` loaded); run these on the dev MCP. In a `:memory:` client,
+`INSTALL duck_tails FROM community; LOAD duck_tails;` (and the same for `gh`).
 
 ## Local repository — `duck_tails`
 
@@ -51,8 +50,9 @@ FROM read_git_diff('git://README.md@HEAD', 'git://README.md@HEAD~1');
 FROM git_blame('skills/query/SKILL.md', repo_path := '.') LIMIT 20;
 ```
 
-`*_each` variants take a relation of paths/refs — the correlated form for many files:
-`FROM (SELECT file_path FROM git_tree('.', 'HEAD') WHERE file_ext = '.md' AND kind = 'file') t, git_read_each(t.file_path)`.
+`*_each` variants take a relation of paths/refs — the correlated form for many files. Feed them
+`git_uri` (absolute); a bare `file_path` resolves against the server's cwd:
+`FROM (SELECT git_uri FROM git_tree('<repo>', 'HEAD') WHERE file_ext = '.md' AND kind = 'file') AS md_files CROSS JOIN LATERAL git_read_each(md_files.git_uri)`.
 
 ## Public GitHub — `gh` extension (no token; public only)
 
@@ -67,8 +67,8 @@ SELECT name, language, pushed_at, description FROM gh_repo('asubbarao/*') ORDER 
 SELECT number, title, labels FROM gh_issues('duckdb/duckdb-skills', state := 'all');
 
 -- gh_repos((relation of 'owner/repo' strings)) -- the table-in-out form; feed it a CTE
-WITH r AS (SELECT unnest(['duckdb/duckdb-skills', 'teaguesterling/duckdb_mcp']) AS repo)
-SELECT full_name, pushed_at FROM gh_repos((FROM r));
+WITH repos AS (SELECT unnest(['duckdb/duckdb-skills', 'teaguesterling/duckdb_mcp']) AS repo)
+SELECT full_name, pushed_at FROM gh_repos((FROM repos));
 
 -- gh:// filesystem: any reader over a file at a ref, globs included
 FROM read_csv('gh://duckdb/duckdb@main/data/csv/glob/**/*.csv');
@@ -79,25 +79,28 @@ A 404 from `gh_repo` means public-not-found — the repo may exist privately; sw
 
 ## Private, or authenticated — `gh` CLI, landed as rows
 
-`gh` is logged in as `asubbarao-ifr` (org `inframe-risk`). Raw file contents:
-
-```bash
-gh api -H "Accept: application/vnd.github.raw" "repos/<owner>/<repo>/contents/<path>" > "$SCRATCH/<file>"
-gh api "repos/<owner>/<repo>/git/trees/HEAD?recursive=1" > "$SCRATCH/tree.json"
-gh api --paginate "repos/<owner>/<repo>/commits" > "$SCRATCH/commits.json"
-```
-
-then read them with readers, not with `jq` in the shell:
+`gh` is logged in as `asubbarao-ifr` (org `inframe-risk`); `$(gh auth token)` supplies the
+bearer token. The API response is the reader's source: curl through shellfs, no scratch file, no
+`jq`, no clone (verified 2026-10-17 on `inframe-risk/inframe`: tree rows, the 8,277-character
+`CLAUDE.md`, compare commits):
 
 ```sql
 -- read_json(path, format := 'auto', records := 'auto', ...) -- let it infer; DESCRIBE first
-SELECT t.path, t.type, t.size
-FROM (SELECT unnest(tree) AS t FROM read_json('<scratch>/tree.json'));
-FROM read_text('<scratch>/README.md');
+SELECT entry.path, entry.type, entry.size
+FROM read_json($cmd$curl -sSL --fail --max-time 30 -H "Authorization: Bearer $(gh auth token)" "https://api.github.com/repos/<owner>/<repo>/git/trees/HEAD?recursive=1" |$cmd$)
+CROSS JOIN UNNEST(tree) AS t(entry);
+
+-- a raw file
+FROM read_text($cmd$curl -sSL --fail --max-time 30 -H "Authorization: Bearer $(gh auth token)" -H "Accept: application/vnd.github.raw" "https://api.github.com/repos/<owner>/<repo>/contents/<path>" |$cmd$);
+
+-- compare against upstream
+SELECT c.sha, c.commit.author.name, c.commit.message
+FROM read_json($cmd$curl -sSL --fail --max-time 30 -H "Authorization: Bearer $(gh auth token)" "https://api.github.com/repos/<owner>/<repo>/compare/<base>...<head>" |$cmd$)
+CROSS JOIN UNNEST(commits) AS t(c);
 ```
 
-Compare against upstream without leaving SQL: `gh api repos/<o>/<r>/compare/<base>...<head>`
-→ `read_json` → `unnest(commits)`.
+Many repos or paths in a column: one statement per row through `/duckstack:self-dispatch`, the
+URL as a tera hole.
 
 ## Which to use
 
@@ -113,5 +116,5 @@ from success, and distinguish administrative checks from actual test execution.
 |---|---|
 | this checkout, any revision, diffs, blame | `duck_tails` |
 | a public repo's metadata, issues, PRs, a file at a ref | `gh` extension |
-| a private repo, org repos, API endpoints the extension lacks (compare, trees, search) | `gh` CLI → files → readers |
-| the fork itself (`~/duckdb-skills`, `asubbarao-ifr/duckdb-skills`, private) | `duck_tails` locally; `gh` CLI remotely |
+| a private repo, org repos, API endpoints the extension lacks (compare, trees, search) | curl through shellfs (`gh auth token`) → readers |
+| the fork itself (`~/duckdb-skills`, `asubbarao-ifr/duckdb-skills`, private) | `duck_tails` locally; curl through shellfs remotely |

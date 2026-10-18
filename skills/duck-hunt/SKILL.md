@@ -40,29 +40,39 @@ loaded there). Recipes are views, never macros. A page built from them is
 failing check, each to dev's `/sql` (self-dispatch). Every failed Actions step ends in an `##[error]`
 annotation; `context` returns the lines around it, which hold the cause whatever the tool.
 
+Each stage's statement selects every column the next one needs, so the next stage renders straight
+from the receipt's rows (`UNNEST(receipt.body::JSON[])`): no schema is written anywhere.
+
 ```sql
-WITH prs(repo, pr) AS (VALUES ('<owner>/<repo>', <pr>)),
-checks AS (
-  SELECT repo, pr, quackapi_post('http://localhost:9495/sql', json_object('sql', printf(
-    $s$SELECT name, workflow, link FROM read_json('gh pr checks %d -R %s --json name,workflow,bucket,link; true |', hive_partitioning := false) WHERE bucket = 'fail'$s$,
-    pr, repo))::VARCHAR).body AS body
+WITH prs AS (
+  SELECT '<owner>/<repo>' AS repo, <pr> AS pr
+), checks_rendered AS (
+  SELECT tera_render($tera$
+    SELECT '{{ repo }}' AS repo, {{ pr }} AS pr, workflow, name AS job, parse_filename(link) AS job_id
+    FROM read_json($cmd$gh pr checks {{ pr }} -R {{ repo }} --json name,workflow,bucket,link; true |$cmd$, hive_partitioning := false)
+    WHERE bucket = 'fail'
+  $tera$, prs::JSON, autoescape := false) AS sql
   FROM prs
-), jobs AS (
-  SELECT repo, pr, c.workflow, c.name AS job, string_split(c.link, '/')[-1]::BIGINT AS job_id
-  FROM checks CROSS JOIN UNNEST(from_json(body, '[{"name":"VARCHAR","workflow":"VARCHAR","link":"VARCHAR"}]')) AS t(c)
-), logs AS (
-  SELECT *, quackapi_post('http://localhost:9495/sql', json_object('sql', printf(
-    $s$SELECT log_line_start, message, [c.content FOR c IN context] AS around FROM read_duck_hunt_log('gh api --allow-escape-sequences repos/%s/actions/jobs/%d/logs |', 'regexp:\S+Z ##\[error\](?P<message>.*)', context := 20)$s$,
-    repo, job_id))::VARCHAR).body AS body
-  FROM jobs
+), checks_dispatched AS (
+  SELECT array_agg(selfdispatch(sql)) AS receipts FROM checks_rendered
+), errors_rendered AS (
+  SELECT tera_render($tera$
+    SELECT '{{ repo }}' AS repo, {{ pr }} AS pr, '{{ workflow }}' AS workflow, '{{ job }}' AS job, {{ job_id }} AS job_id,
+           message, [c.content FOR c IN context] AS around
+    FROM read_duck_hunt_log($cmd$gh api --allow-escape-sequences repos/{{ repo }}/actions/jobs/{{ job_id }}/logs |$cmd$,
+                            'regexp:\S+Z ##\[error\](?P<message>.*)', context := 20)
+    WHERE NOT starts_with(message, 'No matches found')
+  $tera$, check_row, autoescape := false) AS sql
+  FROM checks_dispatched CROSS JOIN UNNEST(receipts) AS r(receipt) CROSS JOIN UNNEST(receipt.body::JSON[]) AS c(check_row)
+), errors_dispatched AS (
+  SELECT array_agg(selfdispatch(sql)) AS receipts FROM errors_rendered
 )
-SELECT repo, pr, workflow, job, job_id, e.message, e.around
-FROM logs CROSS JOIN UNNEST(from_json(body, '[{"log_line_start":"BIGINT","message":"VARCHAR","around":"VARCHAR[]"}]')) AS t(e)
-WHERE NOT starts_with(e.message, 'No matches found');
+SELECT receipt.* FROM errors_dispatched CROSS JOIN UNNEST(receipts) AS t(receipt);
 ```
 
 Verified 2026-10-16 on two repos: a clang-format diff and a `Failed to create directory "/Users"` came back
-in `around`. A PR whose failing job is being re-run returns no row (its check is `pending`). For a branch
+in `around`. Rewritten 2026-10-17 into the shape above; stage 2 verified on inframe run 38940020722
+(`Error: Test timed out in 5000ms.` with the vitest `FAIL` line in `around`). A PR whose failing job is being re-run returns no row (its check is `pending`). For a branch
 instead of a PR, stage 1 is `gh run list -b <branch> --status failure --json databaseId` then
 `gh run view <id> --json jobs`. `gh` uses its active account; prefix `GH_TOKEN=…` when the repo needs another.
 Once the cause is known, a tool reader (`gcc_text`, `pytest_text`, `make_error`, …) on the same source gives typed rows.
@@ -70,66 +80,72 @@ Once the cause is known, a tool reader (`gcc_text`, `pytest_text`, `make_error`,
 **Why did this run fail, and whose test is it?** The same statement started from a run (the Slack
 "Integration tests FAILED — view run" link, a nightly, any `actions/runs/<id>` URL) and carried back
 into the code. Stage 1 lists the run's failed jobs; stage 2 reads each job's pytest short-summary
-`FAILED <file>::<test> - <error>` lines with duck_hunt; stage 3 fetches the run's commit and, per failure,
-finds the test's span with sitting_duck (`parse_ast_list` over the duck_tails blob, so a path pytest prints
+`FAILED <file>::<test> - <error>` lines with duck_hunt (the `regexp:` groups drop the class, any `[param]` and
+the `(psycopg.errors.X) ` prefix, and the command fetches the run's commit first); stage 3, per failure, finds
+the test's span with sitting_duck (`parse_ast_list` over the duck_tails blob, so a path pytest prints
 relative to its rootdir still resolves), blames those lines, and lists every file at that commit whose
 text holds the error message (a `RAISE EXCEPTION`, an `assert` message, a `raise ValueError(...)`).
 Inputs are the `runs` rows: repo, its local clone, run id.
 
 ```sql
-WITH runs(repo, root, run_id) AS (SELECT '<owner>/<repo>', '<abs local clone>', <run_id>::BIGINT),
-run AS (
-  SELECT repo, root, run_id, quackapi_post('http://localhost:9495/sql', json_object('sql', printf(
-    $s$SELECT headSha, headBranch, event, [{'name': j.name, 'id': j.databaseId} FOR j IN jobs IF j.conclusion = 'failure'] AS failed FROM read_json('gh run view %d -R %s --json headSha,headBranch,event,jobs; true |', hive_partitioning := false)$s$,
-    run_id, repo))::VARCHAR).body AS body
+WITH runs AS (
+  SELECT '<owner>/<repo>' AS repo, '<abs local clone>' AS root, <run_id> AS run_id
+), jobs_rendered AS (
+  SELECT tera_render($tera$
+    SELECT '{{ repo }}' AS repo, '{{ root }}' AS root, {{ run_id }} AS run_id,
+           headSha AS sha, headBranch AS branch, event, job.name AS job, job.databaseId AS job_id
+    FROM read_json($cmd$gh run view {{ run_id }} -R {{ repo }} --json headSha,headBranch,event,jobs; true |$cmd$, hive_partitioning := false)
+    CROSS JOIN UNNEST(jobs) AS t(job)
+    WHERE job.conclusion = 'failure'
+  $tera$, runs::JSON, autoescape := false) AS sql
   FROM runs
-), jobs AS (
-  SELECT repo, root, run_id, r.headSha AS sha, r.headBranch AS branch, r.event, f.name AS job, f.id AS job_id
-  FROM run CROSS JOIN UNNEST(from_json(body, '[{"headSha":"VARCHAR","headBranch":"VARCHAR","event":"VARCHAR","failed":[{"name":"VARCHAR","id":"BIGINT"}]}]')) AS t(r)
-  CROSS JOIN UNNEST(r.failed) AS u(f)
-), logs AS (
-  SELECT *, quackapi_post('http://localhost:9495/sql', json_object('sql', printf(
-    $s$SELECT ref_file, test_name, message FROM read_duck_hunt_log('gh api --allow-escape-sequences repos/%s/actions/jobs/%d/logs |', 'regexp:\S+Z FAILED (?P<file>[^:\s]+)::(?P<test_name>\S+) - (?P<message>.*)') WHERE NOT starts_with(message, 'No matches found')$s$,
-    repo, job_id))::VARCHAR).body AS body
-  FROM jobs
-), failures AS (
-  SELECT repo, root, run_id, sha, branch, event, job, job_id, e.ref_file, e.test_name, e.message,
-         string_split(string_split(e.test_name, '::')[-1], '[')[1] AS test_fn,   -- drop the class and any [param]
-         string_split(e.message, ') ')[-1] AS needle                              -- the text after "(psycopg.errors.X) "
-  FROM logs CROSS JOIN UNNEST(from_json(body, '[{"ref_file":"VARCHAR","test_name":"VARCHAR","message":"VARCHAR"}]')) AS t(e)
-), fetched AS (
-  SELECT root, sha, quackapi_post('http://localhost:9495/sql', json_object('sql', printf(
-    $s$SELECT content FROM read_lines('git -C %s fetch -q origin %s; echo "exit=$?" |')$s$, root, sha))::VARCHAR).body AS receipt
-  FROM (SELECT DISTINCT root, sha FROM failures)
-), code AS (
-  SELECT f.*, quackapi_post('http://localhost:9495/sql', json_object('sql', printf(
-    $s$WITH t AS (SELECT file_path, git_uri FROM git_tree('%s', '%s') WHERE file_ext IN ('.py', '.sql')),
-    span AS (
-      SELECT t.file_path, t.git_uri, n.start_line, n.end_line
-      FROM t, LATERAL git_read_each(t.git_uri) g, LATERAL (SELECT unnest(parse_ast_list(g.text, 'python')) AS n)
-      WHERE ends_with(t.file_path, '/%s') AND n.type = 'function_definition' AND n.name = '%s'
+), jobs_dispatched AS (
+  SELECT array_agg(selfdispatch(sql)) AS receipts FROM jobs_rendered
+), failures_rendered AS (
+  SELECT tera_render($tera$
+    SELECT '{{ root }}' AS root, '{{ sha }}' AS sha, {{ run_id }} AS run_id, '{{ branch }}' AS branch, '{{ event }}' AS event,
+           '{{ job }}' AS job, ref_file, test_name, message
+    FROM read_duck_hunt_log($cmd$git -C {{ root }} fetch -q origin {{ sha }}; gh api --allow-escape-sequences repos/{{ repo }}/actions/jobs/{{ job_id }}/logs |$cmd$,
+      'regexp:\S+Z FAILED (?P<file>[^:\s]+)::(?:[^:\s]+::)*(?P<test_name>[^\s\[:]+)\S* - (?:.*\) )?(?P<message>.*)')
+    WHERE NOT starts_with(message, 'No matches found')
+  $tera$, job_row, autoescape := false) AS sql
+  FROM jobs_dispatched CROSS JOIN UNNEST(receipts) AS r(receipt) CROSS JOIN UNNEST(receipt.body::JSON[]) AS j(job_row)
+), failures_dispatched AS (
+  SELECT array_agg(selfdispatch(sql)) AS receipts FROM failures_rendered
+), code_rendered AS (
+  SELECT tera_render($tera$
+    WITH tree AS (
+      SELECT file_path, git_uri FROM git_tree('{{ root }}', '{{ sha }}') WHERE file_ext IN ('.py', '.sql')
+    ), span AS (
+      SELECT tree.file_path, tree.git_uri, node.start_line, node.end_line
+      FROM tree CROSS JOIN LATERAL git_read_each(tree.git_uri) AS blob
+      CROSS JOIN UNNEST(parse_ast_list(blob.text, 'python')) AS a(node)
+      WHERE ends_with(tree.file_path, '/{{ ref_file }}') AND node.type = 'function_definition' AND node.name = '{{ test_name }}'
     ), test_rows AS (
-      SELECT 'test' AS kind, span.file_path, printf('%%d-%%d', span.start_line, span.end_line) AS lines,
-             array_agg(DISTINCT b.commit_hash[:9] || ' ' || b.author_name || ' ' || b.author_date::DATE) AS who
-      FROM span, LATERAL git_blame_each(span.git_uri) b
-      WHERE b.line_number BETWEEN span.start_line AND span.end_line GROUP BY ALL
+      SELECT 'test' AS kind, span.file_path, span.start_line, span.end_line,
+             array_agg(DISTINCT {'commit': blame.commit_hash[:9], 'author': blame.author_name, 'date': blame.author_date::DATE}) AS who
+      FROM span CROSS JOIN LATERAL git_blame_each(span.git_uri) AS blame
+      WHERE blame.line_number BETWEEN span.start_line AND span.end_line GROUP BY ALL
     ), raised AS (
-      SELECT 'raised' AS kind, t.file_path, NULL AS lines, NULL::VARCHAR[] AS who
-      FROM t, LATERAL git_read_each(t.git_uri) g WHERE contains(g.text, $q$%s$q$)
+      SELECT 'raised' AS kind, tree.file_path
+      FROM tree CROSS JOIN LATERAL git_read_each(tree.git_uri) AS blob WHERE contains(blob.text, $q${{ message }}$q$)
     )
-    FROM test_rows UNION ALL FROM raised$s$,
-    f.root, f.sha, f.ref_file, f.test_fn, f.needle))::VARCHAR).body AS body
-  FROM failures f JOIN fetched x USING (root, sha)
-  WHERE contains(x.receipt, 'exit=0')
+    SELECT {{ run_id }} AS run_id, '{{ branch }}' AS branch, '{{ event }}' AS event, '{{ job }}' AS job,
+           '{{ ref_file }}' AS ref_file, '{{ test_name }}' AS test_name, $q${{ message }}$q$ AS message, *
+    FROM (FROM test_rows UNION ALL BY NAME FROM raised)
+  $tera$, failure_row, autoescape := false) AS sql
+  FROM failures_dispatched CROSS JOIN UNNEST(receipts) AS r(receipt) CROSS JOIN UNNEST(receipt.body::JSON[]) AS f(failure_row)
+), code_dispatched AS (
+  SELECT array_agg(selfdispatch(sql)) AS receipts FROM code_rendered
 )
-SELECT run_id, branch, event, job, ref_file, test_name, message, c.kind, c.file_path, c.lines, c.who
-FROM code CROSS JOIN UNNEST(from_json(body, '[{"kind":"VARCHAR","file_path":"VARCHAR","lines":"VARCHAR","who":"VARCHAR[]"}]')) AS t(c);
+SELECT receipt.* FROM code_dispatched CROSS JOIN UNNEST(receipts) AS t(receipt);
 ```
 
 Verified 2026-10-17 on inframe nightly run 39028546590 (Slack: "Integration tests FAILED"): one failure,
 `test_rls_portal_scopes.py::TestTenantIsolation::test_one_customer_cannot_read_anothers_condition_answers`,
 lines 412-471 all from `0965c169c ohad-inframe` (merged the night before), the error raised in
-`alembic/versions/0017_add_contact_person.py` and `0199.py` (the `trg_user_requires_contact_person` trigger).
+`alembic/versions/0017_add_contact_person.py` and `0199.py` (the `trg_user_requires_contact_person` trigger);
+the rewritten shape above returned the same three rows on 2026-10-17.
 The test creates a `CLIENT_ADMIN` user in a client org with no `ContactPerson`. Code stage ≈6 s on a ~20k-file
 tree. A job with no pytest `FAILED` line (a crash, a migration error before tests ran) returns no row here:
 fall back to the `##[error]` context recipe above for that job.
@@ -238,13 +254,13 @@ Dated one-liners. Add to this list; don't rewrite it.
   and misses lines. A `read_json` source shaped `X=… cmd |` grows a hive column `X`: pass `hive_partitioning := false`.
   `gh pr checks` exits non-zero when a check fails, and shellfs then returns **0 rows with no error** (quackapi
   #49, failing Format Check, read empty). End the command with `; true`.
-  `printf('%s', <BIGINT>)` errors; use `%d`.
 - 2026-10-17: from a failed test back to its code. `read_ast('git:///<repo>/<path>@<sha>', 'python')` reads a blob
-  straight off duck_tails, but takes a literal path; inside a lateral chain use `parse_ast_list(g.text, 'python')` over
+  straight off duck_tails, but takes a literal path; inside a lateral chain use `parse_ast_list(blob.text, 'python')` over
   `git_read_each`. `git_blame_each(git_uri)` takes a column; its `min_line`/`max_line` named params do not bind in
   LATERAL, so filter `line_number BETWEEN start_line AND end_line`. pytest prints paths relative to its rootdir
-  (`app/tests/…`, not `platform/backend/app/tests/…`): match the tree with `ends_with(file_path, '/' || ref_file)`.
-  A scheduled run's sha may be absent from the local clone: `git fetch origin <sha>` before `git_tree`.
+  (`app/tests/…`, not `platform/backend/app/tests/…`): match the tree with `ends_with(file_path, '/{{ ref_file }}')`
+  in the rendered statement. A scheduled run's sha may be absent from the local clone: `git fetch origin <sha>`
+  before `git_tree` (the recipe runs it ahead of `gh api` in the same command line).
 - 2026-09-23: `status_badge(status)` and `status_badge(errors, warnings[, running])` return `[FAIL]`,
   `[WARN]`, `[ OK ]`, `[ .. ]` or `[ ?? ]`. Useful as a page's status column.
 
@@ -252,10 +268,9 @@ Everything below was verified on this machine (2026-09-17, extended 2026-09-22):
 osx_arm64, `duck_hunt` 68ca1c4 and `zipfs`. Parse in your own `:memory:` client
 (`INSTALL duck_hunt FROM community; LOAD duck_hunt; INSTALL zipfs FROM community; LOAD zipfs;`
 — always allowed), or on dev: `~/duckdb-skills/server/setup.sql` loads both, so
-`read_duck_hunt_log('zip://' || zip || '/' || glob, format)` runs through the MCP `query` tool
-(`/duckstack:agent-door`). Land client-side results on dev with
-`quack_query('quack:localhost:9494', $$CREATE OR REPLACE TABLE … AS …$$, token := getenv('QUACK_TOKEN'))`
-or write them out with `COPY … TO` parquet. Read `/duckstack:duck` §4 and `/duckstack:quack`
+`read_duck_hunt_log('zip://<run.zip>/<glob>', '<format>')` runs through the MCP `query` tool
+(`/duckstack:agent-door`). Carry client-side results to dev as `COPY … TO` parquet and read the file
+there. Read `/duckstack:duck` §4 and `/duckstack:quack`
 first — the SQL process rules apply (reader first, keep the row, `array_agg` over `count` in
 base layers). Where the run and its zip come from, and the timing questions, are
 `/duckstack:ci-timing`.
@@ -320,13 +335,11 @@ parser covers — `pytest_text` returns 0 rows on xdist output (row above). Name
 schema columns (`severity`, `file`, `test_name`, `message`, `line`, `code`, `tool`).
 
 ```sql
-CREATE TEMP TABLE tests AS
-SELECT log_file, severity AS outcome, ref_file AS file, test_name, log_line_start
+SELECT log_file, severity AS outcome, array_agg(concat_ws('::', ref_file, test_name)) AS tests, len(tests) AS n
 FROM read_duck_hunt_log('zip://run.zip/*Backend Tests Shard*.txt',
-  'regexp:\[gw\d+\] \[\s*\d+%\] (?P<severity>PASSED|FAILED|SKIPPED|ERROR|XFAIL|XPASS) (?P<file>[^:\s]+)::(?P<test_name>\S+)');
-
-SELECT log_file, outcome, array_agg(file || '::' || test_name) AS tests, len(tests) AS n
-FROM tests WHERE outcome <> 'PASSED' GROUP BY ALL;
+  'regexp:\[gw\d+\] \[\s*\d+%\] (?P<severity>PASSED|FAILED|SKIPPED|ERROR|XFAIL|XPASS) (?P<file>[^:\s]+)::(?P<test_name>\S+)')
+WHERE severity IN ('FAILED', 'SKIPPED', 'ERROR', 'XFAIL', 'XPASS')
+GROUP BY ALL;
 
 -- the summary lines, same reader
 FROM read_duck_hunt_log('zip://run.zip/*Backend Tests Shard*.txt', 'regexp:=+ (?P<message>\d+ passed.*) =+');
@@ -334,53 +347,37 @@ FROM read_duck_hunt_log('zip://run.zip/*Backend Tests Shard*.txt', 'regexp:=+ (?
 
 ### Per-test time from the Actions timestamps
 
-xdist prints no durations, but every Actions log line starts with a UTC timestamp. Keep it in
-`message` and the worker in `code`; a test's wall time is the gap to the previous result line
-**on the same worker** (so it includes that test's fixtures — the number a human cares about):
-
-```sql
--- read_duck_hunt_log(source, format := 'auto', severity_threshold := 'all', content := 'full', context := 0)
-CREATE OR REPLACE TABLE raw_tests AS
-SELECT * FROM read_duck_hunt_log('zip://raw/run-<id>.zip/*Backend Tests Shard*.txt',
-  'regexp:(?P<message>\S+Z) \[(?P<code>gw\d+)\] \[\s*\d+%\] (?P<severity>PASSED|FAILED|SKIPPED|ERROR|XFAIL|XPASS) (?P<file>[^:\s]+)::(?P<test_name>\S+)');
-
-CREATE OR REPLACE TABLE tests AS
-SELECT log_file, right(message, 28)::TIMESTAMP AS ts, error_code AS gw, severity AS outcome,
-       ref_file AS file, test_name,
-       date_diff('millisecond', lag(ts) OVER (PARTITION BY log_file, gw ORDER BY ts), ts) AS ms
-FROM raw_tests;
-```
+xdist prints no durations, but every Actions log line starts with a UTC timestamp. The
+`pytest_xdist_tests` view in `recipes.sql` keeps it in `message` and the worker in `code`; a test's
+wall time `ms` is the gap to the previous result line **on the same worker** (so it includes that
+test's fixtures — the number a human cares about).
 
 - `right(message, 28)` — the first line of each job file carries a UTF-8 BOM before the
   timestamp; the last 28 characters are the timestamp alone.
-- `PARTITION BY log_file, gw` — one shard file, one xdist worker. The first test on each worker
+- `PARTITION BY job_id, gw` — one job log, one xdist worker. The first test on each worker
   has `ms` NULL (no previous line); keep the row.
-- Per shard: `list_sum(array_agg(ms) FILTER (WHERE ms IS NOT NULL))` is its worker-seconds —
-  the shard-balance number `/duckstack:ci-timing` compares.
+- Per shard: `sum(ms)` (NULLs are skipped) is its worker-milliseconds — the shard-balance number
+  `/duckstack:ci-timing` compares.
 
 **Plateaus are timeouts, not work.** A test that lands within a few ms of a round number of
 seconds (5.0 s, 10.0 s) is waiting on a timeout or a retry sleep — the cheapest seconds to win:
 
 ```sql
-SELECT round(ms / 1000.0) AS plateau_s,
-       array_agg(file || '::' || test_name ORDER BY file, test_name) AS names, len(names) AS n
-FROM tests
-WHERE ms IS NOT NULL AND abs(ms - round(ms / 1000.0) * 1000) < 150 AND ms >= 2000
+SELECT round(ms / 1000.0) AS plateau_s, array_agg(nodeid ORDER BY nodeid) AS names, len(names) AS n
+FROM pytest_xdist_tests
+WHERE abs(ms - round(ms / 1000.0) * 1000) < 150 AND ms >= 2000
 GROUP BY plateau_s ORDER BY plateau_s DESC;
 ```
 
 ## vitest: the per-file reader
 
 vitest prints one line per test file: `✓ src/…/X.test.tsx (83 tests) 15247ms`, wrapped in ANSI
-colour codes. Verified 2026-09-22 on inframe run 35796637550 (three frontend shards):
+colour codes. The `vitest_files` view in `recipes.sql` reads it (`ref_file` = the test file,
+`error_code` = its test count, `ref_line` = its wall ms). Verified 2026-09-22 on inframe run
+35796637550 (three frontend shards):
 
 ```sql
-CREATE OR REPLACE TABLE raw_fe AS
-SELECT * FROM read_duck_hunt_log('zip://raw/run-<id>.zip/*Frontend Tests Shard*.txt',
-  'regexp:(?P<message>\S+Z)  \S+ (?P<file>src/\S+) \S*?\(\S*?(?P<code>\d+) tests\S* (?P<line>\d+)\S*ms');
--- ref_file = the test file, error_code = its test count (VARCHAR), ref_line = its wall ms (INTEGER)
-SELECT log_file, ref_file, error_code::INTEGER AS n_tests, ref_line AS file_ms
-FROM raw_fe ORDER BY file_ms DESC;
+FROM vitest_files ORDER BY file_ms DESC;
 ```
 
 | pattern around `(?P<code>\d+)` | result on that run |
@@ -422,7 +419,7 @@ parser); a glob or `context := 1` forces batch mode and fills them. `fingerprint
 - A missing file returns **0 rows, no error**, `ignore_errors` or not. Check `len(array_agg(fingerprint))` before trusting an empty result.
 - `severity_threshold` typos silently become `'warning'` and drop every PASS row.
 - Named parameters do not bind inside `LATERAL` (`severity_threshold := 'x'` becomes a column ref). Filter in `WHERE` instead.
-- `read_duck_hunt_workflow_log` is not an in-out function: it cannot take a column as source. `read_duck_hunt_log` / `parse_duck_hunt_log` can (`FROM t, LATERAL parse_duck_hunt_log(t.content, 'auto') e`).
+- `read_duck_hunt_workflow_log` is not an in-out function: it cannot take a column as source. `read_duck_hunt_log` / `parse_duck_hunt_log` can (`FROM logs CROSS JOIN LATERAL parse_duck_hunt_log(logs.content, 'auto') AS e`).
 - A format ending in `.json` or starting `config:` is fetched as a **custom parser config**, not a format name. Never write `format := 'eslint.json'`.
 - `execution_time` unit is the tool's; docs disagree with themselves (ms vs s). pytest and go test are seconds.
 - Windows binaries do not exist; macOS arm64 and Linux do.
@@ -440,13 +437,12 @@ LOAD zipfs; LOAD duck_hunt;
 COPY (SELECT 35195699417 AS run_id, * FROM read_duck_hunt_workflow_log('run.zip', 'github_actions_zip'))
   TO 'raw/ci_events-35195699417.parquet' (FORMAT parquet);
 
--- dev (the `sql` tool): the table is the union of every landed run
-CREATE OR REPLACE TABLE ci_events AS
+-- dev (the `query` tool): every landed run, read in place
 SELECT * FROM read_parquet('/abs/path/raw/ci_events-*.parquet', union_by_name := true, filename := true);
 ```
 
 Cross-run questions are then joins on `(job_name, unit, fingerprint)`; the flaky-test question is
-`tests` (above) grouped by `file, test_name` across runs with `array_agg(outcome)`.
+`pytest_xdist_tests` grouped by `nodeid` across runs with `array_agg(outcome)`.
 
 ## Where the reference lives
 

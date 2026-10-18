@@ -1,8 +1,8 @@
 # duckdb-pdf findings from reading a real 259-page book
 
 Source: *Inference Engineering* (Kiely, InDesign 16.4, 432x648pt, 259 pp), read 2026-09-29 on duckdb-pdf `c804ebc`
-(branch `layout-auto-default`, PR #21). Every item was measured, not inferred; queries are in `book-digest.sql` or quoted
-here. Ranked by how much each costs a reader. Two review notes on the layout engine are at the end.
+(branch `layout-auto-default`, PR #21). Every item was measured, not inferred, with word-geometry queries that the
+outline/chunk `book-digest.sql` has since replaced. Ranked by how much each costs a reader. Two review notes on the layout engine are at the end.
 
 ## Status (2026-09-29): each has a fix on its own branch off `main`
 
@@ -28,7 +28,7 @@ word containing a ligature.
 Likely cause (read, not yet proven by a run): `LayoutWordsFromBoxes` (src/pdf_extension.cpp ~603) takes poppler `text_box`es as
 they come, and `poppler::text_box::has_space_after()` is never called anywhere in `src/`. Suggested fix: carry
 `has_space_after` (or the geometric test `next.x0 - cur.x1 < 0.5pt` on one line) into `LayoutWord` and merge those boxes
-before line/word emission. Workaround that works today: glue words with gap < 0.5pt in SQL (in `book-digest.sql`).
+before line/word emission. Workaround that works today: glue words with gap < 0.5pt in SQL over `read_pdf_words`.
 
 **B2. read_pdf_tables: poor recall and precision on borderless tables.**
 On this book it fires on 8 pages: 5 are the dot-leader TOC (pp5-9); p90 is a clean real table; on pp123 and 141 it finds the
@@ -67,7 +67,7 @@ physical page; a `label` column on `read_pdf`/`read_pdf_lines`/`read_pdf_words` 
 **I3. read_pdf_words has no `line_id`.** The layout engine computes lines (that is what `read_pdf_lines` is), but the word grain
 returns only `column_index`, so every consumer re-derives lines from `y0` (in this file: y jump > 3pt).
 
-**I4. Roles.** What `book-digest.sql` derives from size/position/geometry (furniture, kicker, caption, table, note) is what a
+**I4. Roles.** What the geometry digest derived from size/position/geometry (furniture, kicker, caption, table, note) is what a
 document-structure reader needs. `read_pdf_elements` could expose `depth`, `font_name`, and `furniture`/`caption`/`table_row`
 types instead of `paragraph`.
 

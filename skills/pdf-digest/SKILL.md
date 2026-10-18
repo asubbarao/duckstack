@@ -15,22 +15,23 @@ page_start, page_end, n_chars, heading`). No font-size thresholds or vocabulary,
 
 ## Run it
 
-`references/book-digest.sql`: edit the glob in its two source reads, then on dev (shellfs, self-dispatched):
+`references/book-digest.sql` is one `COPY` statement: edit the glob in its two source reads, then run it on dev
+through shellfs in a `:memory:` client (one literal reader call, no dispatch needed):
 
 ```sql
-SELECT http_post('http://127.0.0.1:9495/sql', MAP {'Content-Type': 'application/json'}, json_object('sql',
-  $s$SELECT line_number, content FROM read_lines('cd <out dir> && duckdb :memory: -f /Users/aloksubbarao/duckdb-skills/skills/pdf-digest/references/book-digest.sql 2>&1 |')$s$))
+SELECT line_number, content
+FROM read_lines('cd <out dir> && duckdb :memory: -f /Users/aloksubbarao/duckdb-skills/skills/pdf-digest/references/book-digest.sql 2>&1 |');
 ```
 
-It writes `cards.md` to that directory and leaves `pdf_sections` (one row per contents entry, every chunk under it
-with its pages and text) and `pdf_card` (one card per file). Verified on dev 2026-10-09 over `~/Downloads/*.pdf`:
-a 259-page book (146 outline entries), a resume, a CI report, a form, a lab and two decks; 188 card lines.
+It writes `cards.md` (one card per file) to that directory and leaves no tables. Verified on dev 2026-10-17 over five
+PDFs in `~/Downloads` (two outlines, three from chunk headings); 2026-10-09 over the whole folder, including a
+259-page book with 146 outline entries.
 
 ## Reading it
 
 ```sql
--- a section's text, in order
-SELECT c.page_start, c.text FROM pdf_sections s, UNNEST(s.chunks) AS t(c) WHERE s.title = '2.2.3 Attention' ORDER BY c.chunk_idx;
+-- a section's text, in order: the chunks pdf_chunks filed under that heading
+SELECT page_start, text FROM pdf_chunks('<file>.pdf') WHERE heading = '2.2.3 Attention' ORDER BY chunk_idx;
 -- where a topic is covered: full-text search over the chunks (fts), ranked by BM25
 ```
 

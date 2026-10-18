@@ -107,12 +107,13 @@ anything is committed. See `/codex` for the exact `-m` identifiers and the sandb
 State these as the end state, never as "do not *add* one" — softening a rule into a
 property of the diff blesses every existing violation.
 
-- **No `.sh` files.** Bash a pipeline needs lives in a template string inside the
-  `.sql` and runs through shellfs: `read_csv('bash -c ''…'' |')`. Stream with
-  `read_csv` / `read_json`, batch with `read_text` / `read_blob`. Pass `read_csv`
-  parameters explicitly — `delim`, `header`, `columns`/`names`, `types`, `quote` —
-  and never leave a `column0`. The only legitimate shell artifact is a daemonizing
-  plist. Starting a server for the length of a measurement is pipeline, not daemon.
+- **No `.sh` files.** Bash a pipeline needs lives in a dollar-quoted command inside the
+  `.sql` and runs through shellfs: `read_csv($cmd$<command> |$cmd$)`; commands built from
+  rows are self-dispatched, one literal statement per row. Stream with `read_csv` /
+  `read_json`, batch with `read_text` / `read_blob`. Readers bring their own columns: pass
+  the options the input needs (`delim`, `header`), never a `columns`/`types` list, and
+  never leave a `column0`. The only legitimate shell artifact is a daemonizing plist.
+  Starting a server for the length of a measurement is pipeline, not daemon.
 - **Regex: allowed on web pages and log lines, banned on backend queries.** Unstructured text
   from outside — a fetched page, a CI or tool log (duck_hunt's `regexp:` format) — may be
   matched with a regex; say so in one line. Anything structured (paths, hive keys, JSON,
@@ -129,12 +130,13 @@ property of the diff blesses every existing violation.
   worktree; anywhere else it is listed for the main agent), and the deliverable must not
   depend on it. Python outside the data path only where genuinely needed,
   through `uv` (`uvx …`), never a hand-built venv.
-- **A name in backticks is an extension**: `INSTALL <name> FROM community; LOAD <name>;` in the
-  worker's own `:memory:` client is always allowed — say so in the brief.
+- **A name in backticks is an extension**: `INSTALL <name> FROM community;` then `LOAD <name>;`
+  (each its own statement), on dev or in the worker's own `:memory:` client, is always
+  allowed — say so in the brief.
 - **Delete nothing outside your own worktree** — list it for the main agent.
 - Nothing pushed, no PR, nothing another human can see, without his approval.
-- Never `-init` against DuckDB; it replaces `~/.duckdbrc`. Never `SET`/`INSTALL`/
-  `LOAD` against the dev quack.
+- Never `-init` against DuckDB; it replaces `~/.duckdbrc`. Never `SET` against dev, and
+  never create tables, views or macros there (they shadow boot objects).
 - Crude-oil repos are material to read, never services to depend on.
 - **DuckDB is part of the stack by decision, in the backend too** (INF-1535 shipped it in PR #1653).
   A finding that says replace DuckDB with Python, bash or the stdlib, or avoid it as "a new

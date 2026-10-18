@@ -33,12 +33,13 @@ nothing. A first query or an HTTP 200 is not completion.
 ## Step 1 — Land the raw pages
 
 `lake.agents.ext_fetch` is the page log on dev: `url`, `fetched_at`, `response` JSON
-`{status, body}`. Every crawl lands there; `agents.ext_page` is the newest good fetch per url.
-No new table per crawl.
+`{status, body}`. Every crawl lands there; the newest fetch per url is
+`arg_max(response ->> 'body', fetched_at) … GROUP BY url`. No new table per crawl.
 
 A fixed seed set is literal statements, one per url (verified 2026-10-09, 408,266 chars landed):
 
 ```sql
+-- timeout 30 s; one worker; batch 1; no delay; no link following, depth 0; no cache; one page.
 INSERT INTO lake.agents.ext_fetch BY NAME
 SELECT 'https://github.com/Angelerator/Sazgar' AS url, now() AS fetched_at,
        json_object('status', 200, 'body', content) AS response
@@ -49,34 +50,48 @@ FROM read_text('curl -sSL --fail --max-time 30 https://github.com/Angelerator/Sa
 due and is retried. `--max-time` bounds every fetch. Add `-A '<agent>'`, `-H` or cookies as
 the site needs; they are curl flags, not a framework.
 
+Every crawl states its limits, in a comment above the query: timeout, workers, batch size,
+delay, link-following, depth, cache and result limits. An API error page is never a seed.
+
 URLs held in a column are self-dispatched, one literal statement per row, the HTTP status as
-the receipt (this is the hourly catalog job in `server/setup.sql`):
+the receipt ([references/crawl_rows.sql](references/crawl_rows.sql) is the same shape):
 
 ```sql
-WITH due AS (
-    SELECT url FROM agents.ext_stale ORDER BY url LIMIT 90
-)
-SELECT url, http_post('http://127.0.0.1:9495/sql', MAP {'Content-Type': 'application/json'}, json_object('sql', tera_render($t$
+-- timeout 30 s per fetch; workers: one post per url, sent together; batch 90; no delay;
+-- no link following, depth 0; cache: a url fetched in the last day is skipped; one page per url.
+WITH seeds AS (
+    SELECT unnest(['https://<site>/<page-a>', 'https://<site>/<page-b>']) AS url, now() AS fetched_at
+), due AS (
+    SELECT url, fetched_at FROM seeds
+    ANTI JOIN (FROM lake.agents.ext_fetch WHERE fetched_at > now() - INTERVAL 1 DAY) AS recent USING (url)
+    ORDER BY url LIMIT 90
+), rendered AS (
+    SELECT tera_render($tera$
 INSERT INTO lake.agents.ext_fetch BY NAME
-SELECT '{{ url }}' AS url, now() AS fetched_at, json_object('status', 200, 'body', content) AS response
-FROM read_text('curl -sSL --fail --max-time 30 {{ url }} |')
-$t$, json_object('url', url), autoescape := false))) ->> '$.status' AS status
-FROM due;
+SELECT '{{ url }}' AS url, '{{ fetched_at }}'::TIMESTAMPTZ AS fetched_at, json_object('status', 200, 'body', content) AS response
+FROM read_text($cmd$curl -sSL --fail --max-time 30 '{{ url }}' |$cmd$)
+$tera$, due::JSON, autoescape := false) AS sql
+    FROM due
+), dispatched AS (
+    SELECT array_agg(selfdispatch(sql)) AS receipts FROM rendered
+)
+SELECT receipt.status, receipt.body FROM dispatched CROSS JOIN UNNEST(receipts) AS t(receipt);
 ```
 
 Appends into one DuckLake table do not conflict; concurrent `MERGE`/`UPDATE` of the same table do
 (422), so land rows, never upsert.
 
-There is no "next round" code. The url set is a view: seeds, plus the same-site links of the pages
-already landed, anti-joined against `agents.ext_page` (that is what `agents.ext_url` and
-`agents.ext_stale` are for the catalog). The hourly cron fetches whatever that view says is due,
-so a crawl grows one round per tick until the view is empty.
+There is no "next round" code. The url set is a query: seeds, plus the same-site links of the pages
+already landed, anti-joined against recent fetches as above. Rerun it (or schedule it with
+`cron()`) and a crawl grows one round per run until nothing is due. The only scheduled fetch on
+dev today is the daily extension-catalog refresh in `server/ext_catalog.sql`.
 
 ## Step 2 — Look before parsing
 
 ```sql
-SELECT url, fetched_at, length(response ->> 'body') AS chars, left(response ->> 'body', 50) AS head
-FROM agents.ext_page WHERE starts_with(url, 'https://<site>/') ORDER BY url;
+SELECT url, fetched_at, response ->> 'status' AS status, length(response ->> 'body') AS chars,
+       left(response ->> 'body', 50) AS head
+FROM lake.agents.ext_fetch WHERE starts_with(url, 'https://<site>/') ORDER BY url, fetched_at LIMIT 7;
 ```
 
 Never return a page body to the conversation: lengths, heads, counts, and bounded block or link rows.
@@ -96,7 +111,8 @@ Never return a page body to the conversation: lengths, heads, counts, and bounde
 
 ```sql
 WITH page AS (
-    SELECT url, (response ->> 'body')::HTML AS html FROM agents.ext_page WHERE url = 'https://<site>/<page>'
+    SELECT url, arg_max(response ->> 'body', fetched_at)::HTML AS html
+    FROM lake.agents.ext_fetch WHERE url = 'https://<site>/<page>' GROUP BY url
 )
 SELECT url, b.element_order AS n, b.element_type AS type, left(trim(b.content), 120) AS text
 FROM page CROSS JOIN UNNEST(html_to_duck_blocks(html)) AS t(b)
@@ -111,7 +127,7 @@ URLs are strings: `url_resolve`, `url_origin`, `urlpattern_test`, `starts_with`,
 |---|---|---|
 | one page lists every target (TOC, index, API listing) | **map** — parse the authored map, one fan-out | 1 |
 | content is K known hops away (listing → descriptor → content) | **rounds** — each round one dispatch of the links the previous round found; never `WITH RECURSIVE` | K |
-| no map, unknown depth | **walk** — same-site links of landed pages, bounded by `LIMIT` per round (the readthedocs job in `server/` is one) | n |
+| no map, unknown depth | **walk** — same-site links of landed pages, bounded by `LIMIT` per round | n |
 | pages are table-carriers keyed by an entity; the ask is relational | **crossjoin** — `html_extract_tables` per entity, typed join the site never renders | 1 + join |
 | it should refresh on its own | **staged** — a `cron()` line in `server/setup.sql` over a stale view; run 2 fetches 0 pages | — |
 | any of the above behind auth / an SPA | `--chrome` (below), or curl with the session cookie | — |

@@ -62,12 +62,13 @@ Run all in a single DuckDB call:
 First, check if the DuckDB CLI itself is up to date:
 
 ```bash
-CURRENT=$(duckdb --version | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
-LATEST=$(curl -fsSL https://duckdb.org/data/latest_stable_version.txt)
+"$DUCKDB" :memory: -json -c "INSTALL shellfs FROM community;" -c "LOAD shellfs;" -c "
+SELECT ltrim(version(), 'v') AS current, trim(content) AS latest, current = latest AS up_to_date
+FROM read_text('curl -fsSL --max-time 30 https://duckdb.org/data/latest_stable_version.txt |');"
 ```
 
-- If `CURRENT` == `LATEST` → report DuckDB CLI is up to date.
-- If `CURRENT` != `LATEST` → ask the user:
+- If `up_to_date` → report DuckDB CLI is up to date.
+- Otherwise → ask the user:
   > **DuckDB CLI is outdated** (installed: `CURRENT`, latest: `LATEST`). Upgrade now?
 
   If the user agrees, detect the platform and run the appropriate upgrade command:

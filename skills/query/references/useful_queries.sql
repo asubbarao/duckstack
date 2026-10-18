@@ -15,45 +15,37 @@
 -- cannot see table functions (read_lines, read_duck_hunt_log, crawl ... appear in neither parse_functions
 -- nor parse_tables) and parse_statements re-serializes SQL and drops every comment. So extension usage,
 -- intent, shape and provenance are the comments; everything else is derived.
--- Index of the shelf (title, parsable, statements): split the file on chr(10) || '-- ## ', give the parser
--- the text after each title line, and read the comment lines with string_split; see parser_tools.
+-- Index of the shelf (title, parsable, statements): split the file on e'\n-- ## ', give the parser the text
+-- after each title line, and read the comment lines with string_split; see parser_tools.
 --
--- Append, never rewrite. One SQL body, two statements: render the entry as a bash `cat >>` heredoc into a
--- file, then run that file through one shellfs read on a literal path (read_lines cannot take the rendered
--- text as a column; that is the binder error self-dispatch exists for). The heredoc tag must not occur
--- inside the query. The entries below were added this way.
---   COPY (SELECT tera_render($t$cat >> ~/duckdb-skills/skills/query/references/useful_queries.sql <<'{{ tag }}'
---
---
---   -- ## {{ title }} ({{ agent }}, {{ date }})
---   -- when: {{ when }}
---   -- tested: {{ tested }}
---   {{ sql }};
---   {{ tag }}
---   echo appended exit=$?
---   $t$, json_object('tag', 'END_ENTRY', 'title', ..., 'agent', ..., 'date', ..., 'when', ..., 'tested', ...,
---                    'sql', ...), autoescape := false))
---   TO '<scratch>/raw/append_entry.bash' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '', DELIMITER '\x01');
---   SELECT line_number, content FROM read_lines('bash <scratch>/raw/append_entry.bash 2>&1 |', "trim" := true);
--- Expect one row, `appended exit=0`. (COPY ... TO with APPEND overwrote the file on the installed DuckDB.)
+-- Append at the bottom with a Bash heredoc or the editor (files are written directly, not assembled in SQL).
+-- Every entry is in the house shape: values declared in the first CTE, a template that only substitutes,
+-- array_agg(selfdispatch(sql)) then receipt.*; no FILTER, no lateral joins, no OR chains.
 
 
 -- ## Where is a long background job? (Claude Sonnet 5.5, 2026-09-29)
 -- when: a build, test run or formatter was started detached and wrote FMT=/BUILD=/TEST= lines to a task
 --   output file and its own log; ask the files instead of sleeping in a bash loop. The background job
 --   notifies on completion anyway; this is for looking mid-flight.
--- uses: read_lines (core + shellfs pipe paths)
--- returns: (source VARCHAR 'task'|'suite', line_number BIGINT, content VARCHAR): matching lines only; an
---   empty `task` group means the job has not reached that stage, `TEST=0` means passed.
--- tested: duckdb-pdf `make release` / `make test_release` runs, task output + log files.
-SELECT 'task' AS source, line_number, content
-FROM read_lines('<task output file>', "trim" := true)
-WHERE CASE WHEN starts_with(content, 'FMT=') THEN true WHEN starts_with(content, 'BUILD=') THEN true
-           WHEN starts_with(content, 'TEST=') THEN true ELSE false END
-UNION ALL
-SELECT 'suite', line_number, content
-FROM read_lines('<test log>', "trim" := true)
-WHERE CASE WHEN contains(content, 'All tests passed') THEN true WHEN contains(content, 'test cases') THEN true ELSE false END;
+-- uses: read_lines, tera_render, selfdispatch
+-- returns: one receipt per file; its body holds (source VARCHAR 'task'|'suite', line_number BIGINT, content VARCHAR)
+--   for the matching lines only; an empty `task` body means the job has not reached that stage, `TEST=0` means passed.
+-- tested: duckdb-pdf `make release` / `make test_release` runs; reshaped 2026-10-17 and rerun on two fixture files.
+WITH logs AS (
+    SELECT 'task' AS source, '<task output file>' AS path, $m$['FMT=', 'BUILD=', 'TEST=']$m$ AS markers
+    UNION ALL
+    SELECT 'suite', '<test log>', $m$['All tests passed', 'test cases']$m$
+), rendered AS (
+    SELECT tera_render($t$
+        SELECT '{{ source }}' AS source, line_number, content
+        FROM read_lines('{{ path }}', "trim" := true)
+        WHERE len(list_filter({{ markers }}, m -> contains(content, m))) > 0
+    $t$, l::JSON, autoescape := false) AS sql
+    FROM logs AS l
+), dispatched AS (
+    SELECT array_agg(selfdispatch(sql)) AS receipts FROM rendered
+)
+SELECT receipt.* FROM dispatched CROSS JOIN UNNEST(receipts) AS t(receipt);
 
 
 -- ## Why did this CI job fail? (Claude Sonnet 5.5, 2026-09-29)
@@ -84,7 +76,7 @@ WHERE severity = 'error';
 --   (local time of the first tool call), skills VARCHAR[] (distinct Skill names called), n_ask_user, n_linear_writes,
 --   n_pr_creates, n_design_doc_writes BIGINT (sums of 0/1 flags), n_tools BIGINT (len of all tool calls).
 -- tested 2026-10-16 on agent.lines, 2-day window, phrase 'useful_queries.sql', file 'SKILL.md': 3 Claude sessions,
---   958 / 309 / 16 tool calls.
+--   958 / 309 / 16 tool calls. Rerun 2026-10-17 after the content unnest became a TRY_CAST to JSON[]: 1-day window, 3 sessions.
 WITH recent AS (
   SELECT e.session, l.transcript, (l.timestamp ->> '$')::TIMESTAMPTZ AS ts,
          CASE WHEN contains(l.transcript, '/.codex/') THEN 'codex' ELSE 'claude' END AS source,
@@ -97,14 +89,14 @@ WITH recent AS (
 ), messages AS (
   SELECT session, ts, role, coalesce(block ->> 'text', block ->> '$') AS text
   FROM (SELECT *, coalesce(msg ->> 'role', 'agent') AS role,
-               unnest(CASE json_type(msg -> 'content') WHEN 'ARRAY' THEN json_extract(msg, '$.content[*]') ELSE [msg -> 'content'] END) AS block
+               unnest(coalesce(TRY_CAST(msg -> 'content' AS JSON[]), [msg -> 'content'])) AS block
         FROM recent WHERE msg IS NOT NULL)
   WHERE coalesce(block ->> 'type', 'text') IN ('text', 'input_text', 'output_text')
 ), topic AS (
   SELECT DISTINCT session FROM messages WHERE role = 'user' AND contains(text, '<phrase from the brief>')
 ), calls AS (
   SELECT session, source, ts, block ->> 'name' AS tool_name, block -> 'input' AS input
-  FROM (SELECT *, unnest(json_extract(message, '$.content[*]')) AS block FROM recent WHERE type = 'assistant')
+  FROM (SELECT *, unnest(TRY_CAST(message -> 'content' AS JSON[])) AS block FROM recent WHERE type = 'assistant')
   WHERE block ->> 'type' = 'tool_use'
   UNION ALL BY NAME
   SELECT session, source, ts, payload ->> 'name' AS tool_name,
@@ -114,7 +106,7 @@ WITH recent AS (
   SELECT c.session, c.source, c.ts, c.tool_name,
          CASE WHEN c.tool_name = 'Skill' THEN c.input ->> 'skill' END AS skill_name,
          CASE WHEN c.tool_name = 'AskUserQuestion' THEN 1 ELSE 0 END AS is_ask_user,
-         CASE WHEN contains(c.tool_name, 'save_issue') THEN 1 WHEN contains(c.tool_name, 'save_project') THEN 1 ELSE 0 END AS is_linear_write,
+         CASE WHEN len(list_filter(['save_issue', 'save_project'], w -> contains(c.tool_name, w))) > 0 THEN 1 ELSE 0 END AS is_linear_write,
          CASE WHEN contains(c.input::VARCHAR, 'gh pr create') THEN 1 ELSE 0 END AS is_pr_create,
          CASE WHEN contains(c.input::VARCHAR, '<design doc file name>') AND c.tool_name IN ('Write', 'Edit', 'apply_patch', 'shell', 'Bash', 'exec_command', 'exec') THEN 1 ELSE 0 END AS is_design_doc_write
   FROM calls c SEMI JOIN topic t ON t.session = c.session
@@ -137,24 +129,28 @@ FROM flags f JOIN cwds w USING (session) GROUP BY f.source, f.session, w.cwds OR
 -- returns: one row per author login: n_prs, n_merged, n_closed_unmerged, n_ship_fingerprint BIGINT,
 --   pct_ship_fingerprint DOUBLE, n_no_issue_branch BIGINT, closed_unmerged BIGINT[], no_issue_branch BIGINT[].
 -- tested: inframe-risk/inframe, 500 PRs to 2026-10-08: Ohad 94% fingerprint 0 closed; Nando 87% 3 closed; Alok 43% 29 closed.
+-- reshaped 2026-10-17 (list comprehensions instead of FILTER), rerun on 500 PRs: ohad 95%, Nando 82%, asubbarao-ifr 60%.
 WITH prs AS (
   SELECT * EXCLUDE (author), author.login AS login,
-         CASE WHEN contains(body, '## Pre-Landing Review') THEN 1 ELSE 0 END AS has_ship_body,
-         CASE WHEN contains(headRefName, '/inf-') THEN 1 ELSE 0 END AS has_issue_branch,
+         contains(body, '## Pre-Landing Review') AS has_ship_body,
+         contains(headRefName, '/inf-') AS has_issue_branch,
          CASE WHEN mergedAt IS NOT NULL THEN 'merged' WHEN closedAt IS NOT NULL THEN 'closed' ELSE 'open' END AS outcome
   FROM read_json('<prs_all.json>')
 ), per_author AS (
-  SELECT login, array_agg(number ORDER BY number) AS prs,
-         array_agg(number ORDER BY number) FILTER (WHERE outcome = 'merged') AS merged,
-         array_agg(number ORDER BY number) FILTER (WHERE outcome = 'closed') AS closed_unmerged,
-         array_agg(number ORDER BY number) FILTER (WHERE has_ship_body = 1) AS ship_fingerprint,
-         array_agg(number ORDER BY number) FILTER (WHERE has_issue_branch = 0) AS no_issue_branch
+  SELECT login, array_agg({number: number, outcome: outcome, ship: has_ship_body, issue_branch: has_issue_branch} ORDER BY number) AS prs
   FROM prs GROUP BY login
+), lists AS (
+  SELECT login, prs,
+         [p.number FOR p IN prs IF p.outcome = 'merged'] AS merged,
+         [p.number FOR p IN prs IF p.outcome = 'closed'] AS closed_unmerged,
+         [p.number FOR p IN prs IF p.ship] AS ship_fingerprint,
+         [p.number FOR p IN prs IF NOT p.issue_branch] AS no_issue_branch
+  FROM per_author
 )
 SELECT login, len(prs) AS n_prs, len(merged) AS n_merged, len(closed_unmerged) AS n_closed_unmerged,
        len(ship_fingerprint) AS n_ship_fingerprint, round(100.0 * len(ship_fingerprint) / len(prs)) AS pct_ship_fingerprint,
        len(no_issue_branch) AS n_no_issue_branch, closed_unmerged, no_issue_branch
-FROM per_author ORDER BY n_prs DESC LIMIT 10;
+FROM lists ORDER BY n_prs DESC LIMIT 10;
 
 
 -- ## Definitions in one file at a commit (Opus 5.5, 2026-10-17)
@@ -174,20 +170,77 @@ ORDER BY start_line;
 -- returns: the dispatch receipt (status 200, body Count); then read_parquet(<out_file>) gives name, start_line, end_line, file_path (commit-pinned git:// URI).
 -- tested: inframe-w5 HEAD, all of platform/backend/app/tests, 4 names → 20 definitions.
 WITH python_files AS (
-    SELECT list(quote_literal(t.git_uri) ORDER BY t.file_path) AS uris
-    FROM git_tree('<worktree>', 'HEAD') t
-    WHERE t.kind = 'file' AND starts_with(t.file_path, '<folder>/') AND ends_with(t.file_path, '.py')
+    SELECT list(quote_literal(git_uri) ORDER BY file_path) AS uris
+    FROM git_tree('<worktree>', 'HEAD')
+    WHERE kind = 'file' AND starts_with(file_path, '<folder>/') AND ends_with(file_path, '.py')
 ), search AS (
-    SELECT uris, ['<name1>', '<name2>'] AS names, '<out_file>.parquet' AS out_file FROM python_files
+    SELECT uris, list_transform(['<name1>', '<name2>'], n -> quote_literal(n)) AS names,
+           '<out_file>.parquet' AS out_file
+    FROM python_files
 ), rendered AS (
     SELECT tera_render($t$
 COPY (
     SELECT name, start_line, end_line, file_path
     FROM read_ast([{{ uris | join(sep=", ") }}], 'python')
-    WHERE type = 'function_definition' AND name IN ('{{ names | join(sep="', '") }}')
+    WHERE type = 'function_definition' AND name IN ({{ names | join(sep=", ") }})
 ) TO '{{ out_file }}' (FORMAT parquet)
-$t$, s::JSON, autoescape := false) AS sql FROM search s
-), posted AS (
+$t$, s::JSON, autoescape := false) AS sql FROM search AS s
+), dispatched AS (
     SELECT array_agg(selfdispatch(sql)) AS receipts FROM rendered
 )
-SELECT r.status, r.body FROM posted CROSS JOIN UNNEST(receipts) AS t(r);
+SELECT receipt.* FROM dispatched CROSS JOIN UNNEST(receipts) AS t(receipt);
+-- rerun 2026-10-17 on inframe HEAD app/tests with the names prequoted in SQL: Count 2.
+-- ## inframe test files with their last pytest run, per checkout (entries-style, PR #1576)
+-- when: comparing test timings across worktrees. List the checkouts and their JUnit paths; nothing else changes.
+--   Each checkout's run writes JUnit to platform/backend/.pytest_cache/junit.xml (git-ignored), e.g.
+--   `uv run pytest app/tests/ -q --junitxml=.pytest_cache/junit.xml`. A checkout with no run sends nothing.
+-- uses: duck_tails (git_tree), duck_hunt (read_duck_hunt_log 'junit_xml'), tera_render, selfdispatch.
+-- returns: one receipt per checkout; its body holds (checkout, file_path, tests_run, failed BIGINT, secs DOUBLE).
+-- tested 2026-10-15: inframe-w1 INF-1598 full suite 22,383 passed; reshaped to self-dispatch 2026-10-17 and rerun:
+--   same slowest file, test_acord_gl_print_bugs.py 27.5s.
+WITH checkouts AS (
+    SELECT '/Users/aloksubbarao/inframe-w1' AS checkout, '/Users/aloksubbarao/inframe-w1/platform/backend/.pytest_cache/junit.xml' AS junit
+    UNION ALL
+    SELECT '/Users/aloksubbarao/inframe', '/Users/aloksubbarao/inframe/platform/backend/.pytest_cache/junit.xml'
+), with_runs AS (
+    SELECT * FROM checkouts WHERE path_exists(junit)
+), rendered AS (
+    SELECT tera_render($t$
+        WITH tests AS (
+            SELECT file_path, replace(replace(replace(file_path, 'platform/backend/', ''), '.py', ''), '/', '.') AS module
+            FROM git_tree('{{ checkout }}', 'HEAD')
+            WHERE kind = 'file' AND file_path LIKE 'platform/backend/app/tests/%test_%.py'
+        ), events AS (
+            SELECT * FROM read_duck_hunt_log('{{ junit }}', 'junit_xml')
+        )
+        SELECT '{{ checkout }}' AS checkout, tests.file_path,
+               count(events.test_name) AS tests_run,
+               count(CASE WHEN events.status = 'FAIL' THEN events.test_name END) AS failed,
+               round(sum(events.execution_time), 2) AS secs
+        FROM tests LEFT JOIN events ON starts_with(events.ref_file || '.', tests.module || '.')
+        GROUP BY ALL
+        ORDER BY secs DESC NULLS LAST
+        LIMIT 7
+    $t$, c::JSON, autoescape := false) AS sql
+    FROM with_runs AS c
+), dispatched AS (
+    SELECT array_agg(selfdispatch(sql)) AS receipts FROM rendered
+)
+SELECT receipt.* FROM dispatched CROSS JOIN UNNEST(receipts) AS t(receipt);
+
+
+-- ## The last 200 transcript lines of every Claude CLI session open in Terminal (Opus 5.5, 2026-10-17)
+-- tested: 4 receipts, all 200.
+WITH c AS (
+    SELECT name, getenv('HOME') AS home, replace(cwd, '/', '-') AS project, sessionId AS session_id
+    FROM terminal_sessions WHERE sessionId IS NOT NULL
+), rendered AS (
+    SELECT tera_render($tera$
+        SELECT * FROM read_json($cmd$tail -n 200 "{{ home }}/.claude/projects/{{ project }}/{{ session_id }}.jsonl" |$cmd$,
+                                format := 'newline_delimited')
+    $tera$, c::JSON, autoescape := false) AS sql
+    FROM c
+), dispatched AS (
+    SELECT array_agg(selfdispatch(sql)) AS receipts FROM rendered
+)
+SELECT receipt.* FROM dispatched CROSS JOIN UNNEST(receipts) AS t(receipt);

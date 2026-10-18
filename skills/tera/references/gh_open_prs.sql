@@ -1,18 +1,20 @@
--- Proven interactively before saving. All 18 gh search PR fields, plus account.
--- --limit controls acquisition (gh defaults to 30); SQL LIMIT controls displayed rows.
--- Acquisition sorts by updated time so its cap preserves recency. GitHub search is capped
--- at 1,000 matches per search; this is not an unlimited census. Visibility uses active gh auth.
--- Flags are shell fragments; options are SQL fragments. Neither is automatic escaping.
-WITH rendered AS (
-  SELECT tera_render('gh_open_prs.tera', json_object('accounts',['asubbarao','asubbarao-ifr'], 'flags',[{'name':'--state','value':'open'},{'name':'--sort','value':'updated'},{'name':'--order','value':'desc'},{'name':'--limit','value':'1000'},{'name':'--json','value':'assignees,author,authorAssociation,body,closedAt,commentsCount,createdAt,id,isDraft,isLocked,isPullRequest,labels,number,repository,state,title,updatedAt,url'}], 'options',[{'name':'maximum_depth','value':'-1'}], 'preview_limit',4),
-    autoescape := false,
-    template_path := '/Users/aloksubbarao/duckdb-skills/skills/tera/references/*.tera'
-  ) AS statement
+-- Open PRs authored by each account, newest first, every gh search field plus the account.
+-- --limit caps acquisition (gh defaults to 30; GitHub search stops at 1,000 matches); preview_limit caps the rows
+-- each statement returns. Visibility is the active gh auth on dev.
+-- Verified on dev 2026-10-17: two 200 receipts, one per account.
+WITH accounts AS (
+    SELECT unnest(['asubbarao', 'asubbarao-ifr']) AS account,
+           'assignees,author,authorAssociation,body,closedAt,commentsCount,createdAt,id,isDraft,isLocked,isPullRequest,labels,number,repository,state,title,updatedAt,url' AS fields,
+           4 AS preview_limit
+), rendered AS (
+    SELECT tera_render($t$
+        SELECT '{{ account }}' AS account, *
+        FROM read_json($cmd$gh search prs --author {{ account }} --state open --sort updated --order desc --limit 1000 --json {{ fields }} |$cmd$)
+        ORDER BY updatedAt DESC
+        LIMIT {{ preview_limit }}
+    $t$, a::JSON, autoescape := false) AS sql
+    FROM accounts AS a
+), dispatched AS (
+    SELECT array_agg(selfdispatch(sql)) AS receipts FROM rendered
 )
-, posted AS (
-  SELECT statement,
-         from_json(http_post('http://127.0.0.1:9495/sql', MAP {'Content-Type': 'application/json'}, json_object('sql', statement)),
-                   '{"status": "INTEGER", "body": "VARCHAR"}') AS receipt
-  FROM rendered
-)
-SELECT statement, receipt.status, receipt.body FROM posted;
+SELECT receipt.* FROM dispatched CROSS JOIN UNNEST(receipts) AS t(receipt);

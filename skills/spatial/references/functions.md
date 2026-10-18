@@ -140,7 +140,7 @@ h3_grid_disk(cell, k) → UBIGINT[] (all cells within k rings)
 
 -- Density example: count points per hex
 SELECT h3_latlng_to_cell(lat, lng, 7) AS hex,
-       count(*) AS cnt,
+       count(lat) AS cnt,
        h3_cell_to_boundary_wkt(hex) AS boundary
 FROM my_points
 GROUP BY hex
@@ -156,27 +156,30 @@ SELECT *, ST_Point(longitude, latitude) AS geom FROM 'data.csv';
 
 ### Distance matrix between all pairs
 ```sql
-SELECT a.name, b.name,
+SELECT a.name, b.name AS other,
        ST_Distance_Spheroid(a.geom, b.geom) AS dist_m
-FROM locations a, locations b
-WHERE a.name < b.name;
+FROM locations AS a
+JOIN locations AS b ON a.name < b.name;
 ```
 
 ### Points inside polygons
 ```sql
 SELECT p.name, z.zone_name
-FROM points p, zones z
-WHERE ST_Contains(z.geom, p.geom);
+FROM points AS p
+JOIN zones AS z ON ST_Contains(z.geom, p.geom);
 ```
 
 ### Nearest neighbor (top-K per row)
+
+A search radius makes the join a real predicate and bounds the pairs; the window keeps the K closest.
+
 ```sql
 SELECT a.name, b.name AS nearest,
        ST_Distance_Spheroid(a.geom, b.geom) AS dist_m
-FROM locations a
-CROSS JOIN LATERAL (
-    SELECT name, geom FROM targets b
-    ORDER BY ST_Distance_Spheroid(a.geom, b.geom)
-    LIMIT 3
-) b;
+FROM locations AS a
+JOIN targets AS b ON ST_DWithin_Spheroid(a.geom, b.geom, 5000)
+QUALIFY row_number() OVER (PARTITION BY a.name ORDER BY dist_m) <= 3;
 ```
+
+Verified 2026-10-17 on dev with `POINT_2D` literals (3 locations, 4 targets): the matrix gave 3 pairs,
+the polygon held 2 points, the top-3 gave 9 rows.

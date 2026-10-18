@@ -56,19 +56,17 @@ The correlated lateral example above is also verified. After finding a line, its
 argument can be a range or context selection such as `'203 +/-12'`. The installed lateral
 reader accepts the path column but requires a literal line selection; self-dispatch supports
 a different selection per source row. Always order returned lines explicitly. Put filesystem
-patterns directly in readers, such as `read_lines('/explicit/root/**/*.sql')`, rather than
+patterns directly in readers, such as `read_lines('/explicit/root/*.sql')`, rather than
 enumerating them with `glob()` first.
 
-For the full named-parameter API, capture a single README and read it in the **same SQL body**:
+A found range is read the same way, with the selection as the literal second argument:
 
 ```sql
-COPY (SELECT readme::VARCHAR FROM agents.ext_catalog WHERE extension_name = 'read_lines')
-TO 'variable:catalog_readme' (FORMAT variable, LIST none);
-
-SELECT line_number, content
-FROM read_lines('variable:catalog_readme',
-    lines := {start: 207, stop: 214}, "trim" := 'right')
-ORDER BY line_number;
+SELECT e.extension_name, l.line_number, l.content
+FROM agents.ext_catalog e
+CROSS JOIN LATERAL read_lines_lateral(to_scalarfs_uri(e.readme), '207-214', 'right') l
+WHERE e.extension_name = 'read_lines'
+ORDER BY l.line_number;
 ```
 
 `read_lines` parameters: `lines`, `trim`, `before`, `after`, `context`, `ignore_errors`.
@@ -79,10 +77,9 @@ Selections include line numbers/lists, ranges, head/tail, context strings, and s
 content, not line numbers or byte offsets. `ignore_errors := true` skips unreadable/invalid
 UTF-8 input, so leave it false when fidelity matters. Paths also accept filesystem globs.
 
-ScalarFS provides `to_scalarfs_uri(content)` for inline content, `variable:name` for a stored
-value, `pathvariable:name` for stored paths, and `to_pathmacro_url()` for an approved primitive
-resolver. Variables are connection-local and do not cross MCP requests or self-dispatches.
-Use these helpers rather than temporary files or manual URI/SQL escaping.
+ScalarFS's `to_scalarfs_uri(content)` turns a column into a path a reader can open. Use it
+rather than temporary files or manual URI/SQL escaping. Its `variable:` paths are
+connection-local hand-offs between statements; do not use them to pass values along.
 
 ## README to DuckBlocks
 
@@ -133,7 +130,7 @@ Read them as markdown sections straight from that table, one row per heading. No
 now; they are the 2026-10-09 fetch.
 
 ```sql
-SELECT url_host(url) AS site, url || '#' || s.section_id AS section_url, s.level, s.title, s.content,
+SELECT url_host(url) AS site, concat_ws('#', url, s.section_id) AS section_url, s.level, s.title, s.content,
        md_extract_code_blocks(s.content) AS code
 FROM lake.agents.ext_fetch
 CROSS JOIN UNNEST(md_extract_sections(duck_blocks_to_md(html_to_duck_blocks((response ->> 'body')::HTML)))) AS t(s)
@@ -144,18 +141,14 @@ ORDER BY section_url LIMIT 7;
 Preview with `len(content)` and `left(content, 240)` before returning a section. A heading can
 appear twice when the page repeats it (TOC and body); `DISTINCT` on `section_url` if that matters.
 
-Known documentation pages need only `http_get`, not the Read the Docs management API.
-Request `Accept: text/markdown` for compact content; fetch HTML separately when navigation
-or section anchors are needed, then parse with webbed. The Read the Docs API/config skills
-are for managing projects/builds/configuration, not prerequisites to reading public pages.
-See [Markdown negotiation](https://docs.readthedocs.com/platform/latest/reference/markdown-for-agents.html).
-
-The installed `http_get` returns `{status, reason, body}` without response headers.
-`representation` therefore records the request preference, not proven Content-Type on
-every response. Verify uncertain negotiation separately. Observed on 2026-09-29: Duck Hunt
-schema returned `text/markdown` via curl, 13,911 downloaded bytes in 58 ms; no timing SLA
-or guarantee of Markdown support on arbitrary hosts. Raw bodies stay in DuckDB; return
-lengths, bounded links/headings and errors to the agent, not the entire fetched document.
+A page that is missing is fetched the crawl skill's way: curl through shellfs
+(`read_text('curl -sSL --fail --max-time 30 <url> |')`) into `lake.agents.ext_fetch`, not the
+Read the Docs management API. Add `-H 'Accept: text/markdown'` for compact content (Duck Hunt's
+schema page answered with markdown on 2026-09-29; other hosts may not); fetch HTML when
+navigation or section anchors are needed, then parse with webbed. See
+[Markdown negotiation](https://docs.readthedocs.com/platform/latest/reference/markdown-for-agents.html).
+Raw bodies stay in DuckDB; return lengths, bounded links/headings and errors to the agent, not
+the entire fetched document.
 
 | Object | Contents |
 |---|---|
@@ -166,6 +159,6 @@ lengths, bounded links/headings and errors to the agent, not the entire fetched 
 list page names that has no fetch from the last day, fetched with `quackapi_fetch`. Reuse raw responses to add parsed columns. Catalog lookup comes first; inspect runtime signatures only
 to resolve a documentation gap or version mismatch, since READMEs may omit details.
 
-Verified on dev on 2026-09-24: glob search, correlated ScalarFS line reads, named line
-selection through a connection variable, the six-parameter Markdown table, saved JSON
-blocks, and full saved HTML to DuckBlocks. No recrawl or duplicate raw table was needed.
+Verified on dev on 2026-09-24 (line reads and the range read re-run 2026-10-17): glob search,
+correlated ScalarFS line reads, a literal range selection, the six-parameter Markdown table,
+saved JSON blocks, and full saved HTML to DuckBlocks. No recrawl or duplicate raw table was needed.

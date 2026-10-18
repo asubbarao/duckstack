@@ -1,4 +1,4 @@
--- Diagnostics; original experiments retained in archive/2026-09-29-original/.
+-- Diagnostics and the lessons behind rejected queries; none of these calls the provider.
 INSTALL jev FROM community;
 LOAD jev;
 SELECT name, value FROM duckdb_settings()

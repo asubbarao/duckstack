@@ -1,123 +1,59 @@
 # Self-dispatch: SQL construction and execution
 
 The program is ordinary DuckDB SQL. Tera only makes its text easier to construct.
-SQL selects rows, computes values and decides what runs. A template should be easy to
-replace with `concat`, `replace` or `string_agg` without redesigning the query.
-Use inline templates for short programs; named files for a shared, readable SQL body.
+SQL selects rows, computes values and decides what runs; a template only fills holes, with no
+`{% if %}` and no `{% for %}` over options. Use one of the five named templates in
+[../templates/](../templates/canonical.sql) when the statement has that shape, an inline template otherwise.
 Do not introduce a generic command language or a dispatch macro to hide these steps.
 
-## The two parts
+## The shape
 
 ```sql
-WITH statements AS (
-    SELECT n, tera_render('SELECT {{ n }} AS answer',
-                          c::JSON, autoescape := false) AS sql
-    FROM range(42, 44) AS c(n)
-), posted AS (
-    SELECT array_agg({sql: sql, receipt: selfdispatch(sql)}) AS receipts
-    FROM statements
+WITH answers AS (                        -- 1. declare every value
+    SELECT n FROM range(42, 44) AS r(n)
+), rendered AS (                         -- 2. one statement per row; Tera fills holes
+    SELECT n, tera_render('SELECT {{ n }} AS answer', a::JSON, autoescape := false) AS sql
+    FROM answers AS a
+), dispatched AS (                       -- 3. post them; keep the sql beside its receipt
+    SELECT array_agg({sql: sql, receipt: selfdispatch(sql)}) AS receipts FROM rendered
 )
-SELECT r.sql, unnest(r.receipt) FROM posted CROSS JOIN UNNEST(receipts) AS t(r);
+SELECT r.sql, unnest(r.receipt) FROM dispatched CROSS JOIN UNNEST(receipts) AS t(r);
 ```
 
 Construction produces an `sql` column. Execution posts that column, collects receipts
-and unnests them. To inspect without executing, end at `SELECT * FROM statements`.
-The endpoint above is this machine’s selected dev. The replica uses its own 9511 endpoint.
-
-The pure SQL replacement for the render expression above is just
-`concat('SELECT ', n, ' AS answer')`. No Tera-specific execution mechanism remains.
+and unnests them. To inspect without executing, end at `SELECT * FROM rendered`.
+The endpoint is this machine's dev (`selfdispatch` wraps `quackapi_post` to `127.0.0.1:9495/sql`).
 
 ## Construction cases
 
-| Case | Template / working source | What SQL supplies |
+| Case | Template / working source | What the first CTE declares |
 |---|---|---|
-| Plain SELECT | `SELECT {{ n }} AS answer` | Values or already quoted identifiers |
-| Native file reader | `SELECT * FROM read_csv({{ source }}, header := {{ header }})` | SQL-quoted source and typed options |
-| Command → CSV | [find.sql.tera](find.sql.tera) | Argument list and named reader options |
-| Repeated commands → JSON | [json-pipelines.sql.tera](json-pipelines.sql.tera) | One argument list per command; template visibly contains `seq` and `jq` |
-| Arbitrary pipeline | [inline.sql](inline.sql), example 4 | Arrays of shell-quoted argument arrays |
+| Plain SELECT | inline `SELECT {{ n }} AS answer` | Values or already quoted identifiers |
+| Native file reader | inline, [inline.sql](inline.sql) example 2 | Reader name, `quote_literal`ed source, options as text (`', header := true'`) |
+| One shell command | `shell.tera` | Reader, command text, options text |
+| Command through jq | `pipeline.tera` | Command text, jq program |
+| Another host | `network.tera` | Reader, quoted URL, options text |
 | Ordered SQL statements | [replica/pull.sql](../../../server/replica/pull.sql) | Source, target, quoted table name and temporary marker |
 | Same query, different catalog | [replica/reads.sql](../../../server/replica/reads.sql) | Route name, path and catalog |
 | Fetch URL rows | [crawl_rows.sql](../../crawl/references/crawl_rows.sql) | Selected URLs and fetch policy |
 | Refresh session files | [setup.sql](../../../server/setup.sql) | Changed session files, destination and quoted directory |
 
-### Native readers and optional := parameters
-
-```sql
-WITH c AS (
-    SELECT quote_literal('/Users/aloksubbarao/file.csv') AS source,
-           {'header': false, 'all_varchar': true, 'delim': $$','$$} AS params
-)
-SELECT tera_render($t$
-SELECT * FROM read_csv({{ source }}
-{% for name, value in params %}, {{ name }} := {{ value }}{% endfor %});
-$t$, c::JSON, autoescape := false) AS sql FROM c;
-```
-
-An empty `MAP(VARCHAR, VARCHAR)` supplies no options. Values here are SQL expressions:
-booleans and numbers render directly; a text option includes SQL quotes. Reader names
-and option names are authored code. Use fixed options directly when they do not vary.
-
-### Named command template
-
-```sql
-WITH source AS (
-    SELECT ['/private/tmp', '-maxdepth', '0', '-type', 'd'] AS args,
-           {'header': false, 'all_varchar': true} AS params
-), c AS (
-    SELECT list_transform(args, arg -> quote_literal(arg)) AS args, params
-    FROM source
-)
-SELECT tera_render('find.sql.tera', c::JSON, autoescape := false,
-    template_path := '/Users/aloksubbarao/duckdb-skills/skills/self-dispatch/references/*.tera') AS sql
-FROM c;
-```
-
-The entire file is:
-
-```sql
-SELECT * FROM read_csv($cmd$find {{ args | join(sep=" ") }} |$cmd$
-{% for name, value in params %}, {{ name }} := {{ value }}{% endfor %});
-```
-
-That renders recognizable SQL. It can equally be pasted inline. A plain SQL equivalent
-joins `args` with spaces and aggregates the option names/values with ` := `.
-`quote_literal` wraps each shell argument in single quotes, which protects spaces.
-The pipe is visible in the template; it is not hidden inside argument data.
-
-### Repeated commands with a simple jq pipe
-
-```sql
-WITH c AS (SELECT [['2'], ['3', '3']] AS commands)
-SELECT tera_render('json-pipelines.sql.tera', c::JSON, autoescape := false,
-    template_path := '/Users/aloksubbarao/duckdb-skills/skills/self-dispatch/references/*.tera') AS sql
-FROM c;
-```
-
-The entire file is:
-
-```sql
-SELECT * FROM read_json($cmd$
-{% for args in commands %}seq {{ args | join(sep=" ") }} | jq -Rc '{id: tonumber}'
-{% endfor %}|$cmd$, format := 'newline_delimited');
-```
-
-Executed on dev: IDs 1, 2, 3. These arguments are fixed numeric examples; quote external
-arguments as in the find example. Change the command-specific template to show the real
-command rather than hiding it behind a large conditional template.
+Reader options are one text column, never a map looped in the template: an option list that
+varies per row is a different string per row, written in SQL.
 
 ## Execution cases
 
-- **Rows → posts → receipts:** the first example is the common tail for every construction case.
+- **Rows → posts → receipts:** the shape above is the common tail for every construction case.
 - **Keep source identity:** aggregate `{key: key, sql: sql, receipt: selfdispatch(sql)}`.
-- **Consume JSON rows:** keep the receipt, then expand its successful JSON body in the next stage.
-  Do not drop failed receipts from the diagnostic result.
+- **Results are `receipt.*`:** never parse the body with a `from_json` structure string or `->>`.
+  When the next stage needs the rows as columns, each statement writes them (`COPY … TO`) and the
+  next stage reads the files ([inline.sql](inline.sql) example 3). Keep failed receipts as rows.
 - **Dependent writes:** send one ordered multi-statement body. Aggregating posts does not
   establish execution order. Independent rows may dispatch independently.
 - **Boot plus cron:** define one complete SQL body and use it for the initial post and `cron`.
   The active setup uses this for per-session copies followed by rebuilding `agent.lines`.
-- **Direct correlated reader:** use `CROSS JOIN LATERAL read_lines_lateral(c.command)` when
-  supported; that is a reader call, not itself a self-post.
+- **A table function that needs a column** (`read_lines`, `read_csv`, `git_read`, `crawl`): render
+  a literal statement per row and dispatch it. No `read_*_lateral`, no lateral join.
 
 ## Keyed writes and the actual dispatch review
 
@@ -133,7 +69,8 @@ that query in `USING`. They do not add a helper table. Replacing an existing obs
 a different policy; the dispatch logs use ignore so a replay cannot overwrite its first receipt.
 
 Checked on dev, 2026-10-16: 2,840 fetch rows, 2,840 distinct keys, no null key fields and no
-duplicate keys. Replaying a rendered fetch twice inside a transaction left one fixture row;
+duplicate keys. Rechecked 2026-10-17: two keys (nanoarrow, erpl_odata at 04:02:29) now have two copies,
+so some writer is not going through the MERGE. Replaying a rendered fetch twice inside a transaction left one fixture row;
 rollback removed the fixture. The replica's 9511 listener and database file are absent, so
 its persisted rows could not be checked. Its schema now creates the unique index; existing
 duplicates would fail index creation visibly rather than being silently discarded.
@@ -150,7 +87,7 @@ FROM pull_log GROUP BY run_started, table_name HAVING copies > 1;
 
 [review.sql](review.sql) applies native SQL parsing and Sitting Duck to the actual server,
 replica, crawl and inline-example programs. It also opens dollar-quoted cron/boot SQL.
-Whole-file native parsing succeeds for pull, reads, crawl and the four inline examples.
+Whole-file native parsing succeeds for pull, reads, crawl and the inline examples.
 The CLI `.bail` and server extension syntax need separate inspection. Tree-sitter emits
 ERROR nodes for valid DuckDB SQL and misses some calls inside those subtrees; candidate
 identifiers and errors remain visible. A missing AST call is not proof that no post exists.

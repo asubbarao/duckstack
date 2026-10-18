@@ -127,7 +127,7 @@ LIMIT 8;
 
 Replace `CACHE_FILENAME`, `SEARCH_QUERY`, and `VERSION` per Step 3. Remove the `AND version = 'VERSION'` line if searching across all versions.
 
-If the user's question could benefit from both DuckDB docs and blog results, run two queries (one with `version = 'stable'`, one with `version = 'blog'`) or omit the version filter entirely.
+If the user's question could benefit from both DuckDB docs and blog results, use `AND version IN ('lts', 'blog')` in place of the single-version line.
 
 ## Step 6 — Handle errors
 

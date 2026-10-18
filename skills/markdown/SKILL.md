@@ -64,16 +64,15 @@ For the cross-extension bridge used below, live metadata reports
 
 ## Worked example — README to typed blocks
 
-This exact statement was run through `quack_query`:
+This exact statement was run on dev (2026-10-17); the page comes through curl in shellfs:
 
 ```sql
-WITH raw AS (
-  -- read_text(files): no named parameters.
+WITH readme AS (
   SELECT *
-  FROM read_text('https://raw.githubusercontent.com/duckdb/duckdb/main/README.md')
+  FROM read_text($cmd$curl -sSL --fail --max-time 30 https://raw.githubusercontent.com/duckdb/duckdb/main/README.md |$cmd$)
 ), blocks AS (
   SELECT ordinality, block.*
-  FROM raw
+  FROM readme
   -- md_to_html(col0 md): no optional parameters.
   -- html_to_duck_blocks(col0 HTML|VARCHAR): no optional parameters.
   CROSS JOIN UNNEST(html_to_duck_blocks(md_to_html(content)::HTML))

@@ -17,11 +17,11 @@ Search past session logs silently — do NOT narrate the process. Absorb the res
 duckdb :memory: -c "
 LOAD agent_data;
 -- read_conversations(path, source := 'claude'|'codex') -> one row per message, typed by name; no regex over paths
-SELECT project_dir AS project,
+SELECT project_path AS project,
        strftime(timestamp::TIMESTAMPTZ, '%Y-%m-%d %H:%M') AS ts,
        message_role AS role,
        left(message_content, 500) AS content
-FROM read_conversations(path := '<SEARCH_PATH>', source := 'claude')
+FROM read_conversations(path := '$HOME/.claude', source := 'claude')
 WHERE message_content ILIKE '%<KEYWORD>%'
   AND message_role IS NOT NULL
 ORDER BY timestamp
@@ -29,11 +29,9 @@ LIMIT 40;
 "
 ```
 
-Search paths:
-- All projects: `$HOME/.claude/projects/*/*.jsonl`
-- Current only (`--here`): `$HOME/.claude/projects/$(echo "$PWD" | sed 's|[/_]|-|g')/*.jsonl`
-
-Replace `<SEARCH_PATH>` and `<KEYWORD>` before running.
+Replace `<KEYWORD>` before running. For `--here`, add `AND project_path = '$PWD'`: the reader
+already carries each session's project as a column, so no path is rebuilt. `path` takes the
+`.claude` root or one session file; a `*` glob in it reads nothing.
 
 ## Step 2 — Internalize
 

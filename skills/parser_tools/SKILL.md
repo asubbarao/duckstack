@@ -135,14 +135,22 @@ The starting claims are correct: `is_parsable(text)` distinguishes the two SQL b
 - The table forms are literal-bound. This failed:
 
   ```sql
-  WITH q(sql) AS (VALUES ('SELECT upper(name) FROM users'))
-  SELECT * FROM q CROSS JOIN LATERAL parse_functions(sql);
+  WITH queries AS (SELECT 'SELECT upper(name) FROM users' AS sql)
+  SELECT * FROM queries CROSS JOIN LATERAL parse_functions(queries.sql);
   ```
 
   Exact error: `Table function "parse_functions" does not support lateral join column
   parameters ... The function only supports literals as parameters.` Use the scalar form over
-  a SQL-text column, then `UNNEST`, or use `/duckstack:self-dispatch` when table-form output is
-  required per row.
+  a SQL-text column and unnest its structs (verified 2026-10-17: `upper | main | select`):
+
+  ```sql
+  WITH queries AS (SELECT 'SELECT upper(name) FROM users' AS sql)
+  SELECT q.sql, fn.* FROM queries AS q CROSS JOIN UNNEST(parse_functions(q.sql)) AS t(fn);
+  ```
+
+  Use `/duckstack:self-dispatch` only when table-form output is required per row. (On
+  2026-10-17 dev dropped its connection right after the failing lateral form above was sent;
+  test it in a `:memory:` client, not on dev.)
 - `is_parsable` answers syntax, not bindability, permissions, or whether referenced tables and
   functions exist. It is a parser gate, not an execution guarantee.
 - Verified 2026-09-29: **table functions are invisible to the parser facts.** For a query with

@@ -1,95 +1,47 @@
--- Inline Tera: SQL supplies rows; render complete SQL; aggregate native self-posts; UNNEST receipts.
--- Run each block on the selected dev MCP (127.0.0.1:9495). selfdispatch and quote_literal are loaded macros; no new server, tables or template files.
--- autoescape=false: these are SQL/shell programs, not HTML. c::JSON serializes the context.
--- params keys are SQL option names; values render as SQL expressions. Booleans/numbers need no quoting.
--- For a text option use a SQL literal, e.g. {'delim': $$','$$}; HTML escaping is not SQL quoting.
--- Args below are raw values; quote_literal wraps each shell token in single quotes.
--- Reader names and SQL option names are authored code. Fixed dollar-quote delimiters must be absent from their input.
--- Plain pipelines report the last stage's exit status. These examples exercise successful read-only commands.
--- Preserve failure receipts; never retry an uncertain write. Arrays do not guarantee concurrency or execution order.
+-- Inline Tera: the first CTE declares every value; an inline template only fills holes; array_agg(selfdispatch(sql));
+-- CROSS JOIN UNNEST the receipts. For shell, pipeline, sql, network and loop shapes use the named templates
+-- (../templates/canonical.sql); this file is the inline form for statements those do not cover.
+-- Run each block on dev (MCP http://localhost:9495/mcp/). selfdispatch and quote_literal are the only macros.
+-- autoescape := false: these are SQL programs, not HTML. Options are declared as SQL text (', header := true').
+-- Keep failure receipts; never retry an uncertain write. An array of posts has no execution order.
+-- Verified on dev 2026-10-17.
 
--- 1. SQL without ShellFS. Expected answers: 42, 43.
-WITH c AS (
-    SELECT n FROM range(42, 44) AS t(n)
+-- 1. Plain SQL. Expected bodies: [{"answer":42}], [{"answer":43}].
+WITH answers AS (
+    SELECT n FROM range(42, 44) AS r(n)
 ), rendered AS (
-    SELECT tera_render('SELECT {{ n }} AS answer', c::JSON, autoescape := false) AS sql FROM c
-), posted AS (
-    SELECT array_agg(selfdispatch(sql)) AS receipts
-    FROM rendered
+    SELECT tera_render('SELECT {{ n }} AS answer', a::JSON, autoescape := false) AS sql FROM answers AS a
+), dispatched AS (
+    SELECT array_agg(selfdispatch(sql)) AS receipts FROM rendered
 )
-SELECT r.* FROM posted CROSS JOIN UNNEST(receipts) AS t(r);
+SELECT receipt.* FROM dispatched CROSS JOIN UNNEST(receipts) AS t(receipt);
 
--- 2. Native file reader, with := params. ScalarFS supplies a CSV fixture without writing a file.
-WITH c AS (
+-- 2. A native file reader, options as text. ScalarFS supplies the CSV without writing a file.
+-- Expected body: [{"code":"001","active":"true"}] (all_varchar keeps the leading zero).
+WITH fixture AS (
     SELECT 'read_csv' AS reader,
-           to_scalarfs_uri('code,active' || chr(10) || '001,true') AS source,
-           {'header': true, 'all_varchar': true} AS params
+           quote_literal(to_scalarfs_uri($csv$code,active
+001,true$csv$)) AS source,
+           ', header := true, all_varchar := true' AS options
 ), rendered AS (
-    SELECT tera_render($t$
-SELECT * FROM {{ reader }}($src${{ source }}$src$
-{% for name, value in params %}, {{ name }} := {{ value }}{% endfor %})
-$t$, c::JSON, autoescape := false) AS sql FROM c
-), posted AS (
-    SELECT array_agg(selfdispatch(sql)) AS receipts
-    FROM rendered
+    SELECT tera_render('SELECT * FROM {{ reader }}({{ source }}{{ options }})', f::JSON, autoescape := false) AS sql
+    FROM fixture AS f
+), dispatched AS (
+    SELECT array_agg(selfdispatch(sql)) AS receipts FROM rendered
 )
-SELECT r.* FROM posted CROSS JOIN UNNEST(receipts) AS t(r);
+SELECT receipt.* FROM dispatched CROSS JOIN UNNEST(receipts) AS t(receipt);
 
--- 3. Bash-command dispatch: command, argument array and := params are data.
-WITH source AS (
-    SELECT 'find' AS command, ['/private/tmp', '-maxdepth', '0', '-type', 'd'] AS args,
-           {'header': false, 'all_varchar': true} AS params
-), c AS (
-    SELECT * REPLACE (list_transform(args, arg -> quote_literal(arg)) AS args) FROM source
-), rendered AS (
-    SELECT tera_render($t$
-SELECT * FROM read_csv($cmd${{ command }} {{ args | join(sep=" ") }} |$cmd$
-{% for name, value in params %}, {{ name }} := {{ value }}{% endfor %})
-$t$, c::JSON, autoescape := false) AS sql FROM c
-), posted AS (
-    SELECT array_agg(selfdispatch(sql)) AS receipts
-    FROM rendered
-)
-SELECT r.* FROM posted CROSS JOIN UNNEST(receipts) AS t(r);
-
--- 4. Repeated pipelines: arrays contain arguments; the template owns pipes and repetition.
--- Expected ids: 1, 2, 3. No Bash for-loop, JSON literal payload or pipe in the argument data.
-WITH source AS (
-    SELECT [
-        [['seq', '2'], ['jq', '-Rc', '{id: tonumber}']],
-        [['seq', '3', '3'], ['jq', '-Rc', '{id: tonumber}']]
-    ] AS commands
-), c AS (
-    SELECT list_transform(commands, pipeline -> list_transform(pipeline, args -> list_transform(args, arg ->
-        quote_literal(arg)
-    ))) AS commands FROM source
-), rendered AS (
-    SELECT tera_render($t$
-SELECT * FROM read_json($cmd$
-{% for pipeline in commands %}
-{% for args in pipeline %}{{ args | join(sep=" ") }}{% if not loop.last %} | {% endif %}{% endfor %}
-{% endfor %}
-|$cmd$, format := 'newline_delimited')
-$t$, c::JSON, autoescape := false) AS sql FROM c
-), posted AS (
-    SELECT array_agg(selfdispatch(sql)) AS receipts
-    FROM rendered
-)
-SELECT r.* FROM posted CROSS JOIN UNNEST(receipts) AS t(r);
-
--- 5. Reading results back: each statement writes its rows; the next stage reads the files.
--- Never parse the receipt body (no from_json structure string, no json_each). Expected answers: 42, 43.
+-- 3. Each statement writes its own rows to a file; the next stage reads the files, not the receipt bodies.
 -- The output directory must already exist; a missing one is a 500 "Cannot open file" receipt.
-WITH c AS (
-    SELECT n FROM range(42, 44) AS t(n)
+WITH answers AS (
+    SELECT n FROM range(42, 44) AS r(n)
 ), rendered AS (
-    SELECT tera_render($t$
-COPY (SELECT {{ n }} AS answer) TO '/private/tmp/selfdispatch_answer_{{ n }}.parquet' (FORMAT parquet)
-$t$, c::JSON, autoescape := false) AS sql FROM c
-), posted AS (
-    SELECT array_agg(selfdispatch(sql)) AS receipts
-    FROM rendered
+    SELECT tera_render($t$COPY (SELECT {{ n }} AS answer) TO '/private/tmp/selfdispatch_answer_{{ n }}.parquet' (FORMAT parquet)$t$,
+                       a::JSON, autoescape := false) AS sql
+    FROM answers AS a
+), dispatched AS (
+    SELECT array_agg(selfdispatch(sql)) AS receipts FROM rendered
 )
-SELECT r.status FROM posted CROSS JOIN UNNEST(receipts) AS t(r);
+SELECT receipt.* FROM dispatched CROSS JOIN UNNEST(receipts) AS t(receipt);
 
 SELECT answer FROM read_parquet('/private/tmp/selfdispatch_answer_*.parquet') ORDER BY answer;

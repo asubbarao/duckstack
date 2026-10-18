@@ -152,18 +152,20 @@ Because every row carries the query that produced it, re-run it on dev and compa
 
 ```sql
 WITH logged AS (
-    SELECT agent_signature, query_was_ran, result
+    SELECT quote_literal(agent_signature) AS agent, query_was_ran, quote_literal(result) AS logged_result
     FROM read_parquet('<DIR>/**/*.parquet', hive_partitioning := true, union_by_name := true)
     WHERE query_was_ran IS NOT NULL
-), rerun AS (
-    SELECT *, from_json(http_post('http://127.0.0.1:9495/sql', MAP {'Content-Type': 'application/json'},
-                                  json_object('sql', 'SELECT (' || query_was_ran || ')::VARCHAR AS result')),
-                        '{"status": "INTEGER", "body": "VARCHAR"}') AS receipt
+), rendered AS (
+    SELECT tera_render($tera$
+        SELECT {{ agent }} AS agent, {{ logged_result }} AS logged_result, ({{ query_was_ran }})::VARCHAR AS rerun_result
+        WHERE rerun_result IS DISTINCT FROM logged_result
+    $tera$, logged::JSON, autoescape := false) AS sql
     FROM logged
+), dispatched AS (
+    SELECT array_agg(selfdispatch(sql)) AS receipts FROM rendered
 )
-SELECT agent_signature, query_was_ran, result AS logged_result,
-       from_json(receipt.body, '[{"result": "VARCHAR"}]')[1].result AS rerun_result
-FROM rerun WHERE rerun_result IS DISTINCT FROM result
+SELECT receipt.* FROM dispatched CROSS JOIN UNNEST(receipts) AS t(receipt)
+WHERE receipt.body <> '[]'   -- a row here is an agent whose logged result is not what its query returns
 ```
 
 ## Dispatching subagents

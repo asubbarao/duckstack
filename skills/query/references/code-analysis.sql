@@ -20,14 +20,14 @@ WITH statements AS (
 )
 SELECT filename, sql, parse_tables(sql) AS tables,
        list_filter(parse_functions(sql), f ->
-           f.function_name IN ('tera_render', 'quackapi_post', 'http_post', 'http_post_form')) AS dispatch_functions
+           f.function_name IN ('tera_render', 'selfdispatch', 'quackapi_post', 'http_post', 'http_post_form')) AS dispatch_functions
 FROM statements;
 
 -- 3. Locate actual dispatch call nodes, not every identifier token
 SELECT file_path, name, type, start_line, end_line
 FROM ast_select(
     '/Users/aloksubbarao/duckdb-skills/skills/self-dispatch/references/inline.sql',
-    '.call#quackapi_post', 'sql')
+    '.call#selfdispatch', 'sql')
 ORDER BY start_line;
 
 -- 4. Find reader calls inside SQL text held in rows
@@ -57,23 +57,25 @@ FROM read_git_diff('/Users/aloksubbarao/duckdb-skills/server/replica/pull.sql');
 -- 7. Review a new file as additions
 SELECT path1 AS before_path, path2 AS after_path, diff_text
 FROM read_git_diff('/dev/null',
-    '/Users/aloksubbarao/duckdb-skills/skills/self-dispatch/references/find.sql.tera');
+    '/Users/aloksubbarao/duckdb-skills/skills/self-dispatch/references/inline.sql');
 
--- 8. Compose Duck Tails and Sitting Duck: calls and grammar errors in committed SQL
-WITH selected_files AS (
-    SELECT repo_path, file_path, git_uri, commit_hash
+-- 8. Compose Duck Tails and Sitting Duck: calls and grammar errors in committed SQL, one statement per file
+WITH committed AS (
+    SELECT file_path, git_uri, commit_hash
     FROM git_tree('/Users/aloksubbarao/duckdb-skills', 'HEAD')
     WHERE kind = 'file' AND file_path IN ('server/replica/pull.sql', 'server/replica/reads.sql')
-), nodes AS (
-    SELECT f.repo_path, f.file_path, f.commit_hash,
-           unnest(parse_ast_list(r.text, 'sql'), recursive := true)
-    FROM selected_files f
-    CROSS JOIN LATERAL git_read_each(f.git_uri) r
+), rendered AS (
+    SELECT tera_render($t$
+        SELECT '{{ file_path }}' AS file_path, '{{ commit_hash }}' AS commit_hash, type, name, start_line, end_line
+        FROM read_ast('{{ git_uri }}', 'sql')
+        WHERE type IN ('invocation', 'ERROR')
+        ORDER BY start_line
+    $t$, c::JSON, autoescape := false) AS sql
+    FROM committed AS c
+), dispatched AS (
+    SELECT array_agg(selfdispatch(sql)) AS receipts FROM rendered
 )
-SELECT repo_path, file_path, commit_hash, type, name, start_line, end_line
-FROM nodes
-WHERE type IN ('invocation', 'ERROR')
-ORDER BY file_path, start_line;
+SELECT receipt.* FROM dispatched CROSS JOIN UNNEST(receipts) AS t(receipt);
 
 -- Limits:
 -- parser_tools validates syntax, not binding or execution. Its function facts omit FROM readers.

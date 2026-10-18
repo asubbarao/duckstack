@@ -4,7 +4,7 @@ description: >
   GitHub Actions timing as tables — where CI minutes go, read from GitHub so anyone with `gh`
   access can re-run it. `gh run list/view --json` and `gh api` (a PR's files, a run's log zip)
   through shellfs, every response landed under raw/ with a UTC timestamp, then runs / jobs /
-  steps / PR-files tables and the questions that matter: the long pole, setup vs suite inside a
+  steps / PR-files views and the questions that matter: the long pole, setup vs suite inside a
   job, whether the change-detection gate runs jobs a PR did not need, and whether test shards
   are balanced. It is the CI/CD analysis: test-level times and failures come from the job logs
   through duck-hunt's recipe views, and live-page renders the result. Use when asked why CI is
@@ -30,64 +30,124 @@ logfiles or session transcripts cannot be handed to anyone. Everything below nee
 ## 1. Fetch — shellfs, raw/ first, never overwritten
 
 ```sql
-INSTALL shellfs FROM community; LOAD shellfs;
--- read_json(path, format := 'auto', records := 'auto', columns := NULL, maximum_depth := -1,
---           sample_size := 20480, ignore_errors := false, filename := false, ...)
+INSTALL shellfs FROM community;
+LOAD shellfs;
 
--- the last 200 runs of every workflow
-CREATE OR REPLACE TEMP TABLE fetch_runs AS
-FROM read_json('ts=$(date -u +%Y%m%dT%H%M%SZ); gh run list --repo <o>/<r> --limit 200 --json attempt,conclusion,createdAt,databaseId,displayTitle,event,headBranch,headSha,name,number,startedAt,status,updatedAt,url,workflowName | tee raw/runs-$ts.json |');
-
--- jobs and steps of the last 40 runs of one workflow: one `gh run view` per run
-CREATE OR REPLACE TEMP TABLE fetch_jobs AS
-FROM read_json('ts=$(date -u +%Y%m%dT%H%M%SZ); gh run list --repo <o>/<r> --workflow ci.yml --limit 40 --json databaseId --jq ''.[].databaseId'' | xargs -I{} gh run view {} --repo <o>/<r> --json databaseId,jobs | tee raw/jobs-$ts.json |', format := 'unstructured');
-
--- the files each run's PR changes (the gate question): one JSON object per line
-CREATE OR REPLACE TEMP TABLE fetch_prfiles AS
-FROM read_json('ts=$(date -u +%Y%m%dT%H%M%SZ); gh run list --repo <o>/<r> --workflow ci.yml --limit 40 --json databaseId,headSha,event --jq ''.[] | "\(.databaseId) \(.headSha) \(.event)"'' | while read id sha ev; do pr=$(gh api "repos/<o>/<r>/commits/$sha/pulls" --jq ''.[0].number''); if [ -n "$pr" ]; then gh api --paginate "repos/<o>/<r>/pulls/$pr/files?per_page=100" --jq ".[] | {run_id: $id, event: \"$ev\", pr: $pr, filename: .filename}"; else echo "{\"run_id\": $id, \"event\": \"$ev\", \"pr\": null, \"filename\": null}"; fi; done | tee raw/prfiles-$ts.json |', format := 'newline_delimited');
-
--- one run's full log zip, for duck_hunt: fetched once, kept
--- read_csv(path, header, delim, columns, ...) over a command whose only job is to land the file
-CREATE OR REPLACE TEMP TABLE fetch_zip AS
-FROM read_csv('[ -s raw/run-<id>.zip ] || gh api repos/<o>/<r>/actions/runs/<id>/logs > raw/run-<id>.zip; ls -l raw/run-<id>.zip |',
-              header := false, delim := '\t', columns := {line: 'VARCHAR'});
+-- the last 200 runs of every workflow, landed in raw/ as they are read
+SELECT * FROM read_json($cmd$gh run list --repo <owner>/<repo> --limit 200 --json attempt,conclusion,createdAt,databaseId,displayTitle,event,headBranch,headSha,name,number,startedAt,status,updatedAt,url,workflowName | tee raw/runs-$(date -u +%Y%m%dT%H%M%SZ).json |$cmd$);
 ```
 
-- `gh api --paginate` prints one JSON array per page, concatenated: read with
-  `format := 'unstructured'` and `unnest(json)`.
-- The bash lives in the shellfs string. No `.sh` file, no Python.
-- A run's zip is `{N}_{job name}.txt` per job — the input to `/duckstack:duck-hunt`
-  (`read_duck_hunt_log('zip://' || zip || '/' || glob, format)` on dev).
+Jobs and steps of the last 40 runs of one workflow: the run list is stage 1, one `gh run view` per
+run is stage 2, rendered from each stage-1 receipt row. Stage 1 carries every value stage 2 needs.
 
-## 2. Raw views, then tables — newest copy per key wins
+```sql
+WITH intent AS (
+    SELECT '<owner>/<repo>' AS repo, 'ci.yml' AS workflow, 40 AS run_limit, 'raw' AS raw_dir,
+           strftime(now(), '%Y%m%dT%H%M%SZ') AS ts
+), runs_rendered AS (
+    SELECT tera_render($tera$
+        SELECT '{{ repo }}' AS repo, '{{ raw_dir }}' AS raw_dir, '{{ ts }}' AS ts, databaseId AS run_id
+        FROM read_json($cmd$gh run list --repo {{ repo }} --workflow {{ workflow }} --limit {{ run_limit }} --json databaseId |$cmd$)
+    $tera$, intent::JSON, autoescape := false) AS sql
+    FROM intent
+), runs_dispatched AS (
+    SELECT array_agg(selfdispatch(sql)) AS receipts FROM runs_rendered
+), jobs_rendered AS (
+    SELECT tera_render($tera$
+        SELECT databaseId, len(jobs) AS job_count
+        FROM read_json($cmd$gh run view {{ run_id }} --repo {{ repo }} --json databaseId,jobs | tee {{ raw_dir }}/jobs-{{ run_id }}-{{ ts }}.json |$cmd$)
+    $tera$, run_row, autoescape := false) AS sql
+    FROM runs_dispatched CROSS JOIN UNNEST(receipts) AS r(receipt) CROSS JOIN UNNEST(receipt.body::JSON[]) AS j(run_row)
+), jobs_dispatched AS (
+    SELECT array_agg(selfdispatch(sql)) AS receipts FROM jobs_rendered
+)
+SELECT receipt.* FROM jobs_dispatched CROSS JOIN UNNEST(receipts) AS t(receipt);
+```
+
+The files each run's PR changes (the gate question): runs, then each run's PR, then that PR's
+files, each stage rendered from the last one's receipts. The last statement `COPY`s its rows to
+raw/ itself, so every row carries `run_id`, `event` and `pr`. A run with no PR returns no rows at
+stage 2 and sends nothing at stage 3.
+
+```sql
+WITH intent AS (
+    SELECT '<owner>/<repo>' AS repo, 'ci.yml' AS workflow, 40 AS run_limit, 'raw' AS raw_dir,
+           strftime(now(), '%Y%m%dT%H%M%SZ') AS ts
+), runs_rendered AS (
+    SELECT tera_render($tera$
+        SELECT '{{ repo }}' AS repo, '{{ raw_dir }}' AS raw_dir, '{{ ts }}' AS ts, databaseId AS run_id, headSha AS head_sha, event
+        FROM read_json($cmd$gh run list --repo {{ repo }} --workflow {{ workflow }} --limit {{ run_limit }} --json databaseId,headSha,event |$cmd$)
+    $tera$, intent::JSON, autoescape := false) AS sql
+    FROM intent
+), runs_dispatched AS (
+    SELECT array_agg(selfdispatch(sql)) AS receipts FROM runs_rendered
+), prs_rendered AS (
+    SELECT tera_render($tera$
+        SELECT '{{ repo }}' AS repo, '{{ raw_dir }}' AS raw_dir, '{{ ts }}' AS ts, {{ run_id }} AS run_id, '{{ event }}' AS event, number AS pr
+        FROM read_json($cmd$gh api repos/{{ repo }}/commits/{{ head_sha }}/pulls |$cmd$)
+    $tera$, run_row, autoescape := false) AS sql
+    FROM runs_dispatched CROSS JOIN UNNEST(receipts) AS r(receipt) CROSS JOIN UNNEST(receipt.body::JSON[]) AS j(run_row)
+), prs_dispatched AS (
+    SELECT array_agg(selfdispatch(sql)) AS receipts FROM prs_rendered
+), files_rendered AS (
+    SELECT tera_render($tera$
+        COPY (
+            SELECT {{ run_id }} AS run_id, '{{ event }}' AS event, {{ pr }} AS pr, file.filename
+            FROM read_json($cmd$gh api --paginate --slurp "repos/{{ repo }}/pulls/{{ pr }}/files?per_page=100" |$cmd$)
+            CROSS JOIN UNNEST(json) AS page(file)
+        ) TO '{{ raw_dir }}/prfiles-{{ run_id }}-{{ ts }}.json'
+    $tera$, pr_row, autoescape := false) AS sql
+    FROM prs_dispatched CROSS JOIN UNNEST(receipts) AS r(receipt) CROSS JOIN UNNEST(receipt.body::JSON[]) AS j(pr_row)
+), files_dispatched AS (
+    SELECT array_agg(selfdispatch(sql)) AS receipts FROM files_rendered
+)
+SELECT receipt.* FROM files_dispatched CROSS JOIN UNNEST(receipts) AS t(receipt);
+```
+
+One run's full log zip, for duck_hunt: fetched once, kept. The command's only job is to land the
+file; its `ls -l` line is the receipt.
+
+```sql
+SELECT * FROM read_lines($cmd${ [ -s raw/run-<run_id>.zip ] || gh api repos/<owner>/<repo>/actions/runs/<run_id>/logs > raw/run-<run_id>.zip; } && ls -l raw/run-<run_id>.zip |$cmd$);
+```
+
+- `gh api --paginate --slurp` over a list endpoint gives one row per page with a `json` list
+  column: `CROSS JOIN UNNEST(json)`. Select `file.filename` from it, not a bare `filename`, which
+  binds to the reader's own filename column when the page has none.
+- One command per row, dispatched. No loop in the shellfs string, no `.sh` file, no Python.
+- A run's zip is `{N}_{job name}.txt` per job — the input to `/duckstack:duck-hunt`
+  (`read_duck_hunt_log('zip://<zip>/<glob>', format)` on dev).
+
+## 2. Views over raw/ — newest copy per key wins
 
 ```sql
 CREATE OR REPLACE VIEW raw_runs     AS FROM read_json('raw/runs-*.json', filename := true);
 CREATE OR REPLACE VIEW raw_jobs     AS FROM read_json('raw/jobs-*.json', format := 'unstructured', filename := true);
 CREATE OR REPLACE VIEW raw_prfiles  AS FROM read_json('raw/prfiles-*.json', format := 'newline_delimited', filename := 'raw_file');  -- the rows carry their own `filename`
 
-CREATE OR REPLACE TABLE runs AS
+CREATE OR REPLACE VIEW runs AS
 SELECT * EXCLUDE (filename),
        date_diff('second', createdAt, startedAt) AS queue_s,
        date_diff('second', startedAt, updatedAt) AS wall_s
 FROM raw_runs
 QUALIFY row_number() OVER (PARTITION BY databaseId ORDER BY filename DESC) = 1;
 
-CREATE OR REPLACE TABLE jobs AS
-SELECT databaseId AS run_id, unnest(j),
+CREATE OR REPLACE VIEW jobs AS
+SELECT databaseId AS run_id, j.*,
        date_diff('second', j.startedAt, j.completedAt) AS job_s
-FROM raw_jobs, unnest(jobs) AS t(j)
+FROM raw_jobs CROSS JOIN UNNEST(jobs) AS t(j)
 QUALIFY row_number() OVER (PARTITION BY j.databaseId ORDER BY filename DESC) = 1;
 
-CREATE OR REPLACE TABLE steps AS
-SELECT run_id, databaseId AS job_id, name AS job_name, unnest(s),
+CREATE OR REPLACE VIEW steps AS
+SELECT run_id, databaseId AS job_id, name AS job_name, s.*,
        date_diff('second', s.startedAt, s.completedAt) AS step_s
-FROM jobs, unnest(steps) AS t(s);
+FROM jobs CROSS JOIN UNNEST(steps) AS t(s);
 ```
 
-Verified 2026-09-22 on inframe-risk/inframe raw/: 201 runs, 41 CI runs, 540 jobs.
+Verified 2026-09-22 on inframe-risk/inframe raw/: 201 runs, 41 CI runs, 540 jobs; the view
+bodies re-checked 2026-10-17 on per-run `jobs-<run_id>-<ts>.json` files (2 CI runs).
 
-**Keep every job row; decide in the page view.** What the table holds, measured:
+**Keep every job row; decide in the page view.** What the view holds, measured:
 
 | status | conclusion | job_s |
 |---|---|---|
@@ -122,11 +182,11 @@ files live; a PR that only touches one side but ran the other side's jobs paid f
 
 ```sql
 SELECT run_id, pr,
-       coalesce(array_agg(filename) FILTER (WHERE starts_with(filename, 'platform/backend/')),  []) AS backend_files,
-       coalesce(array_agg(filename) FILTER (WHERE starts_with(filename, 'platform/frontend/')), []) AS frontend_files,
+       list_filter(array_agg(filename), f -> starts_with(f, 'platform/backend/'))  AS backend_files,
+       list_filter(array_agg(filename), f -> starts_with(f, 'platform/frontend/')) AS frontend_files,
        array_agg(filename) AS files
 FROM raw_prfiles GROUP BY ALL;
--- verified: run 35796637550 (PR #1366) → 0 backend, 4 frontend files; a FILTER over no rows is NULL, hence coalesce
+-- verified 2026-10-17: run 39075670966 (PR #1662) → 9 backend, 0 frontend of 14 files; no match is [], not NULL
 ```
 
 (In inframe, `.github/workflows/ci.yml` has one `changes.outputs.platform` flag gating backend
@@ -157,20 +217,21 @@ gitignored and grows with every run; the tables are rebuilt from it alone.
 The shape for one finding, such as "every PR waits on Backend Tests Shard 1":
 
 1. **Scope the runs with gh**: `gh run list --workflow ci.yml --user <login> --created ">=<date>"`,
-   then `gh api …/actions/runs/{id}/jobs?per_page=100` per run, concatenated into one
-   `raw/jobs-<ts>.json`. Read it with `read_json(…, format := 'unstructured')`, then
-   `unnest(jobs)`.
-2. **A view, not a table**, so a live page re-fetches. Gate the fetch on the newest raw file's
-   age: `find raw -name "jobs-*.json" -mmin -30 | grep -q . || <fetch>; cat $(ls -t raw/jobs-*.json | head -1)`.
+   then `gh api …/actions/runs/{id}/jobs?per_page=100` per run as a self-dispatched stage (§1),
+   one `raw/jobs-<run_id>-<ts>.json` each. Read them with `read_json(…, format := 'unstructured')`,
+   then `CROSS JOIN UNNEST(jobs)`.
+2. **A view, not a table**, so a live page re-fetches. Gate the fetch in SQL: the newest
+   `raw/jobs-*.json` modified time comes from hostfs `ls`, and the fetch is rendered only `WHERE`
+   it is over 30 minutes old, so a fresh file sends nothing.
 3. **Keep only runs with the usual layout.** Count shard jobs per run: experiment branches run
    other shard counts, and their shard 1 is not the same job.
 4. **Per job:** `array_agg(job_s ORDER BY job_s)`, the median read off that list, and the median
    run's `html_url` for the link. Keep every point for a strip chart.
 5. **Typical run:** the one whose wall is nearest the median wall. Land its shard logs as
-   `raw/joblog-<job_id>.txt` and read them with the duck-hunt recipes. Parse each log once into a
-   table, since a landed log never changes.
-6. **Room for "after":** a one-row params view (`after_since TIMESTAMP`, NULL until the fix's runs
-   exist) gives every run a `series`. The charts draw the after bar only when it has rows.
+   `raw/joblog-<job_id>.txt` and read them with the duck-hunt recipe views; a landed log never
+   changes, so it is fetched once.
+6. **Room for "after":** `after_since` (the fix's merge time) is a value in the first CTE, and
+   runs started after it get `series = 'after'`. The charts draw the after bar only when it has rows.
 7. **The cause, from git:** `.test_durations` read with duck_tails (`read_text('git:///…@origin/staging')`,
    `json_keys`), and its age from `git_blame` (newest `author_date`). Coverage is a `LEFT JOIN`
    of the tests that ran against its keys.

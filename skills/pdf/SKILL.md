@@ -66,7 +66,8 @@ are points, origin top-left, `y0` growing downward. Lines are a `GROUP BY`, not
 a parameter:
 
 ```sql
-SELECT page, y0, list(word ORDER BY x0) AS words, array_to_string(words, ' ') AS line
+SELECT page, y0, list(word ORDER BY x0) AS words,
+       tera_render('{{ words | join(sep=" ") }}', json_object('words', words), autoescape := false) AS line
 FROM read_pdf_words('/abs/path/document.pdf') GROUP BY page, y0;
 ```
 
@@ -126,8 +127,7 @@ scores it — filter on confidence, never on a hunch.
   "poppler-utils not installed", do not install poppler — render with
   `pdf_write_page_images` and read the PNGs.
 - **A long document (a book, a 100-page report) is `/duckstack:pdf-digest`**, not a `read_pdf` dump: it builds a
-  contents-first card from word geometry in one SQL file (verified 2026-09-29, duckdb-pdf `c804ebc`; its §1 says how
-  to build).
+  contents-first card from `pdf_outline` and `pdf_chunks` in one SQL statement.
 - Facts that file established: `pdf_pages_info.label` is the PDF's own printed page number; `pdf_chunks` takes only
   `chunk_size` positionally (`overlap := 0`); ligature runs split words (`Profi ling`) at every grain, so glue words
   whose gap is < 0.5pt; `read_pdf_tables` misses most borderless tables; `pdf_outline` has no page column. Evidence in

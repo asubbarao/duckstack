@@ -73,8 +73,9 @@ verbatim, then let a reader type it. Never retype the content into SQL by hand.
    and a `markdownBlockLimit` above the page's block count. Keep `page_describe` output too —
    it carries `createdBy`/`updatedBy`/timestamps the content call omits.
 3. `table_rows_read` per table the content call reports.
-4. Write each response verbatim to a `.json` file, then `read_json` it from inside
-   a `quack_query` body. `references/land.sql` is the shape.
+4. Write each response verbatim to a `.json` file, then read it on dev with the reader alone,
+   `SELECT * FROM read_json('<file>.json')`: it brings its own columns, so no column list or
+   structure string is written.
 
 Canvas-typed cells come back as `{type, content, canvasUri}`; an empty cell has **no**
 `content` key at all, so the reader types it `NULL` rather than `''`. Rich-text cells come

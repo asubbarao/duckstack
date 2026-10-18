@@ -29,7 +29,8 @@ isolated environment. No new macros.
    it. The views read `raw/`.
 2. **Finish every number in SQL**: labels, durations, pixel widths, links. Use jsonata when the job
    is only reshaping JSON.
-3. **Charts:** `quickjs(js || rows_json)` → an SVG string, one per chart.
+3. **Charts:** `quickjs(tera_render(js, {rows: rows_json}::JSON, autoescape := false))` → an SVG
+   string, one per chart.
 4. **Page:** `CREATE VIEW page_html AS SELECT tera_render(template, ctx, autoescape := false) AS html`.
    It is a view, so every read re-renders it.
 5. **Out:** `COPY (FROM page_html) TO 'page.html' …` for the file, and/or `CREATE ROUTE page GET '/' AS
@@ -42,12 +43,13 @@ the file, or DuckDB fetches it when the page is served.
 ## Inputs, any source → a view
 
 ```sql
-INSTALL shellfs FROM community; LOAD shellfs;
-INSTALL webbed FROM community; LOAD webbed;
+INSTALL shellfs FROM community;
+LOAD shellfs;
+INSTALL webbed FROM community;
+LOAD webbed;
 -- CLI / API through shellfs: the command's stdout is the file; tee keeps the raw response
--- read_json(path, format := 'auto', records := 'auto', filename := false, columns := NULL, maximum_depth := -1, sample_size := 20480, ignore_errors := false)
 CREATE OR REPLACE VIEW raw_runs AS
-FROM read_json('ts=$(date -u +%Y%m%dT%H%M%SZ); gh run list --repo o/r --json databaseId,url,createdAt | tee raw/runs-$ts.json |');
+FROM read_json($cmd$gh run list --repo <owner>/<repo> --json databaseId,url,createdAt | tee raw/runs-$(date -u +%Y%m%dT%H%M%SZ).json |$cmd$);
 -- landed files, newest copy per key wins
 CREATE OR REPLACE VIEW runs AS FROM read_json('raw/runs-*.json', filename := true)
 QUALIFY row_number() OVER (PARTITION BY databaseId ORDER BY filename DESC) = 1;
@@ -57,12 +59,14 @@ QUALIFY row_number() OVER (PARTITION BY databaseId ORDER BY filename DESC) = 1;
 INSTALL postgres; LOAD postgres;
 ATTACH 'host=localhost dbname=postgres' AS pg (TYPE postgres, READ_ONLY);
 
--- the web: one page is http_get + webbed (/duckstack:web-read)
+-- the web: one page is curl through shellfs + webbed (/duckstack:web-read, /duckstack:crawl)
 -- html_extract_text(html HTML, xpath VARCHAR) -> VARCHAR[]
-SELECT html_extract_text((http_get('https://duckdb.org/') ->> '$.body')::HTML, '//title') AS title;
+SELECT html_extract_text(content::HTML, '//title') AS title
+FROM read_text($cmd$curl -sSL --fail --max-time 30 https://duckdb.org/ |$cmd$);
 ```
 
 Verified 2026-09-23: the Postgres ATTACH listed 208 tables, and a `CREATE` through it was refused.
+The curl + webbed title verified 2026-10-17 on dev.
 `crawler` (and its `css_select`) has no DuckDB 1.5.6 build (404 on community-extensions, 2026-10-09).
 
 ## Reshape: jsonata (optional)
@@ -71,13 +75,17 @@ Verified 2026-09-23: the Postgres ATTACH listed 208 tables, and a `CREATE` throu
 chart or template wants, in a single expression: series, a max, nested sections, a sorted list.
 
 ```sql
-INSTALL jsonata FROM community; LOAD jsonata;
+INSTALL jsonata FROM community;
+LOAD jsonata;
 CREATE OR REPLACE VIEW page_data AS
-SELECT jsonata('($m := $max(r.v); {"total": $sum(r.v), "top": r[v = $m].name,
+SELECT jsonata('($m := $max(r.v); {"total": $sum(r.v), "n": $count(r), "top": r[v = $m].name,
                  "bars": r^(>v).{"label": name, "v": v, "url": url}})',
-               to_json({r: list({name: name, v: v, url: url})})) AS j
+               to_json({r: list({name: name, v: v, url: url})})) AS j,
+       -- the detail table's rows, rendered per row in SQL so the page template only substitutes
+       string_agg(tera_render('<tr><td><a href="{{ url }}">{{ name }}</a></td><td>{{ v }}</td></tr>',
+                              {name: name, v: v, url: url}::JSON, autoescape := false), '' ORDER BY v DESC) AS rows_html
 FROM items;
--- → {"total":63,"top":"beta","bars":[{"label":"beta","v":30,…},…]}
+-- → j = {"bars":[{"label":"beta","v":30,…},…],"n":3,"top":"beta","total":63}
 ```
 
 Use plain SQL for anything that is really a join, a filter or an aggregate over tables. jsonata
@@ -86,20 +94,21 @@ here; bind it first with `$m := …`.
 
 ## Charts: quickjs
 
-`quickjs(code) -> VARCHAR` evaluates the script and returns its last expression. Splice the rows in
-as a JSON literal and return an SVG string. The page then holds the chart as static text, with no
-CDN and no script tag.
+`quickjs(code) -> VARCHAR` evaluates the script and returns its last expression. tera substitutes
+the rows in as a JSON literal and the script returns an SVG string. The page then holds the chart
+as static text, with no CDN and no script tag.
 
 ```sql
-INSTALL quickjs FROM community; LOAD quickjs;
+INSTALL quickjs FROM community;
+LOAD quickjs;
 CREATE OR REPLACE VIEW chart AS
-SELECT quickjs($js$
-const d = $js$ || j::VARCHAR || $js$;
+SELECT *, quickjs(tera_render($js$
+const d = {{ j }};
 const top = Math.max(...d.bars.map(b => b.v)), esc = s => String(s).replaceAll('&', '&amp;').replaceAll('<', '&lt;');
 `<svg viewBox="0 0 520 ${d.bars.length * 24}" width="100%" role="img">` + d.bars.map((b, i) =>
   `<a href="${esc(b.url)}"><text class="lbl" x="0" y="${i * 24 + 15}">${esc(b.label)}</text>` +
   `<rect class="bar${i === 0 ? ' hot' : ''}" x="90" y="${i * 24 + 4}" width="${Math.round(b.v * 380 / top)}" height="15"/></a>`).join('') + `</svg>`
-$js$) AS svg
+$js$, {j: j::VARCHAR}::JSON, autoescape := false)) AS svg
 FROM page_data;
 ```
 
@@ -107,22 +116,29 @@ FROM page_data;
 - **Wrap each mark in `<a href>`** so a bar or dot links to its source row.
 - **Escape label text in JS** with `replaceAll`.
 - **Several chart kinds:** put the functions (hbar, strip, stacked, gantt) in one `$js$` string
-  in a view. Each chart is then `quickjs(lib || 'hbar(' || rows_json || ')')`.
+  in a view. Each chart is then `quickjs(tera_render('{{ lib }} hbar({{ rows_json }})', c::JSON, autoescape := false))`.
+- **`{{ j }}` of a JSON object prints `[object]`**; pass it as text (`{j: j::VARCHAR}`) so it prints as a literal.
 - **miniplot** (`bar_chart(labels, values, title[, 'file.html'])`) writes a stock Plotly page that
   loads from a CDN. Use it only when the chart must be interactive.
 
 ## Render: tera
 
 ```sql
-INSTALL tera FROM community; LOAD tera;
+INSTALL tera FROM community;
+LOAD tera;
 -- tera_render(template VARCHAR, context JSON, autoescape := true) -> VARCHAR
 CREATE OR REPLACE VIEW page_html AS
 SELECT tera_render($tpl$<!doctype html><html><head><meta charset="utf-8"><title>Items</title><style>…</style></head>
-<body><section id="top"><h1>{{ d.top }} leads</h1>{{ svg }}<p>{{ d.top }} is the largest of {{ d.bars | length }}; together they total {{ d.total }}.</p></section>
-<section id="detail"><table>{% for b in d.bars %}<tr><td><a href="{{ b.url }}">{{ b.label }}</a></td><td>{{ b.v }}</td></tr>{% endfor %}</table></section>
-</body></html>$tpl$, {d: j, svg: svg, generated: strftime(timezone('UTC', now()), '%Y-%m-%d %H:%M UTC')}::JSON, autoescape := false) AS html
-FROM page_data, chart;
+<body><section id="top"><h1>{{ d.top }} leads</h1>{{ svg }}<p>{{ d.top }} is the largest of {{ d.n }}; together they total {{ d.total }}.</p></section>
+<section id="detail"><table>{{ rows_html }}</table></section>
+</body></html>$tpl$, {d: j, svg: svg, rows_html: rows_html, generated: strftime(timezone('UTC', now()), '%Y-%m-%d %H:%M UTC')}::JSON, autoescape := false) AS html
+FROM chart;
+-- verified 2026-10-17 on dev: page_data → chart → page_html, the top paragraph reads
+-- 'beta is the largest of 3; together they total 63.'
 ```
+
+The template only substitutes: the detail rows come rendered from `page_data`, the count from
+jsonata, and `chart` carries `page_data`'s columns so the page reads one relation.
 
 | Gotcha | Do instead |
 |---|---|
@@ -183,7 +199,8 @@ What makes live work:
   or `getvariable()`/`SET VARIABLE`. Keep everything the page reads in views and non-temp tables.
 - **Every request re-runs the views.** A glob sees new files, and a shellfs view re-runs its
   command twice per reference (bind and execute). Gate an expensive fetch on the age of the newest
-  raw file, as in `find raw -name 'x-*.json' -mmin -30 | grep -q . || <fetch>; cat $(ls -t raw/x-*.json | head -1)`.
+  raw file in SQL: its modified time from hostfs `ls`, and the fetch rendered and self-dispatched
+  only `WHERE` it is over 30 minutes old, so a fresh file sends nothing.
   Parse inputs that never change (landed logs, files) once into a table.
 - **`query_timeout_ms` defaults to 30 s.** A slower request gets a 504, so raise the timeout when a
   refresh may fetch.

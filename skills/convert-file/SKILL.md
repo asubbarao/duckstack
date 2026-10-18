@@ -16,7 +16,7 @@ Output file: `${1:-}`
 
 ## Step 1 — Resolve input and output
 
-**Input**: `$0`. If it's a bare filename (no `/`), resolve to a full path with `find "$PWD" -name "$0" -not -path '*/.git/*' 2>/dev/null | head -1`.
+**Input**: `$0`. If it's a bare filename (no `/`), it is `$PWD/$0`; if that is missing, list the folder with hostfs (`/duckstack:hostfs-ls`) and ask which file was meant.
 
 **Output**: If `$1` is provided, use it as the output path. If not, default to the same stem as the input with a `.parquet` extension (e.g., `data.csv` → `data.parquet`).
 
@@ -61,7 +61,7 @@ For remote inputs (`s3://`, `https://`, etc.), prepend the same protocol setup a
 
 On success, report:
 - Input file and detected format
-- Output file, format, and size (`ls -lh`)
+- Output file, format, and size (hostfs `file_size('<OUTPUT_PATH>')`)
 - Row count if quick to compute
 
 On failure:

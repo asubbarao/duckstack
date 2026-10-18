@@ -3,6 +3,7 @@
 -- Replace it with an absolute repository path when using a server elsewhere.
 -- Verified 2026-09-29 on dev using ~/duckdb-skills: grouped tree totals and four
 -- bounded historical SKILL.md reads, selected-file metadata and distinct-content grouping.
+-- Re-run 2026-10-17 as CROSS JOIN LATERAL: 3, 5, 6 on ~/duckdb-skills; 4 on inframe carriers.csv.
 -- Other recipes compose those same native forms; dataset paths are caller examples.
 INSTALL duck_tails FROM community;
 LOAD duck_tails;
@@ -30,8 +31,8 @@ WITH recent_commits AS (
     LIMIT 4
 )
 SELECT l.commit_hash, l.author_date, r.file_path, r.blob_hash, r.size_bytes
-FROM recent_commits l
-JOIN LATERAL git_read_each(git_uri('.', 'README.md', l.commit_hash)) r ON true;
+FROM recent_commits AS l
+CROSS JOIN LATERAL git_read_each(git_uri('.', 'README.md', l.commit_hash)) AS r;
 
 -- 3. Prune file paths/types BEFORE reading text. Keep metadata and the raw body.
 WITH selected_files AS (
@@ -39,14 +40,14 @@ WITH selected_files AS (
     WHERE kind = 'file' AND file_path IN ('README.md', 'package.json')
 )
 SELECT t.file_path, t.git_uri, t.blob_hash, r.text, r.encoding, r.truncated
-FROM selected_files t
-JOIN LATERAL git_read_each(t.git_uri) r ON true;
+FROM selected_files AS t
+CROSS JOIN LATERAL git_read_each(t.git_uri) AS r;
 
 -- 4. Same committed dataset at literal revisions, no checkout or captured repo variable.
--- Replace data/sales.csv with a real tracked dataset. Native readers retain their options.
-SELECT 'HEAD' AS revision, * FROM read_csv('git://data/sales.csv@HEAD')
-UNION ALL BY NAME
-SELECT 'HEAD~1' AS revision, * FROM read_csv('git://data/sales.csv@HEAD~1');
+-- Replace data/sales.csv with a real tracked dataset. One reader over a literal list;
+-- filename is each revision's git:// URI. Native readers retain their options.
+SELECT * FROM read_csv(['git://data/sales.csv@HEAD', 'git://data/sales.csv@HEAD~1'],
+                       union_by_name := true, filename := true);
 
 -- 5. Changes in one file's CONTENT, not merely commits whose snapshot contains it.
 -- Distinct blobs identify distinct contents; this does not name the introducing commit.
@@ -55,8 +56,8 @@ WITH recent_commits AS (
     ORDER BY author_date DESC, commit_hash LIMIT 7
 ), snapshots AS (
     SELECT l.commit_hash, l.author_date, r.blob_hash, r.size_bytes
-    FROM recent_commits l
-    JOIN LATERAL git_read_each(git_uri('.', 'README.md', l.commit_hash)) r ON true
+    FROM recent_commits AS l
+    CROSS JOIN LATERAL git_read_each(git_uri('.', 'README.md', l.commit_hash)) AS r
 )
 SELECT blob_hash, size_bytes,
        array_agg(commit_hash ORDER BY author_date DESC, commit_hash) AS snapshot_commits
@@ -68,8 +69,8 @@ WITH recent_commits AS (
     ORDER BY author_date DESC, commit_hash LIMIT 4
 )
 SELECT l.commit_hash, t.file_path, t.blob_hash, t.size_bytes
-FROM recent_commits l
-JOIN LATERAL git_tree_each('.', l.commit_hash) t ON true
+FROM recent_commits AS l
+CROSS JOIN LATERAL git_tree_each('.', l.commit_hash) AS t
 WHERE t.kind = 'file' AND t.file_path = 'README.md';
 
 -- 7. Contributor activity: retain the commit identities behind the count.
