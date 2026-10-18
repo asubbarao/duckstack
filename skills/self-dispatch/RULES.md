@@ -141,7 +141,8 @@ receipt problems below have one place to be checked.
 37. A shellfs pipe never contains:
     - `tail` / `head` (hook, 09-29);
     - a `timeout` wrapper, since the tool's own option bounds it (hook, 09-15);
-    - a nested `duckdb -c` (hook, 09-25);
+    - an inline `duckdb -c` program; make the read a view (hook, 09-25). A checked-in `.sql` run with
+      `duckdb -f` as its own process is fine;
     - `|| true` / `; true`, since the shell template takes the accepted exit codes (hook warns, 10-16).
 38. Hard-code no `/Users/…` path. Use scalarfs path variables, `getenv('HOME')`, or a column declared once
     (hook warns, 09-25, 10-15).

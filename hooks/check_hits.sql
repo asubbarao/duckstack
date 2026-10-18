@@ -226,7 +226,7 @@ SELECT 'sql_shellfs_exit_hack' AS check_id, call_id, tool_name, coalesce(next_pr
 UNION ALL
 SELECT 'sql_shellfs_grep' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((len(list_filter(sql_table_function_calls, t -> len(list_filter(t.literals, l -> list_has_any(string_split(translate(l, E'|;&\t\n', '     '), ' '), ['grep', 'egrep', 'rg']))) > 0)) > 0), false)
 UNION ALL
-SELECT 'sql_shellfs_nested_duckdb' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((list_contains(sql_shellfs_pipe_words, 'duckdb') AND list_has_any(sql_shellfs_pipe_words, ['-c', '-f', '.read'])), false)
+SELECT 'sql_shellfs_nested_duckdb' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((list_contains(sql_shellfs_pipe_words, 'duckdb') AND list_has_any(sql_shellfs_pipe_words, ['-c', '.read'])), false)
 UNION ALL
 SELECT 'sql_shellfs_raw_pytest' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((len(list_filter(sql_table_function_calls, t -> t.name <> 'read_duck_hunt_log' AND len(list_filter(t.literals, l -> contains(l, 'pytest'))) > 0)) > 0), false)
 UNION ALL
