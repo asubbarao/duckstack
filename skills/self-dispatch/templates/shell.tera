@@ -1,2 +1,7 @@
-{# 1. One shell command. Row: reader (read_csv | read_json | read_lines), command, options (text, may be empty). #}
-SELECT * FROM {{ reader }}($cmd${{ command }} |$cmd${{ options }})
+{# 1. Commands or files, one reader, any number of sources in one statement.
+   Row: reader (read_csv | read_json | read_text | read_blob),
+        sources (list: a command ends with ' |', a file is its path),
+        options (text, may be empty).
+   jq is a boolean in the first CTE: when on, SQL appends the fixed '| jq -c ''.[]''' to each command (splits an
+   array into lines for read_json) and nothing else. Curl is a command like any other. #}
+SELECT * FROM {{ reader }}([$src${{ sources | join(sep="$src$, $src$") }}$src$]{{ options }})

@@ -30,9 +30,7 @@ The endpoint is this machine's dev (`selfdispatch` wraps `quackapi_post` to `127
 |---|---|---|
 | Plain SELECT | inline `SELECT {{ n }} AS answer` | Values or already quoted identifiers |
 | Native file reader | inline, [inline.sql](inline.sql) example 2 | Reader name, `quote_literal`ed source, options as text (`', header := true'`) |
-| One shell command | `shell.tera` | Reader, command text, options text |
-| Output read_json cannot read whole | `jq_array_to_lines.tera` | Command text, path to the array |
-| Another host | `network.tera` | Reader, quoted URL, options text |
+| Commands or files, any reader, batch; curl to another host | `shell.tera` | Reader, sources list, options text; jq boolean in the first CTE |
 | Ordered SQL statements | [replica/pull.sql](../../../server/replica/pull.sql) | Source, target, quoted table name and temporary marker |
 | Same query, different catalog | [replica/reads.sql](../../../server/replica/reads.sql) | Route name, path and catalog |
 | Fetch URL rows | [crawl_rows.sql](../../crawl/references/crawl_rows.sql) | Selected URLs and fetch policy |

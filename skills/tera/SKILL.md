@@ -32,11 +32,11 @@ LOAD tera;
 --   autoescape: false for SQL, shell and any non-HTML text.
 --   A JSON value in the context renders as [object]; pass text when the template must print JSON.
 WITH listings AS (
-    SELECT 'read_csv' AS reader, $c$find '/private/tmp' -maxdepth 0 -type d$c$ AS command,
+    SELECT 'read_csv' AS reader, [$c$find '/private/tmp' -maxdepth 0 -type d |$c$] AS sources,
            $o$, header := false, names := ['path']$o$ AS options
 )
 SELECT tera_render('shell.tera', l::JSON, autoescape := false,
-                   template_path := '/Users/aloksubbarao/duckdb-skills/skills/self-dispatch/templates/*.tera') AS sql
+                   template_path := '/Users/aloksubbarao/.duck/deploy/skills/self-dispatch/templates/*.tera') AS sql
 FROM listings AS l;
 ```
 

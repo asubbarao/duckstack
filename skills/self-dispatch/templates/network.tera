@@ -1,2 +1,0 @@
-{# 4. Another host: curl through shellfs. Row: url (prequoted), reader, options. #}
-SELECT * FROM {{ reader }}($cmd$curl -sS --fail --max-time 30 {{ url }} |$cmd${{ options }})

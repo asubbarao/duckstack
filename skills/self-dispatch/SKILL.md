@@ -1,6 +1,6 @@
 ---
 name: self-dispatch
-description: Generate readable SQL from rows, execute native JSON self-posts, and unnest receipts. Five canonical templates (shell, pipeline, sql, network, loop) in templates/.
+description: Generate readable SQL from rows, execute native JSON self-posts, and unnest receipts. Three templates in templates/: shell (any reader, batch sources, jq on/off), sql, and bash_loop_fallback_method.
 ---
 
 # Self-dispatch
@@ -24,11 +24,12 @@ Pick the template by what the statement does. `templates/canonical.sql` has a ve
 
 | template | for | row columns |
 |---|---|---|
-| `shell.tera` | one shell command (files, processes, osascript, git, gh) | reader, command, options |
-| `jq_array_to_lines.tera` | only when read_json cannot read the output whole (e.g. `gh api --paginate`): jq splits one array into lines, nothing more | command, array |
+| `shell.tera` | commands or files through `read_csv`, `read_json`, `read_text` or `read_blob`; many sources per statement; curl, gh, osascript and git are commands | reader, sources (list: a command ends with ` \|`, a file is its path), options. jq is a boolean in the first CTE that appends only `\| jq -c '.[]'` |
 | `sql.tera` | in the database: SELECT, DDL, DML, PRAGMA, names from information_schema | table_schema, table_name, … |
-| `network.tera` | another host: curl through shellfs (or `quackapi_post` to another service) | reader, url, options |
 | `bash_loop_fallback_method.tera` | FALLBACK: a bash loop when no row source exists; the audit lists every use | items, body |
+
+Dependent stages in one query (each stage an atom that dispatches and a molecule that unnests; the next atom renders
+from the last molecule's rows): [references/five_stage_pipeline.sql](references/five_stage_pipeline.sql).
 
 Rules:
 
