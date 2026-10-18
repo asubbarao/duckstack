@@ -21,6 +21,12 @@ SELECT f.path, parse_dirpath(f.path) AS parent, f.name, f.stem, f.ext, f.bytes, 
             ELSE f.path[:-(len(f.ext) + 1)] END AS session
 FROM fs.files f JOIN roots r ON starts_with(f.path[len(getenv('HOME')) + 1:], r.root)
 WHERE f.ext IN ('.jsonl', '.zst', '.parquet');
+-- agent.docs: every memory, plan and instruction file Claude and Codex keep, one row per file, read live.
+CREATE OR REPLACE VIEW agent.docs AS
+SELECT filename AS path, file_name(filename) AS name, size, last_modified, content
+FROM read_text(['/Users/aloksubbarao/.claude/projects/*/memory/*.md', '/Users/aloksubbarao/.claude/plans/*.md',
+    '/Users/aloksubbarao/.codex/memories/*.md', '/Users/aloksubbarao/.codex/memories/*/*/*/*.md',
+    '/Users/aloksubbarao/.claude/CLAUDE.md', '/Users/aloksubbarao/AGENTS.md', '/Users/aloksubbarao/.codex/AGENTS.md']);
 -- agent.titles: Codex thread names from ~/.codex/session_index.jsonl; id is the session id in the rollout file name.
 CREATE OR REPLACE VIEW agent.titles AS
 SELECT id, thread_name AS title, updated_at::TIMESTAMPTZ AS updated_at FROM read_json(getenv('HOME') || '/.codex/session_index.jsonl', format := 'newline_delimited');
