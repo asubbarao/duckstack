@@ -74,7 +74,7 @@ SELECT 'git_skip_verify' AS check_id, call_id, tool_name, coalesce(next_prompt_c
 UNION ALL
 SELECT 'host_command_text' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((list_has_any(bash_pipeline_commands, ['ps', 'lsof', 'netstat', 'df', 'du'])), false)
 UNION ALL
-SELECT 'house_rules_in_brief' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((tool_name = 'Agent'), false)
+SELECT 'house_rules_in_brief' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((tool_name = 'Agent' AND agent_subagent_type IS DISTINCT FROM 'fork' AND NOT contains(coalesce(agent_prompt, ''), 'DuckDB is part of the stack by decision')), false)
 UNION ALL
 SELECT 'instruction_mirrors' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((tool_name IN ('Edit', 'Write') AND file_name IN ('CLAUDE.md', 'AGENTS.md')), false)
 UNION ALL

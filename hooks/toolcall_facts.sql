@@ -216,7 +216,7 @@ CREATE OR REPLACE VIEW toolcall_facts AS
 SELECT i.call_id, i.session, i.ts, i.subagent, i.tool_name, i.next_prompt_corrects,
        p.file_path, p.file_name, p.file_ext, p.file_path_parts,
        len(string_split(i.write_content, E'\n')) AS write_lines,
-       i.agent_model, i.agent_subagent_type, length(i.agent_prompt) AS agent_prompt_len,
+       i.agent_model, i.agent_subagent_type, i.agent_prompt, length(i.agent_prompt) AS agent_prompt_len,
        i.skill_name, i.slack_channel,
        [lower(w) FOR w IN string_split(i.linear_title, ' ') IF w <> ''] AS linear_title_words,
        b.* EXCLUDE (call_id),
