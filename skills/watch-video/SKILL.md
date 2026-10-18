@@ -20,8 +20,8 @@ come from the perceptual hash moving; the model only ever looks at one settled f
 ## 1. Frames and scenes
 
 `~/duckdb-skills/skills/tera/references/video_frames.sql` runs on dev: set the video path and frames
-directory literals at the top, then run its statements through the dev MCP `execute` tool (or post
-the body to `http://127.0.0.1:9495/sql`). The knobs are literals in the file:
+directory literals at the top, then run its statements through the dev MCP `execute` tool. The knobs are
+literals in the file:
 
 | Literal | Default | Meaning |
 |---|---|---|
@@ -34,7 +34,7 @@ the body to `http://127.0.0.1:9495/sql`). The knobs are literals in the file:
 | busy scenes | 20 | how many busy scenes get the second pass, most movement first |
 
 Two passes: the whole video at `fps`, then each busy scene re-rendered from the same template with `start`,
-`end` and the busy `fps` (one rendered statement per scene, posted to `/sql` and appended to the same table). Every bash flag is a
+`end` and the busy `fps` (one rendered statement per scene, run by `array_agg(selfdispatch(sql))` and appended to the same table). Every bash flag is a
 context value of the template: `ffmpeg_input_flags`, `ffmpeg_filters`, `ffmpeg_output_flags`, `quality`,
 `width`, so a different capture is a different context, never a different program. Verified: the second pass
 at 10 fps over the 5 busiest scenes added 330 frames in 25 s, same 75 scenes.

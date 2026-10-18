@@ -149,7 +149,8 @@ WITH intent AS (                          -- what is being done, as data
 SELECT r.* FROM dispatched CROSS JOIN UNNEST(receipts) AS t(r);
 ```
 
-The owner's own examples (2026-10-17). The first CTE declares everything; tera only substitutes; the
+The owner's own examples (2026-10-17); he wrote the post out as `quackapi_post(...)`, written here as
+`selfdispatch(sql)`, the same call since PR #50. The first CTE declares everything; tera only substitutes; the
 reader is `SELECT *` and brings its own columns; the result is `receipt.*`:
 
 ```sql
@@ -168,18 +169,17 @@ WITH c AS (
     ) AS sql
     FROM c
 ), dispatched AS (
-    SELECT array_agg(
-        quackapi_post(
-            'http://127.0.0.1:9495/sql',
-            json_object('sql', sql)::VARCHAR
-        )
-    ) AS receipts
+    SELECT array_agg(selfdispatch(sql)) AS receipts
     FROM rendered
 )
 SELECT receipt.*
 FROM dispatched
 CROSS JOIN UNNEST(receipts) AS t(receipt);
 ```
+
+`selfdispatch(sql)` is exactly `quackapi_post('http://127.0.0.1:9495/sql', json_object('sql', sql)::VARCHAR)`: the
+post always goes to dev itself, and whatever varies by row goes inside the statement. A query that hand-writes the
+post, takes a URL per row, or builds it with `url_build` is a finding.
 
 ```sql
 -- a template file
