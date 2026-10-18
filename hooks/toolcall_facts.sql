@@ -55,26 +55,29 @@ WHERE i.tool_name IN ('Write', 'Edit') AND p.file_ext = '.sql';
 -- One row per statement: DuckDB's own statement split and canonical text.
 CREATE OR REPLACE VIEW sql_statements AS
 WITH whole_texts AS (
-  -- Each text is parsed once; only the statement nodes (depth 1) are kept.
-  SELECT call_id, sql_source, program_index, sql_text,
-         list_filter(parse_ast_list(sql_text, 'duckdb'), x -> list_contains([0, 1], x.depth)) AS top_nodes
-  FROM sql_texts WHERE sql_text IS NOT NULL
+  -- Each text is parsed once; only the statement nodes (depth 0-1) are kept, and the parse failure is a flag.
+  SELECT call_id, sql_source, program_index, sql_text, top_nodes,
+         list_contains([x.type FOR x IN top_nodes], 'parse_error') AS parse_failed
+  FROM (SELECT *, list_filter(parse_ast_list(sql_text, 'duckdb'), x -> list_contains([0, 1], x.depth)) AS top_nodes
+        FROM sql_texts WHERE sql_text IS NOT NULL)
 ), pieces AS (
   -- One statement sitting_duck's parser rejects (quackapi's CREATE ROUTE) fails the whole text, so such a text is
   -- split at ';' line ends and each statement is read on its own.
-  SELECT call_id, sql_source, program_index, split.piece, split.piece_no,
-         list_filter(parse_ast_list(split.piece, 'duckdb'), x -> list_contains([0, 1], x.depth)) AS top_nodes
-  FROM whole_texts
-  CROSS JOIN UNNEST([concat(p, ';') FOR p IN string_split(sql_text, E';\n')]) WITH ORDINALITY AS split(piece, piece_no)
-  WHERE list_contains([x.type FOR x IN top_nodes], 'parse_error')
+  SELECT call_id, sql_source, program_index, piece, piece_no, top_nodes,
+         list_contains([x.type FOR x IN top_nodes], 'parse_error') AS parse_failed
+  FROM (SELECT whole_texts.call_id, whole_texts.sql_source, whole_texts.program_index, split.piece, split.piece_no,
+               list_filter(parse_ast_list(split.piece, 'duckdb'), x -> list_contains([0, 1], x.depth)) AS top_nodes
+        FROM whole_texts
+        CROSS JOIN UNNEST([concat(p, ';') FOR p IN string_split(whole_texts.sql_text, E';\n')]) WITH ORDINALITY AS split(piece, piece_no)
+        WHERE whole_texts.parse_failed)
 ), nodes AS (
   SELECT call_id, sql_source, program_index, 1 AS piece_no, unnest(top_nodes) AS n
-  FROM whole_texts WHERE NOT list_contains([x.type FOR x IN top_nodes], 'parse_error')
+  FROM whole_texts WHERE NOT parse_failed
   UNION ALL
   -- A statement the parser still rejects is read from its query, the text after its first ' AS '
   -- (CREATE ROUTE / CREATE MIDDLEWARE ... AS SELECT).
   SELECT call_id, sql_source, program_index, piece_no,
-         unnest(CASE WHEN list_contains([x.type FOR x IN top_nodes], 'parse_error')
+         unnest(CASE WHEN parse_failed
                      THEN list_filter(parse_ast_list(substr(piece, instr(upper(piece), ' AS ') + 4), 'duckdb'), x -> x.depth = 1)
                      ELSE top_nodes END) AS n
   FROM pieces)

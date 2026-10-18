@@ -120,8 +120,8 @@ COPY (SELECT review_key, prompt FROM review_prompts)
 TO '/Users/aloksubbarao/.duck/review/prompts'
 (FORMAT csv, HEADER false, QUOTE '', ESCAPE '', DELIMITER E'\x1f', PARTITION_BY (review_key), OVERWRITE_OR_IGNORE true);
 
--- Finished reviews of pending PRs: one read per result file, self-dispatched. The answer is the JSON in claude's
--- result, bare or in a ```json block; a result that is not JSON leaves review NULL, which posts 'error'.
+-- Finished reviews of pending PRs: one read per result file, self-dispatched. The verdict is claude's
+-- structured_output (from --json-schema); a run without it leaves review NULL, which posts 'error' with its text.
 CREATE OR REPLACE VIEW review_results AS
 WITH result_files AS (
     SELECT open_prs.review_key, result_file.file AS path
@@ -138,10 +138,7 @@ WITH result_files AS (
     FROM dispatched CROSS JOIN UNNEST(receipts) AS each_receipt(sent)
     CROSS JOIN UNNEST(TRY_CAST(sent.receipt.body AS JSON[])) AS each_row(result_row)
 )
--- The verdict is claude's structured_output (from --json-schema); text that parses as JSON is the fallback.
-SELECT review_key, result_row ->> 'result' AS result_text,
-       coalesce(result_row -> 'structured_output',
-                TRY_CAST(coalesce(md_extract_code_blocks(result_row ->> 'result')[1].code, result_row ->> 'result') AS JSON)) AS review
+SELECT review_key, result_row ->> 'result' AS result_text, result_row -> 'structured_output' AS review
 FROM result_rows;
 
 -- Every GitHub post this tick makes: statuses (descriptions as rows), comments, and auto-merge.
@@ -153,23 +150,29 @@ WITH status_text AS (
         {'context': 'duckstack/review', 'state': 'pending', 'description': 'Opus 5.5 is reviewing'},
         {'context': 'duckstack/review', 'state': 'success', 'description': 'Opus 5.5: clean'},
         {'context': 'duckstack/review', 'state': 'failure', 'description': 'Opus 5.5: changes needed; see the PR comment'},
-        {'context': 'duckstack/review', 'state': 'error',   'description': 'No JSON verdict; see the comment. Remove its result file to rerun'}
+        {'context': 'duckstack/review', 'state': 'error',   'description': 'No verdict; see the comment. Remove its result file to rerun'}
     ], recursive := true)
 ), rules_summary AS (   -- the only read of pr_rule_hits in this view
     SELECT pr_number, bool_or(action = 'block') AS blocked,
            string_agg(tera_render($t$- **{{ action }}** `{{ check_id }}` in {{ file_path }}: {{ message }}$t$, hit::JSON, autoescape := false),
                       E'\n' ORDER BY action, file_path) AS lines
     FROM pr_rule_hits AS hit GROUP BY pr_number
-), review_summary AS (  -- the only read of review_results in this view
-    SELECT review_key, review ->> 'verdict' AS verdict,
-           CASE WHEN review IS NULL   -- no JSON came back: show what the reviewer wrote, so the error says why
-                THEN tera_render($t$The reviewer answered without the JSON verdict. Its answer, cut at 3000 characters:
-
-{{ text }}$t$, json_object('text', left(result_text, 3000)), autoescape := false)
-                ELSE tera_render($t${{ lines | join(sep="
-") }}$t$, json_object('lines', list_transform(TRY_CAST(review -> 'findings' AS JSON[]), finding -> tera_render($t$- `{{ file }}:{{ line }}` **{{ rule }}**: {{ problem }}
-  Rewrite: {{ rewrite }}$t$, finding, autoescape := false))), autoescape := false) END AS lines
+), reviews AS (         -- the only read of review_results in this view
     FROM review_results
+), finding_lines AS (
+    SELECT review_key, string_agg(tera_render($t$- `{{ file }}:{{ line }}` **{{ rule }}**: {{ problem }}
+  Rewrite: {{ rewrite }}$t$, finding, autoescape := false), E'\n') AS lines
+    FROM reviews CROSS JOIN UNNEST(TRY_CAST(review -> 'findings' AS JSON[])) AS each_finding(finding)
+    GROUP BY review_key
+), review_summary AS (
+    SELECT reviews.review_key, reviews.review ->> 'verdict' AS verdict,
+           -- no verdict came back: show what the reviewer wrote, so the error says why
+           CASE WHEN reviews.review IS NULL
+                THEN tera_render($t$The reviewer gave no verdict. Its answer, cut at 3000 characters:
+
+{{ text }}$t$, json_object('text', left(reviews.result_text, 3000)), autoescape := false)
+                ELSE finding_lines.lines END AS lines
+    FROM reviews LEFT JOIN finding_lines USING (review_key)
 ), rules_verdicts AS (
     SELECT open_prs.pr_number, open_prs.head_sha, rules_summary.lines,
            CASE WHEN coalesce(rules_summary.blocked, false) THEN 'failure' ELSE 'success' END AS state
