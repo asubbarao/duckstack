@@ -82,7 +82,8 @@ WITH parsed_texts AS (
   -- (CREATE ROUTE / CREATE MIDDLEWARE ... AS SELECT).
   SELECT call_id, sql_source, program_index, piece_no,
          unnest(CASE WHEN parse_failed
-                     THEN list_filter(parse_ast_list(substr(piece, instr(upper(piece), ' AS ') + 4), 'duckdb'), x -> x.depth = 1)
+                     -- AS often ends its line, so whitespace is matched as spaces (translate keeps every position)
+                     THEN list_filter(parse_ast_list(substr(piece, instr(upper(translate(piece, E'\n\t\r', '   ')), ' AS ') + 4), 'duckdb'), x -> x.depth = 1)
                      ELSE top_nodes END) AS n
   FROM pieces)
 SELECT call_id, sql_source, program_index, n.type AS statement_kind, n.peek AS statement_sql,
@@ -92,7 +93,7 @@ SELECT call_id, sql_source, program_index, n.type AS statement_kind, n.peek AS s
        CASE n.type WHEN 'select_statement'
             THEN json_serialize_sql(n.peek, skip_null := true, skip_empty := true, skip_default := true) -> 'statements' -> 0
             WHEN 'create_view'
-            THEN json_serialize_sql(substr(n.peek, instr(upper(n.peek), ' AS ') + 4), skip_null := true, skip_empty := true, skip_default := true) -> 'statements' -> 0 END AS ast,
+            THEN json_serialize_sql(substr(n.peek, instr(upper(translate(n.peek, E'\n\t\r', '   ')), ' AS ') + 4), skip_null := true, skip_empty := true, skip_default := true) -> 'statements' -> 0 END AS ast,
        row_number() OVER (PARTITION BY call_id, sql_source, program_index ORDER BY piece_no, n.node_id) AS statement_no
 FROM nodes WHERE n.depth = 1;
 
