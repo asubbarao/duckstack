@@ -144,51 +144,49 @@ WITH status_text AS (
         {'context': 'duckstack/review', 'state': 'failure', 'description': 'Opus 5.5: changes needed; see the PR comment'},
         {'context': 'duckstack/review', 'state': 'error',   'description': 'The review gave no verdict; push again to rerun'}
     ], recursive := true)
+), rules_summary AS (   -- the only read of pr_rule_hits in this view
+    SELECT pr_number, bool_or(action = 'block') AS blocked,
+           string_agg(tera_render($t$- **{{ action }}** `{{ check_id }}` in {{ file_path }}: {{ message }}$t$, hit::JSON, autoescape := false),
+                      E'\n' ORDER BY action, file_path) AS lines
+    FROM pr_rule_hits AS hit GROUP BY pr_number
+), review_summary AS (  -- the only read of review_results in this view
+    SELECT review_key, review ->> 'verdict' AS verdict,
+           list_aggregate(list_transform(TRY_CAST(review -> 'findings' AS JSON[]), finding -> tera_render($t$- `{{ file }}:{{ line }}` **{{ rule }}**: {{ problem }}
+  Rewrite: {{ rewrite }}$t$, finding, autoescape := false)), 'string_agg', E'\n') AS lines
+    FROM review_results
 ), rules_verdicts AS (
-    SELECT open_prs.pr_number, open_prs.head_sha,
-           CASE WHEN coalesce(bool_or(pr_rule_hits.action = 'block'), false) THEN 'failure' ELSE 'success' END AS state
-    FROM open_prs LEFT JOIN pr_rule_hits USING (pr_number)
-    WHERE open_prs.rules_state IS NULL GROUP BY open_prs.pr_number, open_prs.head_sha
+    SELECT open_prs.pr_number, open_prs.head_sha, rules_summary.lines,
+           CASE WHEN coalesce(rules_summary.blocked, false) THEN 'failure' ELSE 'success' END AS state
+    FROM open_prs LEFT JOIN rules_summary USING (pr_number)
+    WHERE open_prs.rules_state IS NULL
 ), review_verdicts AS (
-    SELECT open_prs.pr_number, open_prs.head_sha, open_prs.review_key,
-           CASE review_results.review ->> 'verdict' WHEN 'clean' THEN 'success' WHEN 'changes' THEN 'failure' ELSE 'error' END AS state
-    FROM open_prs JOIN review_results USING (review_key)
+    SELECT open_prs.pr_number, open_prs.head_sha, review_summary.lines,
+           CASE review_summary.verdict WHEN 'clean' THEN 'success' WHEN 'changes' THEN 'failure' ELSE 'error' END AS state
+    FROM open_prs JOIN review_summary USING (review_key)
 ), due_statuses AS (
     SELECT pr_number, head_sha, 'duckstack/rules' AS context, state FROM rules_verdicts
     UNION ALL
     SELECT pr_number, head_sha, 'duckstack/review', 'pending' FROM open_prs WHERE rules_state = 'SUCCESS' AND review_state IS NULL
     UNION ALL
     SELECT pr_number, head_sha, 'duckstack/review', state FROM review_verdicts
-), hit_lines AS (
-    SELECT hit.pr_number, hit.action, hit.file_path,
-           tera_render($t$- **{{ action }}** `{{ check_id }}` in {{ file_path }}: {{ message }}$t$, hit::JSON, autoescape := false) AS line
-    FROM pr_rule_hits AS hit
-), finding_lines AS (
-    SELECT review_key, tera_render($t$- `{{ file }}:{{ line }}` **{{ rule }}**: {{ problem }}
-  Rewrite: {{ rewrite }}$t$, finding, autoescape := false) AS line
-    FROM review_results CROSS JOIN UNNEST(TRY_CAST(review -> 'findings' AS JSON[])) AS each_finding(finding)
 ), comments AS (
-    SELECT rules_verdicts.pr_number,
+    SELECT pr_number,
            tera_render($t$**duckstack/rules: {{ state }}**
 
 {{ lines }}
 
 _duckstack review queue, rule gate (hooks/hook_checks.sql)_$t$,
-                       json_object('state', rules_verdicts.state, 'lines', string_agg(hit_lines.line, E'\n' ORDER BY hit_lines.action, hit_lines.file_path)),
-                       autoescape := false) AS body
-    FROM rules_verdicts JOIN hit_lines USING (pr_number)
-    GROUP BY rules_verdicts.pr_number, rules_verdicts.state
+                       json_object('state', state, 'lines', lines), autoescape := false) AS body
+    FROM rules_verdicts WHERE lines IS NOT NULL
     UNION ALL
-    SELECT review_verdicts.pr_number,
+    SELECT pr_number,
            tera_render($t$**duckstack/review: {{ state }}**
 
 {{ lines }}
 
 _Opus 5.5, duckstack review queue (duckstack-review skill)_$t$,
-                       json_object('state', review_verdicts.state, 'lines', coalesce(string_agg(finding_lines.line, E'\n'), 'No findings.')),
-                       autoescape := false) AS body
-    FROM review_verdicts LEFT JOIN finding_lines USING (review_key)
-    GROUP BY review_verdicts.pr_number, review_verdicts.state
+                       json_object('state', state, 'lines', coalesce(lines, 'No findings.')), autoescape := false) AS body
+    FROM review_verdicts
 )
 SELECT pr_number, concat('https://api.github.com/repos/asubbarao/duckstack/statuses/', head_sha) AS url,
        json_object('context', context, 'state', state, 'description', status_text.description) AS payload
