@@ -17,14 +17,8 @@ CREATE OR REPLACE VIEW tc_src AS
 SELECT pr_number, file_path, concat_ws(':', pr_number, file_path) AS call_id, 'pr' AS session, now() AS ts, false AS subagent, 'Write' AS tool_name,
        json_object('file_path', file_path, 'content', content)::VARCHAR AS input, NULL::BOOLEAN AS next_prompt_corrects
 FROM pr_sql;
--- No Bash calls come from a PR, but the parse-bash views read src and n, so both exist and are empty.
-CREATE OR REPLACE VIEW src AS SELECT 'variable:hook_command.sh' AS ast_path, * FROM tc_src WHERE tool_name = 'Bash';
-COPY (SELECT '' AS command) TO 'variable:hook_command.sh' (FORMAT csv, HEADER false, QUOTE '');
-CREATE OR REPLACE VIEW n AS
-SELECT s.call_id, f.node_id, f.parent_id, f.depth, f.sibling_index, f.type, f.name, f.children_count, f.descendant_count,
-       f.start_line - 1 AS start_line, f.end_line - 1 AS end_line, f.peek
-FROM read_ast('variable:hook_command.sh', 'bash', peek := 'full') AS f
-JOIN src AS s ON s.ast_path = f.file_path;
+-- The hook's own parse-bash inputs; no Bash calls come from a PR, so they are empty.
+.read hooks/bash_input.sql
 .read hooks/parse_bash_view.sql
 .read hooks/toolcall_facts.sql
 .read hooks/hook_checks.sql

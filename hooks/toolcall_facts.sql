@@ -9,6 +9,7 @@
 -- statements, json_serialize_sql gives the AST, parser_tools.is_parsable gates it.
 LOAD sitting_duck;
 LOAD parser_tools;
+LOAD tera;
 
 CREATE OR REPLACE VIEW tc_input AS
 WITH j AS (SELECT *, input::JSON AS input_json FROM tc_src)
@@ -45,7 +46,9 @@ WHERE e.prog.interpreter = 'duckdb'
 UNION ALL
 -- CLI dot commands (.read, .output) are not SQL, and one of them fails the parse of the whole file.
 SELECT i.call_id, 'file', 0,
-       list_aggregate(list_filter(string_split(coalesce(i.write_content, i.edit_new_string), E'\n'), l -> NOT starts_with(ltrim(l), '.')), 'string_agg', E'\n')
+       tera_render($t${{ lines | join(sep="
+") }}$t$, json_object('lines', list_filter(string_split(coalesce(i.write_content, i.edit_new_string), E'\n'), l -> NOT starts_with(ltrim(l), '.'))),
+                   autoescape := false)
 FROM tc_input i JOIN tc_paths p ON p.call_id = i.call_id
 WHERE i.tool_name IN ('Write', 'Edit') AND p.file_ext = '.sql';
 

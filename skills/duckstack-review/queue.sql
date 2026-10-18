@@ -40,9 +40,7 @@ FROM listed LEFT JOIN glob('/Users/aloksubbarao/.duck/review/results/*.json') AS
   ON parse_filename(result_file.file, true) = listed.review_key;
 -- PRs with a step due this tick: rules not yet posted, or a review due. Only these are read.
 CREATE OR REPLACE VIEW due_prs AS
-SELECT * FROM open_prs WHERE rules_state IS NULL
-UNION ALL
-SELECT * FROM open_prs WHERE review_due;
+SELECT * FROM open_prs WHERE list_contains([rules_state IS NULL, review_due], true);
 
 -- What each PR changes since it left main: base = the newest commit of the PR's history that main also has.
 CREATE OR REPLACE VIEW pr_changes AS
@@ -168,8 +166,9 @@ WITH status_text AS (
                 THEN tera_render($t$The reviewer answered without the JSON verdict. Its answer, cut at 3000 characters:
 
 {{ text }}$t$, json_object('text', left(result_text, 3000)), autoescape := false)
-                ELSE list_aggregate(list_transform(TRY_CAST(review -> 'findings' AS JSON[]), finding -> tera_render($t$- `{{ file }}:{{ line }}` **{{ rule }}**: {{ problem }}
-  Rewrite: {{ rewrite }}$t$, finding, autoescape := false)), 'string_agg', E'\n') END AS lines
+                ELSE tera_render($t${{ lines | join(sep="
+") }}$t$, json_object('lines', list_transform(TRY_CAST(review -> 'findings' AS JSON[]), finding -> tera_render($t$- `{{ file }}:{{ line }}` **{{ rule }}**: {{ problem }}
+  Rewrite: {{ rewrite }}$t$, finding, autoescape := false))), autoescape := false) END AS lines
     FROM review_results
 ), rules_verdicts AS (
     SELECT open_prs.pr_number, open_prs.head_sha, rules_summary.lines,
@@ -217,22 +216,13 @@ SELECT pr_number, 'https://api.github.com/graphql',
                    'variables', json_object('id', pr_id))
 FROM open_prs WHERE NOT auto_merge;
 
--- The review's launch, run on dev in the background: the rubric files, then this PR's prompt, into claude. The
--- rubric and the schema come from the checkout this tick runs in ($PWD), so they match its queue.sql; a missing
--- schema file would hand claude --json-schema "" and free text instead of a verdict.
+-- The review's launch (review_launch.tera): the rubric and schema come from the checkout this tick runs in ($PWD),
+-- so they match its queue.sql; a missing schema file hands claude --json-schema "" and free text instead of a verdict.
 CREATE OR REPLACE VIEW review_launches AS
-SELECT pr_number, concat_ws(' ',
-       '(cd /Users/aloksubbarao/.duck/review && cat',
-       concat(checkout, '/skills/duckstack-review/SKILL.md'),
-       concat(checkout, '/skills/self-dispatch/RULES.md'),
-       concat(checkout, '/SQL-MANIFESTO.md'),
-       concat('prompts/review_key=', review_key, '/data_0.csv'),
-       '| /Users/aloksubbarao/.local/bin/claude -p --model claude-opus-5-5 --tools "" --output-format json',
-       '--no-session-persistence --strict-mcp-config --disable-slash-commands', $q$--settings '{"disableAllHooks": true}'$q$,
-       concat('--json-schema "$(cat ', checkout, '/skills/duckstack-review/review_schema.json)"'),
-       concat('> results/', review_key, '.part 2>&1; mv results/', review_key, '.part results/', review_key, '.json)'),
-       '> /dev/null 2>&1 & echo $!') AS command
-FROM (SELECT getenv('PWD') AS checkout, * FROM open_prs WHERE review_due);
+SELECT pr_number,
+       trim(tera_render('review_launch.tera', json_object('checkout', getenv('PWD'), 'review_key', review_key),
+                        autoescape := false, template_path := 'skills/duckstack-review/*.tera')) AS command
+FROM open_prs WHERE review_due;
 
 .output stdout
 WITH posted AS (
@@ -242,7 +232,7 @@ WITH posted AS (
                                                   'Accept': 'application/vnd.github+json', 'User-Agent': 'duckstack-review-queue'})}) AS receipts
     FROM github_posts
 ), rendered AS (
-    SELECT pr_number, tera_render('shell.tera', json_object('reader', 'read_text', 'sources', [concat(command, ' |')], 'options', ''),
+    SELECT pr_number, tera_render('shell.tera', json_object('reader', 'read_text', 'sources', [command], 'options', ''),
                                   autoescape := false, template_path := 'skills/self-dispatch/templates/*.tera') AS sql
     FROM review_launches
 ), dispatched AS (
