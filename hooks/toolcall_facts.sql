@@ -51,19 +51,23 @@ WHERE i.tool_name IN ('Write', 'Edit') AND p.file_ext = '.sql';
 
 -- One row per statement: DuckDB's own statement split and canonical text.
 CREATE OR REPLACE VIEW sql_statements AS
-WITH pieces AS (
-  -- One statement DuckDB's parser rejects (quackapi's CREATE ROUTE) fails the whole text, so such a text is split
-  -- at ';' line ends and each statement is read on its own.
-  SELECT call_id, sql_source, program_index, split.piece, split.piece_no
-  FROM sql_texts
-  CROSS JOIN UNNEST(CASE WHEN is_parsable(sql_text) THEN [sql_text] ELSE [concat(p, ';') FOR p IN string_split(sql_text, E';\n')] END)
+WITH whole_texts AS (
+  SELECT call_id, sql_source, program_index, sql_text,
+         list_contains([x.type FOR x IN parse_ast_list(sql_text, 'duckdb')], 'parse_error') AS whole_fails
+  FROM sql_texts WHERE sql_text IS NOT NULL
+), pieces AS (
+  -- One statement sitting_duck's parser rejects (quackapi's CREATE ROUTE) fails the whole text, so such a text is
+  -- split at ';' line ends and each statement is read on its own.
+  SELECT call_id, sql_source, program_index, split.piece, split.piece_no,
+         list_contains([x.type FOR x IN parse_ast_list(split.piece, 'duckdb')], 'parse_error') AS piece_fails
+  FROM whole_texts
+  CROSS JOIN UNNEST(CASE WHEN whole_fails THEN [concat(p, ';') FOR p IN string_split(sql_text, E';\n')] ELSE [sql_text] END)
        WITH ORDINALITY AS split(piece, piece_no)
-  WHERE sql_text IS NOT NULL
 ), nodes AS (
   -- A statement the parser still rejects is read from its query, the text after its first ' AS '
   -- (CREATE ROUTE / CREATE MIDDLEWARE ... AS SELECT).
   SELECT call_id, sql_source, program_index, piece_no,
-         unnest(parse_ast_list(CASE WHEN is_parsable(piece) THEN piece ELSE substr(piece, instr(upper(piece), ' AS ') + 4) END, 'duckdb')) AS n
+         unnest(parse_ast_list(CASE WHEN piece_fails THEN substr(piece, instr(upper(piece), ' AS ') + 4) ELSE piece END, 'duckdb')) AS n
   FROM pieces)
 SELECT call_id, sql_source, program_index, n.type AS statement_kind, n.peek AS statement_sql,
        [upper(w) FOR w IN string_split(trim(n.peek), ' ') IF w <> ''][1:5] AS head_words,

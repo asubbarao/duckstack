@@ -1,11 +1,12 @@
 -- PreToolUse hook, one DuckDB invocation:  /opt/homebrew/bin/duckdb :memory: -f .../hooks/hook.sql   (event JSON on stdin)
 -- Builds toolcall_facts for the one incoming call with the corpus definitions, evaluates every active check
 -- (check_hits.sql is rendered from hook_checks by render_hits.sql), prints the hook decision JSON or nothing.
+-- Read from ~/.duck/deploy, the checkout of main, so a merged rule applies to every agent within 30 s.
 .output /dev/null
-.read /Users/aloksubbarao/duckdb-skills/hooks/hook_sources.sql
-.read /Users/aloksubbarao/duckdb-skills/hooks/toolcall_facts.sql
-.read /Users/aloksubbarao/duckdb-skills/hooks/hook_checks.sql
-.read /Users/aloksubbarao/duckdb-skills/hooks/check_hits.sql
+.read /Users/aloksubbarao/.duck/deploy/hooks/hook_sources.sql
+.read /Users/aloksubbarao/.duck/deploy/hooks/toolcall_facts.sql
+.read /Users/aloksubbarao/.duck/deploy/hooks/hook_checks.sql
+.read /Users/aloksubbarao/.duck/deploy/hooks/check_hits.sql
 .output stdout
 .mode list
 .headers off

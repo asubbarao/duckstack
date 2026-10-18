@@ -20,4 +20,4 @@ SELECT s.call_id, f.node_id, f.parent_id, f.depth, f.sibling_index, f.type, f.na
        f.start_line - 1 AS start_line, f.end_line - 1 AS end_line, f.peek
 FROM read_ast('variable:hook_command.sh', 'bash', peek := 'full') AS f
 JOIN src AS s ON s.ast_path = f.file_path;
-.read /Users/aloksubbarao/duckdb-skills/hooks/parse_bash_view.sql
+.read /Users/aloksubbarao/.duck/deploy/hooks/parse_bash_view.sql
