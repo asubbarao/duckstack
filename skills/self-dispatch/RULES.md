@@ -157,8 +157,7 @@ receipt problems below have one place to be checked.
     10-08, 10-15). Never `MERGE INTO`; use CTAS or `INSERT OR REPLACE … BY NAME` (10-09).
 42. Appended tables have a key and take `INSERT OR IGNORE` / `OR REPLACE … BY NAME` (10-08).
 43. Profile with `SUMMARIZE` / `DESCRIBE`, never a list of per-column aggregates (09-29, 10-08). Keep
-    `array_agg(ts)` and take `list_min` / `list_max` later (10-01, 10-08). `count(DISTINCT …)` or
-    `len(array_agg(…))` used as a readout is still a count (10-09).
+    `array_agg(ts)` and take `list_min` / `list_max` later (10-01, 10-08).
 44. A `CASE` classification returns a descriptive label, not `true` / `false` (09-30). Label union branches
     with a projected scalar, not `* REPLACE (literal AS col)` (10-09).
 45. Filter a view with `WHERE`, never through a macro that takes a path (10-13). Derive input lists from

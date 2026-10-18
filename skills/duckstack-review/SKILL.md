@@ -215,7 +215,7 @@ SELECT TRY_CAST(content AS JSON) FROM read_lines($cmd$for f in a35d1dd0-… 1f83
 ```sql
 -- GOOD: the sessions are rows; one statement per row through shell.tera; receipts unnested
 WITH sessions AS (
-    SELECT 'read_json' AS reader, $opt$, format := 'newline_delimited'$opt$ AS options,
+    SELECT 'read_json' AS reader, '' AS options,   -- read_json detects newline-delimited JSON itself
            [concat_ws('/', getenv('HOME'), '.claude/projects', translate(cwd, '/.', '--'), concat(sessionId, '.jsonl'))] AS sources
     FROM terminal_sessions WHERE sessionId IS NOT NULL
 ), rendered AS (
@@ -225,7 +225,7 @@ WITH sessions AS (
 ), dispatched AS (
     SELECT array_agg(selfdispatch(sql)) AS receipts FROM rendered
 )
-SELECT receipt.* FROM dispatched CROSS JOIN UNNEST(receipts) AS t(receipt);
+SELECT receipt.*, receipt.status IS DISTINCT FROM 200 AS failed FROM dispatched CROSS JOIN UNNEST(receipts) AS t(receipt);
 ```
 
 **printf building a path, the reader's schema declared, arrows digging into the result** (checks 6, 7):
