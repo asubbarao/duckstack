@@ -218,23 +218,23 @@ SELECT 'sql_scalar_subquery_select' AS check_id, call_id, tool_name, coalesce(ne
 UNION ALL
 SELECT 'sql_set_on_dev' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((list_contains(sql_sources, 'tool') AND list_contains(sql_verbs, 'SET') AND NOT list_contains([h[1:2] FOR h IN sql_heads], ['SET', 'VARIABLE'])), false)
 UNION ALL
-SELECT 'sql_shellfs_curl_self' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((len(list_filter(sql_shellfs_pipes, pipe -> list_contains(pipe, 'curl') AND len(list_filter(pipe, word -> contains(word, ':9495'))) > 0)) > 0), false)
+SELECT 'sql_shellfs_curl_self' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((len(list_filter(sql_shellfs_pipes, pipe -> list_contains(pipe.commands, 'curl') AND len(list_filter(pipe.words, word -> contains(word, ':9495'))) > 0)) > 0), false)
 UNION ALL
 SELECT 'sql_shellfs_exit_hack' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((len(list_filter(sql_table_function_calls, t -> len(list_filter(t.literals, l -> ends_with(rtrim(l), '|') AND len(list_filter(['|| true', '; true'], hack -> contains(l, hack))) > 0)) > 0)) > 0), false)
 UNION ALL
-SELECT 'sql_shellfs_grep' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((len(list_filter(sql_table_function_calls, t -> len(list_filter(t.literals, l -> list_has_any(string_split(translate(l, E'|;&\t\n', '     '), ' '), ['grep', 'egrep', 'rg']))) > 0)) > 0), false)
+SELECT 'sql_shellfs_grep' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((list_has_any(sql_shellfs_commands, ['grep', 'egrep', 'rg'])), false)
 UNION ALL
-SELECT 'sql_shellfs_nested_duckdb' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((len(list_filter(sql_shellfs_pipes, pipe -> list_contains(pipe, 'duckdb') AND list_has_any(pipe, ['-c', '.read']))) > 0), false)
+SELECT 'sql_shellfs_nested_duckdb' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((len(list_filter(sql_shellfs_pipes, pipe -> list_contains(pipe.commands, 'duckdb') AND list_has_any(pipe.words, ['-c', '.read']))) > 0), false)
 UNION ALL
 SELECT 'sql_shellfs_raw_pytest' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((len(list_filter(sql_table_function_calls, t -> t.name <> 'read_duck_hunt_log' AND len(list_filter(t.literals, l -> contains(l, 'pytest'))) > 0)) > 0), false)
 UNION ALL
-SELECT 'sql_shellfs_sleep' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((list_contains(flatten(sql_shellfs_pipes), 'sleep')), false)
+SELECT 'sql_shellfs_sleep' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((list_contains(sql_shellfs_commands, 'sleep')), false)
 UNION ALL
-SELECT 'sql_shellfs_tail_head' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((list_has_any(flatten(sql_shellfs_pipes), ['tail', 'head'])), false)
+SELECT 'sql_shellfs_tail_head' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((list_has_any(sql_shellfs_commands, ['tail', 'head'])), false)
 UNION ALL
-SELECT 'sql_shellfs_text_munging' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((list_has_any(flatten(sql_shellfs_pipes), ['sed', 'gsed', 'awk', 'gawk', 'tr', 'cut'])), false)
+SELECT 'sql_shellfs_text_munging' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((list_has_any(sql_shellfs_commands, ['sed', 'gsed', 'awk', 'gawk', 'tr', 'cut'])), false)
 UNION ALL
-SELECT 'sql_shellfs_timeout' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((list_has_any(flatten(sql_shellfs_pipes), ['timeout', 'gtimeout'])), false)
+SELECT 'sql_shellfs_timeout' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((list_has_any(sql_shellfs_commands, ['timeout', 'gtimeout'])), false)
 UNION ALL
 SELECT 'sql_star_count' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((sql_has_count_star), false)
 UNION ALL

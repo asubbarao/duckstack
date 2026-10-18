@@ -143,8 +143,12 @@ WITH node_facts AS (
          list_filter(list(CASE WHEN coalesce(fn, op) IS NOT NULL THEN {'name': coalesce(fn, op), 'args': arg_kinds, 'literals': literal_args} END), x -> x IS NOT NULL) AS function_calls,
          flatten(list_filter(list(CASE WHEN key = 'cte_map' THEN [e ->> 'key' FOR e IN json_extract(v, '$.map[*]')] END), x -> x IS NOT NULL)) AS cte_names,
          list_filter(list(CASE WHEN tfn IS NOT NULL THEN {'name': tfn, 'args': arg_kinds, 'literals': literal_args} END), x -> x IS NOT NULL) AS table_function_calls,
-         -- one word list per shellfs command (a table-function literal ending in '|'), split on shell punctuation
-         flatten(list_filter(list(CASE WHEN tfn IS NOT NULL THEN [string_split(translate(l, E'|;&\t\n()', '        '), ' ') FOR l IN literal_args IF ends_with(rtrim(l), '|')] END), x -> x IS NOT NULL)) AS shellfs_pipes,
+         -- each shellfs command (a table-function literal ending in '|') parsed as bash: the programs it runs
+         -- (basenames, $(...) included) and its words, so checks match executables, not quoted arguments
+         flatten(list_filter(list(CASE WHEN tfn IS NOT NULL THEN
+             [{'commands': [parse_filename(n.peek) FOR n IN parse_ast_list(rtrim(rtrim(l), '|'), 'bash') IF n.type = 'command_name'],
+               'words': [n.peek FOR n IN parse_ast_list(rtrim(rtrim(l), '|'), 'bash') IF n.type = 'word']}
+              FOR l IN literal_args IF ends_with(rtrim(l), '|')] END), x -> x IS NOT NULL)) AS shellfs_pipes,
          bool_or(template.file IS NOT NULL) AS uses_canonical_template,
          bool_or(fn = 'count_star') AS has_count_star,
          bool_or((v -> 'filter') IS NOT NULL AND cls IN ('FUNCTION', 'WINDOW')) AS has_filter_clause,
@@ -218,6 +222,7 @@ stmts AS (
          flatten(list(table_function_calls)) AS sql_table_function_calls,
          list_sort(list_distinct(flatten(list([t.name FOR t IN table_function_calls])))) AS sql_table_functions,
          flatten(list(shellfs_pipes)) AS sql_shellfs_pipes,
+         list_distinct(flatten([p.commands FOR p IN flatten(list(shellfs_pipes))])) AS sql_shellfs_commands,
          bool_or(uses_canonical_template) AS sql_uses_canonical_template,
          list_distinct(flatten(list(cte_names))) AS sql_cte_names,
          bool_or(has_count_star) AS sql_has_count_star,
