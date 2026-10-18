@@ -164,32 +164,30 @@ WHERE type IN ('function_definition', 'class_definition')
 ORDER BY start_line;
 
 
--- ## A name defined anywhere in a tree, written to Parquet (Opus 5.5, 2026-10-17)
--- when: a helper or function could be in any file under a folder; read_ast takes a literal list, so render once and dispatch.
--- uses: git_tree (duck_tails), read_ast (sitting_duck), tera_render, selfdispatch; side effect: writes <out_file>.
--- returns: the dispatch receipt (status 200, body Count); then read_parquet(<out_file>) gives name, start_line, end_line, file_path (commit-pinned git:// URI).
--- tested: inframe-w5 HEAD, all of platform/backend/app/tests, 4 names → 20 definitions.
+-- ## Where a name is defined anywhere in a tree, in place of grep / git grep / rg (Opus 5.5, 2026-10-17)
+-- when: a helper, function or class could be in any file under a folder. read_ast takes a literal list (no column,
+--   no subquery; git:// does not expand globs), so the list is rendered once and dispatched.
+-- uses: git_tree (duck_tails), read_ast (sitting_duck), tera_render, selfdispatch.
+-- returns: one receipt; its body is the rows: name, start_line, end_line, file_path (git:// URI pinned to the commit).
+-- tested: inframe-w5 HEAD, all of platform/backend/app/tests, 3 names → 4 definitions in one receipt.
 WITH python_files AS (
     SELECT list(quote_literal(git_uri) ORDER BY file_path) AS uris
     FROM git_tree('<worktree>', 'HEAD')
     WHERE kind = 'file' AND starts_with(file_path, '<folder>/') AND ends_with(file_path, '.py')
 ), search AS (
-    SELECT uris, list_transform(['<name1>', '<name2>'], n -> quote_literal(n)) AS names,
-           '<out_file>.parquet' AS out_file
+    SELECT uris, list_transform(['<name1>', '<name2>'], n -> quote_literal(n)) AS names
     FROM python_files
 ), rendered AS (
     SELECT tera_render($t$
-COPY (
-    SELECT name, start_line, end_line, file_path
-    FROM read_ast([{{ uris | join(sep=", ") }}], 'python')
-    WHERE type = 'function_definition' AND name IN ({{ names | join(sep=", ") }})
-) TO '{{ out_file }}' (FORMAT parquet)
+SELECT name, start_line, end_line, file_path
+FROM read_ast([{{ uris | join(sep=", ") }}], 'python')
+WHERE type IN ('function_definition', 'class_definition') AND name IN ({{ names | join(sep=", ") }})
+ORDER BY name, file_path
 $t$, s::JSON, autoescape := false) AS sql FROM search AS s
 ), dispatched AS (
     SELECT array_agg(selfdispatch(sql)) AS receipts FROM rendered
 )
 SELECT receipt.* FROM dispatched CROSS JOIN UNNEST(receipts) AS t(receipt);
--- rerun 2026-10-17 on inframe HEAD app/tests with the names prequoted in SQL: Count 2.
 -- ## inframe test files with their last pytest run, per checkout (entries-style, PR #1576)
 -- when: comparing test timings across worktrees. List the checkouts and their JUnit paths; nothing else changes.
 --   Each checkout's run writes JUnit to platform/backend/.pytest_cache/junit.xml (git-ignored), e.g.
