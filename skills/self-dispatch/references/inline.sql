@@ -30,3 +30,19 @@ WITH fixture AS (
     SELECT array_agg(selfdispatch(sql)) AS receipts FROM rendered
 )
 SELECT receipt.* FROM dispatched CROSS JOIN UNNEST(receipts) AS t(receipt);
+
+-- 3. Each statement writes its own rows to a file; the next stage reads the files, not the receipt bodies.
+-- The output directory must already exist; a missing one is a 500 "Cannot open file" receipt.
+-- Tested 2026-10-18: two receipts {"Count":1}; the read returns 42, 43.
+WITH answers AS (
+    SELECT n FROM range(42, 44) AS r(n)
+), rendered AS (
+    SELECT tera_render($t$COPY (SELECT {{ n }} AS answer) TO '/private/tmp/selfdispatch_answer_{{ n }}.parquet' (FORMAT parquet)$t$,
+                       a::JSON, autoescape := false) AS sql
+    FROM answers AS a
+), dispatched AS (
+    SELECT array_agg(selfdispatch(sql)) AS receipts FROM rendered
+)
+SELECT receipt.* FROM dispatched CROSS JOIN UNNEST(receipts) AS t(receipt);
+
+SELECT answer FROM read_parquet('/private/tmp/selfdispatch_answer_*.parquet') ORDER BY answer;
