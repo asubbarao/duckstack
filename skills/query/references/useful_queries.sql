@@ -241,3 +241,22 @@ WITH c AS (
     SELECT array_agg(selfdispatch(sql)) AS receipts FROM rendered
 )
 SELECT receipt.* FROM dispatched CROSS JOIN UNNEST(receipts) AS t(receipt);
+
+-- ## Verification: both sides of a DuckDB-vs-Python claim, joined on the input (Opus 5.5, 2026-10-17)
+-- when: reading back an agent-log `type=verification` row whose query was <duckdb side> UNION ALL BY NAME <python side> (agent-dispatch section 3).
+-- uses: read_parquet (core).
+-- returns: one row per input: raw, duckdb_row and python_row (each side's whole logged row as a STRUCT, query_was_ran and markdown_notes included), missing_duckdb, missing_python, differs BOOLEAN; a missing_* row is an input only one side produced. <compared column> is the output both sides print (value_type in the example).
+-- tested: T4 fromisoformat proposal vs the INF-1535 classifier, 19 inputs, 3 disagreements (all Python errors).
+WITH logged AS (
+  SELECT * FROM read_parquet('<agent_log_dir>/type=verification/**/*.parquet', hive_partitioning := true, union_by_name := true)
+  WHERE skill = '<skill>'
+), duckdb_side AS (
+  SELECT * FROM logged WHERE side = 'duckdb'
+), python_side AS (
+  SELECT * FROM logged WHERE side = 'python'
+)
+SELECT raw, duckdb_row, python_row,
+       duckdb_row.side IS NULL AS missing_duckdb, python_row.side IS NULL AS missing_python,
+       duckdb_row.<compared column> IS DISTINCT FROM python_row.<compared column> AS differs
+FROM duckdb_side AS duckdb_row FULL JOIN python_side AS python_row USING (raw)
+ORDER BY differs DESC, raw;

@@ -152,6 +152,35 @@ ran it, and the lead passed it on. When run, it mistyped week dates and `+HH:MM`
 crashed on year-1 offsets. The same claim had already been disproved on 10-15: the Python version
 needed a regex and grew to 74 lines.
 
+**The verification row is one agent-log COPY that runs both sides.** The inputs are written once:
+```sql
+WITH python_side AS (       -- first CTE: holds the inputs and runs the proposal on them
+    SELECT 'python' AS side, * FROM read_json($cmd$/opt/homebrew/bin/uv run --quiet --no-project python - <<'PY'
+import json
+for raw in [<inputs>]:
+    try:
+        print(json.dumps(dict(raw=raw, <compared column>=<proposal>(raw), error=None)))
+    except Exception as e:
+        print(json.dumps(dict(raw=raw, <compared column>=None, error=type(e).__name__)))
+PY
+|$cmd$, format := 'newline_delimited')
+), duckdb_side AS (         -- the same inputs, read from the Python side's own rows
+    SELECT 'duckdb' AS side, raw, <duckdb expression over raw> AS <compared column> FROM python_side
+)
+SELECT * FROM duckdb_side UNION ALL BY NAME SELECT * FROM python_side
+```
+The reader infers the columns. An input the proposal crashes on is still a row, with its
+exception type in `error`. A self-dispatched Python side does not fit here: `selfdispatch` returns
+receipts (`status`, `body`), not the script's columns, so the two sides would not line up by name.
+Verified 2026-10-18 on dev.
+
+The same `$query$` token is stored as `query_was_ran` and executed, and `markdown_notes` carries
+the worker's reading. Every row is a result one engine actually produced. A worker who wants to
+test ponytail's or Thermos's proposal writes it as the Python (or bash) side. To read it back,
+join the two sides on the input and compare. Worked example: `skill = 'T4-check-union'` under
+`~/.duck/agent_log/skill_trial_2026_10_17/type=verification`. Readback query:
+`query/references/useful_queries.sql`, "verification: both sides".
+
 ## 4. Evidence is false-first
 
 A guard nobody has seen fail is not a guard, and **he does not accept assertion
