@@ -198,7 +198,7 @@ SELECT 'sql_recursive_glob' AS check_id, call_id, tool_name, coalesce(next_promp
 UNION ALL
 SELECT 'sql_row_constructor' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((sql_has_values_clause), false)
 UNION ALL
-SELECT 'sql_row_number_pick' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((list_contains(sql_functions, 'row_number')), false)
+SELECT 'sql_row_number_pick' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((sql_has_qualify AND list_contains(sql_functions, 'row_number')), false)
 UNION ALL
 SELECT 'sql_scalar_subquery_select' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((sql_has_scalar_subquery_in_select), false)
 UNION ALL

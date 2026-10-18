@@ -137,17 +137,15 @@ WITH result_files AS (
     FROM result_files AS f
 ), dispatched AS (
     SELECT array_agg({review_key: review_key, receipt: selfdispatch(sql)}) AS receipts FROM rendered
-), result_rows AS (
-    SELECT sent.review_key, result_row
+), receipt_rows AS (
+    SELECT sent.review_key, sent.receipt.body, TRY_CAST(sent.receipt.body AS JSON[]) AS result_rows
     FROM dispatched CROSS JOIN UNNEST(receipts) AS each_receipt(sent)
-    -- A receipt that is not rows (dev's error) still yields one row, so the PR gets 'error' with the reason, not a
-    -- pending status forever.
-    CROSS JOIN UNNEST(coalesce(TRY_CAST(sent.receipt.body AS JSON[]),
-                               [json_object('result', concat_ws(' ', 'dev could not read the result file:', left(sent.receipt.body, 2000)))]))
-         AS each_row(result_row)
 )
 SELECT review_key, result_row ->> 'result' AS result_text, result_row -> 'structured_output' AS review
-FROM result_rows;
+FROM receipt_rows CROSS JOIN UNNEST(result_rows) AS each_row(result_row)
+UNION ALL
+-- A receipt that is not rows (dev's error) is its own row, so the PR gets 'error' with dev's text, not 'pending' forever.
+SELECT review_key, body, NULL FROM receipt_rows WHERE result_rows IS NULL;
 
 -- Every GitHub post this tick makes: statuses (descriptions as rows), comments, and auto-merge.
 CREATE OR REPLACE VIEW github_posts AS

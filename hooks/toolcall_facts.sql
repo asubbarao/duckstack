@@ -159,7 +159,8 @@ WITH node_facts AS (
          -- a LEFT join whose right side is unnest or a table function fed by a column (correlated, lateral)
          bool_or(join_kind = 'LEFT' AND join_right_type = 'TABLE_FUNCTION' AND CASE WHEN join_right_fn = 'unnest' THEN true ELSE list_contains(join_right_arg_kinds, 'column_ref') END) AS has_left_join_lateral,
          bool_or(join_kind IS NOT NULL AND 'CONSTANT' IN (v -> 'condition' ->> 'class', v -> 'condition' -> 'child' ->> 'class')) AS has_join_on_constant,
-         bool_or(typ = 'SELECT_NODE' AND list_contains([(c ->> 'class') = 'SUBQUERY' AND (c ->> 'subquery_type') = 'SCALAR' FOR c IN json_extract(v, '$.select_list[*]')], true)) AS has_scalar_subquery_in_select
+         bool_or(typ = 'SELECT_NODE' AND list_contains([(c ->> 'class') = 'SUBQUERY' AND (c ->> 'subquery_type') = 'SCALAR' FOR c IN json_extract(v, '$.select_list[*]')], true)) AS has_scalar_subquery_in_select,
+         bool_or(typ = 'SELECT_NODE' AND (v -> 'qualify') IS NOT NULL) AS has_qualify
   FROM sql_nodes GROUP BY ALL)
 SELECT s.call_id, s.sql_source, s.program_index, s.statement_no, s.statement_kind, s.head_words, s.statement_lines,
        s.ast IS NOT NULL AS has_ast,
@@ -183,6 +184,7 @@ SELECT s.call_id, s.sql_source, s.program_index, s.statement_no, s.statement_kin
        coalesce(f.has_left_join_lateral, false) AS has_left_join_lateral,
        coalesce(f.has_join_on_constant, false) AS has_join_on_constant,
        coalesce(f.has_scalar_subquery_in_select, false) AS has_scalar_subquery_in_select,
+       coalesce(f.has_qualify, false) AS has_qualify,
        coalesce(c.concat_chain_max, 0) AS concat_chain_max
 FROM sql_statements s
 LEFT JOIN node_facts f USING (call_id, sql_source, program_index, statement_no)
@@ -221,6 +223,7 @@ stmts AS (
          bool_or(has_left_join_lateral) AS sql_has_left_join_lateral,
          bool_or(has_join_on_constant) AS sql_has_join_on_constant,
          bool_or(has_scalar_subquery_in_select) AS sql_has_scalar_subquery_in_select,
+         bool_or(has_qualify) AS sql_has_qualify,
          max(concat_chain_max) AS sql_concat_chain_max
   FROM sql_statement_facts GROUP BY ALL)
 SELECT t.call_id, t.sql_sources, t.sql_parse_ok, s.* EXCLUDE (call_id)
