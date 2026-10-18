@@ -20,8 +20,7 @@ come from the perceptual hash moving; the model only ever looks at one settled f
 ## 1. Frames and scenes
 
 `~/duckdb-skills/skills/tera/references/video_frames.sql` runs on dev: set the video path and frames
-directory literals at the top, then run its statements through the dev MCP `execute` tool. The knobs are
-literals in the file:
+directory literals, then run its one query through the dev MCP `query` tool. The knobs are literals in the file:
 
 | Literal | Default | Meaning |
 |---|---|---|
@@ -34,22 +33,20 @@ literals in the file:
 | busy scenes | 20 | how many busy scenes get the second pass, most movement first |
 
 Two passes: the whole video at `fps`, then each busy scene re-rendered from the same template with `start`,
-`end` and the busy `fps` (one rendered statement per scene, run by `array_agg(selfdispatch(sql))` and appended to the same table). Every bash flag is a
+`end` and the busy `fps` (one rendered statement per scene, built from pass one's receipts and run by `array_agg(selfdispatch(sql))`). Every bash flag is a
 context value of the template: `ffmpeg_input_flags`, `ffmpeg_filters`, `ffmpeg_output_flags`, `quality`,
 `width`, so a different capture is a different context, never a different program. Verified: the second pass
 at 10 fps over the 5 busiest scenes added 330 frames in 25 s, same 75 scenes.
 
 The template is `~/duckdb-skills/skills/tera/references/video_frames.tera`. It renders a `read_csv` over a
 pipe: the frame writer prints `second,path` per frame as it writes it, `read_csv` consumes the stream, and
-`pic_phash(path)` runs per row as it arrives. A slice (`start`, `end`) at any `fps` is the same template. Tables left behind: `frames(second, path, phash)` and
-`scenes(scene, starts, ends, settled_frame, frames)`.
+`pic_phash(path)` runs per row as it arrives. A slice (`start`, `end`) at any `fps` is the same template. The
+frames come back in the receipts and nothing is stored but the JPEGs: the query returns
+`scene, starts, ends, seconds_on_screen, frames, most_bits_changed, settled_frame`, one row per scene.
 
 ## 2. Read the settled frames, longest scenes first
 
-```sql
-SELECT scene, starts, ends, round(ends - starts, 1) AS seconds_on_screen, settled_frame
-FROM scenes WHERE ends - starts >= 3 ORDER BY starts;
-```
+Add `WHERE ends - starts >= 3` to the query's last `SELECT … FROM scenes`, ordered by `starts`.
 
 Read each `settled_frame` with the Read tool. A scene that stayed up for seconds is content; half-second
 scenes are transitions, scrolls and typing. For a 9-minute demo that is 15 to 25 images.
