@@ -134,7 +134,10 @@ property of the diff blesses every existing violation.
   (each its own statement), on dev or in the worker's own `:memory:` client, is always
   allowed — say so in the brief.
 - **Delete nothing outside your own worktree** — list it for the main agent.
-- Nothing pushed, no PR, nothing another human can see, without his approval.
+- **Test, then push.** Run the tests first. Push only a branch whose tests passed, then open a ready (never
+  draft) PR into the owner's repo with the before/after test evidence in the body. A commit that exists only on
+  this laptop is not done, and an untested push or PR is not allowed. Comments on other people's repos still
+  need his yes.
 - Never `-init` against DuckDB; it replaces `~/.duckdbrc`. Never `SET` against dev, and
   never create tables, views or macros there (they shadow boot objects).
 - Crude-oil repos are material to read, never services to depend on.
