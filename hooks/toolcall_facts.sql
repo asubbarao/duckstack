@@ -9,6 +9,7 @@
 -- statements, json_serialize_sql gives the AST, parser_tools.is_parsable gates it.
 LOAD sitting_duck;
 LOAD parser_tools;
+LOAD tera;
 
 CREATE OR REPLACE VIEW tc_input AS
 WITH j AS (SELECT *, input::JSON AS input_json FROM tc_src)
@@ -43,21 +44,57 @@ SELECT b.call_id, 'embedded', e.idx, e.prog.program
 FROM bash_src b CROSS JOIN UNNEST(b.embedded_programs) WITH ORDINALITY AS e(prog, idx)
 WHERE e.prog.interpreter = 'duckdb'
 UNION ALL
-SELECT i.call_id, 'file', 0, coalesce(i.write_content, i.edit_new_string)
+-- CLI dot commands (.read, .output) are not SQL, and one of them fails the parse of the whole file.
+SELECT i.call_id, 'file', 0,
+       tera_render($t${{ lines | join(sep="
+") }}$t$, json_object('lines', list_filter(string_split(coalesce(i.write_content, i.edit_new_string), E'\n'), l -> NOT starts_with(ltrim(l), '.'))),
+                   autoescape := false)
 FROM tc_input i JOIN tc_paths p ON p.call_id = i.call_id
 WHERE i.tool_name IN ('Write', 'Edit') AND p.file_ext = '.sql';
 
 -- One row per statement: DuckDB's own statement split and canonical text.
 CREATE OR REPLACE VIEW sql_statements AS
-WITH nodes AS (
-  SELECT call_id, sql_source, program_index, unnest(parse_ast_list(sql_text, 'duckdb')) AS n
-  FROM sql_texts WHERE sql_text IS NOT NULL)
+WITH parsed_texts AS (
+  -- Each text is parsed once; only the statement nodes (depth 0-1) are kept.
+  SELECT *, list_filter(parse_ast_list(sql_text, 'duckdb'), x -> list_contains([0, 1], x.depth)) AS top_nodes
+  FROM sql_texts WHERE sql_text IS NOT NULL
+), whole_texts AS (
+  SELECT call_id, sql_source, program_index, sql_text, top_nodes,
+         list_contains([x.type FOR x IN top_nodes], 'parse_error') AS parse_failed
+  FROM parsed_texts
+), split_pieces AS (
+  -- One statement sitting_duck's parser rejects (quackapi's CREATE ROUTE) fails the whole text, so such a text is
+  -- split at ';' line ends and each statement is read on its own.
+  SELECT whole_texts.call_id, whole_texts.sql_source, whole_texts.program_index, split.piece, split.piece_no,
+         list_filter(parse_ast_list(split.piece, 'duckdb'), x -> list_contains([0, 1], x.depth)) AS top_nodes
+  FROM whole_texts
+  CROSS JOIN UNNEST([concat(p, ';') FOR p IN string_split(whole_texts.sql_text, E';\n')]) WITH ORDINALITY AS split(piece, piece_no)
+  WHERE whole_texts.parse_failed
+), pieces AS (
+  SELECT call_id, sql_source, program_index, piece, piece_no, top_nodes,
+         list_contains([x.type FOR x IN top_nodes], 'parse_error') AS parse_failed
+  FROM split_pieces
+), nodes AS (
+  SELECT call_id, sql_source, program_index, 1 AS piece_no, unnest(top_nodes) AS n
+  FROM whole_texts WHERE NOT parse_failed
+  UNION ALL
+  -- A statement the parser still rejects is read from its query, the text after its first ' AS '
+  -- (CREATE ROUTE / CREATE MIDDLEWARE ... AS SELECT).
+  SELECT call_id, sql_source, program_index, piece_no,
+         unnest(CASE WHEN parse_failed
+                     -- AS often ends its line, so whitespace is matched as spaces (translate keeps every position)
+                     THEN list_filter(parse_ast_list(substr(piece, instr(upper(translate(piece, E'\n\t\r', '   ')), ' AS ') + 4), 'duckdb'), x -> x.depth = 1)
+                     ELSE top_nodes END) AS n
+  FROM pieces)
 SELECT call_id, sql_source, program_index, n.type AS statement_kind, n.peek AS statement_sql,
        [upper(w) FOR w IN string_split(trim(n.peek), ' ') IF w <> ''][1:5] AS head_words,
        len(string_split(n.peek, E'\n')) AS statement_lines,
-       CASE WHEN n.type = 'select_statement'
-            THEN json_serialize_sql(n.peek, skip_null := true, skip_empty := true, skip_default := true) -> 'statements' -> 0 END AS ast,
-       row_number() OVER (PARTITION BY call_id, sql_source, program_index ORDER BY n.node_id) AS statement_no
+       -- json_serialize_sql takes only a SELECT; a view's query is the text after its first ' AS '.
+       CASE n.type WHEN 'select_statement'
+            THEN json_serialize_sql(n.peek, skip_null := true, skip_empty := true, skip_default := true) -> 'statements' -> 0
+            WHEN 'create_view'
+            THEN json_serialize_sql(substr(n.peek, instr(upper(translate(n.peek, E'\n\t\r', '   ')), ' AS ') + 4), skip_null := true, skip_empty := true, skip_default := true) -> 'statements' -> 0 END AS ast,
+       row_number() OVER (PARTITION BY call_id, sql_source, program_index ORDER BY piece_no, n.node_id) AS statement_no
 FROM nodes WHERE n.depth = 1;
 
 -- AST object nodes with the classification wave 1 used.
@@ -66,12 +103,14 @@ SELECT s.call_id, s.sql_source, s.program_index, s.statement_no, t.id AS node_id
        t.value ->> 'class' AS cls, t.value ->> 'type' AS typ,
        CASE WHEN (t.value ->> 'class') IN ('FUNCTION', 'WINDOW') AND t.key IS DISTINCT FROM 'function' THEN t.value ->> 'function_name' END AS fn,
        CASE WHEN (t.value ->> 'type') = 'TABLE_FUNCTION' THEN t.value -> 'function' ->> 'function_name' END AS tfn,
+       t.value -> 'right' -> 'function' ->> 'function_name' AS join_right_fn,
        CASE WHEN (t.value ->> 'type') = 'JOIN' AND (t.value ->> 'class') IS NULL THEN
-            CASE WHEN (t.value ->> 'ref_type') = 'CROSS' AND (t.value -> 'query_location') IS NULL THEN 'COMMA'
+            -- CROSS JOIN UNNEST(...) WITH ORDINALITY also comes without a query_location; it is a cross join.
+            CASE WHEN (t.value ->> 'ref_type') = 'CROSS' AND (t.value -> 'query_location') IS NULL
+                      AND join_right_fn IS DISTINCT FROM 'unnest' THEN 'COMMA'
                  WHEN (t.value ->> 'ref_type') = 'REGULAR' THEN t.value ->> 'join_type'
                  ELSE t.value ->> 'ref_type' END END AS join_kind,
        t.value -> 'right' ->> 'type' AS join_right_type,
-       t.value -> 'right' -> 'function' ->> 'function_name' AS join_right_fn,
        [lower(c ->> 'class') FOR c IN json_extract(t.value, '$.right.function.children[*]')] AS join_right_arg_kinds,
        [CASE WHEN (c ->> 'class') = 'FUNCTION' THEN c ->> 'function_name'
              WHEN (c ->> 'class') = 'CAST' AND (c -> 'child' ->> 'class') = 'CONSTANT' THEN 'constant'
@@ -120,7 +159,9 @@ WITH node_facts AS (
          -- a LEFT join whose right side is unnest or a table function fed by a column (correlated, lateral)
          bool_or(join_kind = 'LEFT' AND join_right_type = 'TABLE_FUNCTION' AND CASE WHEN join_right_fn = 'unnest' THEN true ELSE list_contains(join_right_arg_kinds, 'column_ref') END) AS has_left_join_lateral,
          bool_or(join_kind IS NOT NULL AND 'CONSTANT' IN (v -> 'condition' ->> 'class', v -> 'condition' -> 'child' ->> 'class')) AS has_join_on_constant,
-         bool_or(typ = 'SELECT_NODE' AND list_contains([(c ->> 'class') = 'SUBQUERY' AND (c ->> 'subquery_type') = 'SCALAR' FOR c IN json_extract(v, '$.select_list[*]')], true)) AS has_scalar_subquery_in_select
+         bool_or(typ = 'SELECT_NODE' AND list_contains([(c ->> 'class') = 'SUBQUERY' AND (c ->> 'subquery_type') = 'SCALAR' FOR c IN (v -> 'select_list')::JSON[]], true)) AS has_scalar_subquery_in_select,
+         bool_or(typ = 'SELECT_NODE' AND (v -> 'qualify') IS NOT NULL) AS has_qualify,
+         list_filter(list(CASE WHEN join_kind = 'CROSS' AND join_right_type = 'TABLE_FUNCTION' THEN join_right_fn END), x -> x IS NOT NULL) AS lateral_functions
   FROM sql_nodes GROUP BY ALL)
 SELECT s.call_id, s.sql_source, s.program_index, s.statement_no, s.statement_kind, s.head_words, s.statement_lines,
        s.ast IS NOT NULL AS has_ast,
@@ -144,6 +185,8 @@ SELECT s.call_id, s.sql_source, s.program_index, s.statement_no, s.statement_kin
        coalesce(f.has_left_join_lateral, false) AS has_left_join_lateral,
        coalesce(f.has_join_on_constant, false) AS has_join_on_constant,
        coalesce(f.has_scalar_subquery_in_select, false) AS has_scalar_subquery_in_select,
+       coalesce(f.has_qualify, false) AS has_qualify,
+       coalesce(f.lateral_functions, []) AS lateral_functions,
        coalesce(c.concat_chain_max, 0) AS concat_chain_max
 FROM sql_statements s
 LEFT JOIN node_facts f USING (call_id, sql_source, program_index, statement_no)
@@ -182,6 +225,8 @@ stmts AS (
          bool_or(has_left_join_lateral) AS sql_has_left_join_lateral,
          bool_or(has_join_on_constant) AS sql_has_join_on_constant,
          bool_or(has_scalar_subquery_in_select) AS sql_has_scalar_subquery_in_select,
+         bool_or(has_qualify) AS sql_has_qualify,
+         list_distinct(flatten(list(lateral_functions))) AS sql_lateral_functions,
          max(concat_chain_max) AS sql_concat_chain_max
   FROM sql_statement_facts GROUP BY ALL)
 SELECT t.call_id, t.sql_sources, t.sql_parse_ok, s.* EXCLUDE (call_id)

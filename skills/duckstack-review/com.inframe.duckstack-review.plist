@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- The review queue's tick. Install: cp to ~/Library/LaunchAgents, launchctl bootstrap gui/$(id -u) <path>. -->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.inframe.duckstack-review</string>
+	<key>ProgramArguments</key>
+	<!-- GH_TOKEN comes from gh's keychain login at each tick, so no token is written to a file. -->
+	<array>
+		<string>/bin/sh</string>
+		<string>-c</string>
+		<string>export GH_TOKEN="$(/opt/homebrew/bin/gh auth token --user asubbarao)" &amp;&amp; exec /opt/homebrew/bin/duckdb :memory: -f skills/duckstack-review/queue.sql</string>
+	</array>
+	<key>WorkingDirectory</key>
+	<string>/Users/aloksubbarao/.duck/deploy</string>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+	</dict>
+	<key>StartInterval</key>
+	<integer>60</integer>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>StandardOutPath</key>
+	<string>/Users/aloksubbarao/.duck/logs/duckstack-review.log</string>
+	<key>StandardErrorPath</key>
+	<string>/Users/aloksubbarao/.duck/logs/duckstack-review.err</string>
+</dict>
+</plist>

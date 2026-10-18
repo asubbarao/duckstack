@@ -238,11 +238,33 @@ COPY (SELECT *, strftime(observed_at, '%Y-%m-%d') AS day FROM host_processes) TO
 WITH targets AS (SELECT list(DISTINCT '-' || pgid) AS groups FROM host_processes WHERE reap) …
 ```
 
+**Rejected on 2026-10-17, each in one line** (the left side is a finding on sight):
+- `QUALIFY row_number() OVER (…) <= 3` to pick rows → `arg_max` / `max_by`, or a join on keys.
+- A whole command built in one `printf($s$…%s…$s$, id)` string → declare the parts as columns, render with Tera.
+- `json_object('schema', '[{"session":"VARCHAR","line_number":"BIGINT"}]')` or any typed key list → the reader infers.
+- `to_base64(encode(event::VARCHAR))` to carry content → the content is a column of the dispatched statement.
+- `COPY (…) TO 'x.parquet'` then `read_parquet('x.parquet')` in the next stage → unnest the receipts; the skill is a
+  query someone can wrap in a `COPY` themselves.
+- "read_ast needs a literal list, so I passed the nine paths as literals" → that is what self-dispatch is for.
+- Three `.sql` files of hardcoded AppleScript strings for open / read / close → one view of verb rows and one query
+  over it with Tera.
+- A wait row between two steps → the next step's statements are built from the previous step's receipts.
+- Code offered without having been run → run it and show the rows.
+
 A live view straight over a CLI reader is fine and readable:
 `CREATE OR REPLACE VIEW gh_open_prs AS SELECT 'asubbarao' AS account, * FROM read_json($cmd$gh search prs … --json …|$cmd$)`.
 
 ## How to run it
 
+Every PR on asubbarao/duckstack goes through the review queue ([queue.sql](queue.sql), launchd every minute), and
+main accepts only PRs with both of its statuses green:
+- `duckstack/rules`: [gate.sql](gate.sql) runs the hook's own checks (`hooks/hook_checks.sql`) on every changed
+  `.sql` file and ```sql block, exactly as on an agent's tool call. A new antipattern the owner names is one more
+  row in `hook_checks.sql` (then `hooks/render_hits.sql`); it then blocks tool calls and PRs alike.
+- `duckstack/review`: this skill, run by Opus 5.5 headless on the lines the PR adds, with RULES.md and the manifesto.
+Findings come back as a PR comment; push a fix and the new head is checked again. Auto-merge does the rest.
+
+By hand:
 0. Run [references/audit.sql](references/audit.sql) on dev: one query, every rule hit in skills/ and server/ as
    file:line:rule. New antipattern named by the owner = one more row in its `rules` CTE.
 1. Read SQL-MANIFESTO.md, then the diff (`duck_tails`, or `gh pr diff` read through shellfs).
