@@ -7,17 +7,18 @@ allowed-tools: mcp__dev__query
 # Agent stream
 
 Start from `agent.messages`: one row per message block, agent_data's column names (`source, session_id, file_path,
-is_agent, timestamp, message_role, block_type, message_content, tool_name, tool_use_id, tool_input, model, cwd,
-git_branch, entrypoint`), plus `content_bytes` and `is_prompt` (a person's typed message). Never unpack
-`agent.lines` JSON by hand, and never read `lake.agent.stream` (stale since 2026-10-12).
+is_agent, timestamp, message_role, block_type, tool_name, tool_use_id, uuid, model, cwd, git_branch, entrypoint`),
+plus `is_prompt` (a person's typed message), `content_bytes`, and `head`/`tail` (first and last 100 characters) in
+place of the full text, so a 290 KB paste never fills a reply. Search and list there; fetch the full text of the rows
+you picked from `agent.message_blocks` (`message_content`, `tool_input`), joined on `uuid`. Never unpack
+`agent.lines` JSON by hand, never `read_conversations`, and never read `lake.agent.stream` (stale since 2026-10-12).
 
 ```sql
-SELECT timestamp, session_id, message_content FROM agent.messages
+SELECT timestamp, session_id, content_bytes, head, tail FROM agent.messages
 WHERE is_prompt AND timestamp > now() - INTERVAL 3 DAY ORDER BY timestamp;
 ```
 
-Large blocks: filter or list by `content_bytes` (`content_bytes < 4000`, or show `content_bytes` instead of the text)
-rather than pulling a 290 KB paste into a reply. The raw store below is for what `agent.messages` doesn't carry.
+The raw store below is for what `agent.messages` doesn't carry.
 
 ## The store
 

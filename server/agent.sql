@@ -75,9 +75,9 @@ $refresh$ AS sql
 )
 SELECT cron(sql, '0 */5 * * * *') AS job, r.*
 FROM posted CROSS JOIN UNNEST(receipts) AS t(r);
--- agent.messages: one row per message block, agent_data's column names. content_bytes sizes every block, so large
--- tool results and pastes are filtered by size, not pulled into a reply. is_prompt is a person's typed message.
-CREATE OR REPLACE VIEW agent.messages AS
+-- agent.message_blocks: one row per message block, agent_data's column names, with the full text (message_content) and
+-- tool input. is_prompt is a person's typed message. Read it for a block you already picked from agent.messages.
+CREATE OR REPLACE VIEW agent.message_blocks AS
 WITH line AS (
     SELECT transcript AS file_path, CASE WHEN contains(transcript, '/.codex/') THEN 'codex' ELSE 'claude' END AS source,
            contains(transcript, '/subagents/') AS is_agent, coalesce(sessionId ->> '$', parse_filename(transcript, true)) AS session_id,
@@ -99,5 +99,12 @@ WITH line AS (
 )
 SELECT *, message_role = 'user' AND block_type IN ('text', 'input_text') AND NOT is_agent
           AND NOT starts_with(ltrim(message_content), '<') AND NOT starts_with(message_content, '[Request interrupted')
-          AND NOT starts_with(message_content, 'This session is being continued') AS is_prompt
+          AND NOT starts_with(message_content, 'This session is being continued')
+          AND NOT starts_with(message_content, 'Base directory for this skill') AS is_prompt
 FROM parsed;
+-- agent.messages: the same rows without the full text, so a 290 KB paste never fills a reply: content_bytes, and the
+-- first and last 100 characters as head and tail. Search and list here; fetch full text from agent.message_blocks.
+CREATE OR REPLACE VIEW agent.messages AS
+SELECT * EXCLUDE (message_content, tool_input), left(message_content, 100) AS head, right(message_content, 100) AS tail,
+       left(tool_input::VARCHAR, 100) AS tool_input_head
+FROM agent.message_blocks;
