@@ -30,14 +30,19 @@ SELECT id AS pr_id, number AS pr_number, title, body, headRefOid AS head_sha, co
        '/Users/aloksubbarao/duckdb-skills' AS repo
 FROM read_json('variable:open_prs.json')
 WHERE NOT isDraft;
+-- PRs with a step due this tick: rules not yet posted, or rules passed and no review yet. Only these are read.
+CREATE OR REPLACE VIEW due_prs AS
+SELECT * FROM open_prs WHERE rules_state IS NULL
+UNION ALL
+SELECT * FROM open_prs WHERE rules_state = 'SUCCESS' AND review_state IS NULL;
 
 -- What each PR changes since it left main: base = the newest commit of the PR's history that main also has.
 CREATE OR REPLACE VIEW pr_changes AS
 WITH main_history AS (
     SELECT commit_hash FROM git_log('/Users/aloksubbarao/duckdb-skills', 'origin/main')
 ), pr_history AS (
-    SELECT open_prs.pr_number, open_prs.repo, open_prs.head_sha, pr_log.commit_hash, pr_log.commit_date
-    FROM open_prs CROSS JOIN LATERAL git_log_each(open_prs.repo, open_prs.head_sha) AS pr_log
+    SELECT due_prs.pr_number, due_prs.repo, due_prs.head_sha, pr_log.commit_hash, pr_log.commit_date
+    FROM due_prs CROSS JOIN LATERAL git_log_each(due_prs.repo, due_prs.head_sha) AS pr_log
 ), pr_bases AS (
     SELECT pr_number, repo, head_sha, arg_max(commit_hash, commit_date) AS base_sha
     FROM pr_history SEMI JOIN main_history USING (commit_hash) GROUP BY pr_number, repo, head_sha
