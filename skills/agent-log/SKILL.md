@@ -61,9 +61,8 @@ TO '/Users/aloksubbarao/.duck/agent_log/signed'
   only; never mix the two depths in one directory — `read_parquet('**/*.parquet',
   hive_partitioning := true)` fails with "Hive partition mismatch … key agent_signature not found".
 
-No `dev` MCP attached? Same statement, same door, over HTTP:
-`curl -s -X POST localhost:9495/sql -H 'content-type: application/json' \
-  -d "$(jq -n --rawfile s statement.sql '{sql:$s}')"`.
+No `dev` MCP attached? A local `duckdb :memory:` client already has `selfdispatch` (from `~/.duckdbrc`), so
+post the same statement through it: `SELECT selfdispatch($s$<the COPY statement>$s$)`. Never curl dev.
 
 Read it back with the same tool:
 

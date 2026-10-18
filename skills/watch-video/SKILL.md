@@ -20,8 +20,8 @@ come from the perceptual hash moving; the model only ever looks at one settled f
 ## 1. Frames and scenes
 
 `~/duckdb-skills/skills/tera/references/video_frames.sql` runs on dev: set the video path and frames
-directory literals at the top, then run its statements through the dev MCP `execute` tool (or post
-the body to `http://127.0.0.1:9495/sql`). The knobs are literals in the file:
+directory literals at the top, then run its statements through the dev MCP `execute` tool. The knobs are
+literals in the file:
 
 | Literal | Default | Meaning |
 |---|---|---|

@@ -168,18 +168,17 @@ WITH c AS (
     ) AS sql
     FROM c
 ), dispatched AS (
-    SELECT array_agg(
-        quackapi_post(
-            'http://127.0.0.1:9495/sql',
-            json_object('sql', sql)::VARCHAR
-        )
-    ) AS receipts
+    SELECT array_agg(selfdispatch(sql)) AS receipts
     FROM rendered
 )
 SELECT receipt.*
 FROM dispatched
 CROSS JOIN UNNEST(receipts) AS t(receipt);
 ```
+
+`selfdispatch(sql)` is exactly `quackapi_post('http://127.0.0.1:9495/sql', json_object('sql', sql)::VARCHAR)`: the
+post always goes to dev itself, and whatever varies by row goes inside the statement. A query that hand-writes the
+post, takes a URL per row, or builds it with `url_build` is a finding.
 
 ```sql
 -- a template file
