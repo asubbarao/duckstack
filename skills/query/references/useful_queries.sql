@@ -255,8 +255,8 @@ WITH logged AS (
 ), python_side AS (
   SELECT * FROM logged WHERE side = 'python'
 )
-SELECT raw, d AS duckdb_row, p AS python_row,
-       d.side IS NULL AS missing_duckdb, p.side IS NULL AS missing_python,
-       d.<compared column> IS DISTINCT FROM p.<compared column> AS differs
-FROM duckdb_side d FULL JOIN python_side p USING (raw)
+SELECT raw, duckdb_row, python_row,
+       duckdb_row.side IS NULL AS missing_duckdb, python_row.side IS NULL AS missing_python,
+       duckdb_row.<compared column> IS DISTINCT FROM python_row.<compared column> AS differs
+FROM duckdb_side AS duckdb_row FULL JOIN python_side AS python_row USING (raw)
 ORDER BY differs DESC, raw;
