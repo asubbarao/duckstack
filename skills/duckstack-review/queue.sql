@@ -22,19 +22,27 @@ COPY (SELECT * FROM read_json(['skills/duckstack-review/queue_seed.json',
                                '/opt/homebrew/bin/gh pr list --repo asubbarao/duckstack --state open --author asubbarao --json id,number,title,body,headRefOid,isDraft,autoMergeRequest,statusCheckRollup |'],
                               union_by_name := true))
 TO 'variable:open_prs.json' (FORMAT json);
+-- review_due: rules passed and no review yet, or the review errored and its result file was removed (a re-run).
 CREATE OR REPLACE VIEW open_prs AS
-SELECT id AS pr_id, number AS pr_number, title, body, headRefOid AS head_sha, concat_ws('-', number, left(headRefOid, 12)) AS review_key,
-       autoMergeRequest IS NOT NULL AS auto_merge,
-       upper(list_filter(statusCheckRollup, s -> s.context = 'duckstack/rules')[1].state) AS rules_state,
-       upper(list_filter(statusCheckRollup, s -> s.context = 'duckstack/review')[1].state) AS review_state,
-       '/Users/aloksubbarao/duckdb-skills' AS repo
-FROM read_json('variable:open_prs.json')
-WHERE NOT isDraft;
--- PRs with a step due this tick: rules not yet posted, or rules passed and no review yet. Only these are read.
+WITH listed AS (
+    SELECT id AS pr_id, number AS pr_number, title, body, headRefOid AS head_sha, concat_ws('-', number, left(headRefOid, 12)) AS review_key,
+           autoMergeRequest IS NOT NULL AS auto_merge,
+           upper(list_filter(statusCheckRollup, s -> s.context = 'duckstack/rules')[1].state) AS rules_state,
+           upper(list_filter(statusCheckRollup, s -> s.context = 'duckstack/review')[1].state) AS review_state,
+           '/Users/aloksubbarao/duckdb-skills' AS repo
+    FROM read_json('variable:open_prs.json')
+    WHERE NOT isDraft
+)
+SELECT listed.*,
+       listed.rules_state = 'SUCCESS' AND CASE listed.review_state WHEN 'ERROR' THEN result_file.file IS NULL
+                                                                 ELSE listed.review_state IS NULL END AS review_due
+FROM listed LEFT JOIN glob('/Users/aloksubbarao/.duck/review/results/*.json') AS result_file
+  ON parse_filename(result_file.file, true) = listed.review_key;
+-- PRs with a step due this tick: rules not yet posted, or a review due. Only these are read.
 CREATE OR REPLACE VIEW due_prs AS
 SELECT * FROM open_prs WHERE rules_state IS NULL
 UNION ALL
-SELECT * FROM open_prs WHERE rules_state = 'SUCCESS' AND review_state IS NULL;
+SELECT * FROM open_prs WHERE review_due;
 
 -- What each PR changes since it left main: base = the newest commit of the PR's history that main also has.
 CREATE OR REPLACE VIEW pr_changes AS
@@ -103,7 +111,7 @@ SELECT open_prs.review_key,
                                'files', string_agg(file_sections.section, E'\n' ORDER BY file_sections.file_path)),
                    autoescape := false, template_path := 'skills/duckstack-review/*.tera') AS prompt
 FROM open_prs JOIN file_sections USING (pr_number) LEFT JOIN warnings USING (pr_number)
-WHERE open_prs.rules_state = 'SUCCESS' AND open_prs.review_state IS NULL
+WHERE open_prs.review_due
 GROUP BY open_prs.review_key, open_prs.pr_number, open_prs.title, open_prs.body, warnings.warnings;
 
 -- One prompt file per PR, prompts/review_key=<pr>-<sha>/data_0.csv, written raw (no quoting, no header).
@@ -129,7 +137,7 @@ WITH result_files AS (
     FROM dispatched CROSS JOIN UNNEST(receipts) AS each_receipt(sent)
     CROSS JOIN UNNEST(TRY_CAST(sent.receipt.body AS JSON[])) AS each_row(result_row)
 )
-SELECT review_key,
+SELECT review_key, result_row ->> 'result' AS result_text,
        TRY_CAST(coalesce(md_extract_code_blocks(result_row ->> 'result')[1].code, result_row ->> 'result') AS JSON) AS review
 FROM result_rows;
 
@@ -142,7 +150,7 @@ WITH status_text AS (
         {'context': 'duckstack/review', 'state': 'pending', 'description': 'Opus 5.5 is reviewing'},
         {'context': 'duckstack/review', 'state': 'success', 'description': 'Opus 5.5: clean'},
         {'context': 'duckstack/review', 'state': 'failure', 'description': 'Opus 5.5: changes needed; see the PR comment'},
-        {'context': 'duckstack/review', 'state': 'error',   'description': 'The review gave no verdict; push again to rerun'}
+        {'context': 'duckstack/review', 'state': 'error',   'description': 'No JSON verdict; see the comment. Remove its result file to rerun'}
     ], recursive := true)
 ), rules_summary AS (   -- the only read of pr_rule_hits in this view
     SELECT pr_number, bool_or(action = 'block') AS blocked,
@@ -151,8 +159,12 @@ WITH status_text AS (
     FROM pr_rule_hits AS hit GROUP BY pr_number
 ), review_summary AS (  -- the only read of review_results in this view
     SELECT review_key, review ->> 'verdict' AS verdict,
-           list_aggregate(list_transform(TRY_CAST(review -> 'findings' AS JSON[]), finding -> tera_render($t$- `{{ file }}:{{ line }}` **{{ rule }}**: {{ problem }}
-  Rewrite: {{ rewrite }}$t$, finding, autoescape := false)), 'string_agg', E'\n') AS lines
+           CASE WHEN review IS NULL   -- no JSON came back: show what the reviewer wrote, so the error says why
+                THEN tera_render($t$The reviewer answered without the JSON verdict. Its answer, cut at 3000 characters:
+
+{{ text }}$t$, json_object('text', left(result_text, 3000)), autoescape := false)
+                ELSE list_aggregate(list_transform(TRY_CAST(review -> 'findings' AS JSON[]), finding -> tera_render($t$- `{{ file }}:{{ line }}` **{{ rule }}**: {{ problem }}
+  Rewrite: {{ rewrite }}$t$, finding, autoescape := false)), 'string_agg', E'\n') END AS lines
     FROM review_results
 ), rules_verdicts AS (
     SELECT open_prs.pr_number, open_prs.head_sha, rules_summary.lines,
@@ -166,7 +178,7 @@ WITH status_text AS (
 ), due_statuses AS (
     SELECT pr_number, head_sha, 'duckstack/rules' AS context, state FROM rules_verdicts
     UNION ALL
-    SELECT pr_number, head_sha, 'duckstack/review', 'pending' FROM open_prs WHERE rules_state = 'SUCCESS' AND review_state IS NULL
+    SELECT pr_number, head_sha, 'duckstack/review', 'pending' FROM open_prs WHERE review_due
     UNION ALL
     SELECT pr_number, head_sha, 'duckstack/review', state FROM review_verdicts
 ), comments AS (
@@ -213,7 +225,7 @@ SELECT pr_number, concat_ws(' ',
        '--json-schema "$(cat /Users/aloksubbarao/.duck/deploy/skills/duckstack-review/review_schema.json)"',
        concat('> results/', review_key, '.part 2>&1; mv results/', review_key, '.part results/', review_key, '.json)'),
        '> /dev/null 2>&1 & echo $!') AS command
-FROM open_prs WHERE rules_state = 'SUCCESS' AND review_state IS NULL;
+FROM open_prs WHERE review_due;
 
 .output stdout
 WITH posted AS (

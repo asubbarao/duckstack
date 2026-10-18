@@ -24,3 +24,8 @@ The rule gate (the hook's own checks) already ran on this PR. Its warnings, whic
 {{ warnings }}
 
 {{ files }}
+
+---
+
+Answer with one JSON object and nothing else, no prose and no code fence:
+{"verdict": "clean" | "changes", "findings": [{"file": "...", "line": 0, "rule": "...", "problem": "...", "rewrite": "..."}]}
