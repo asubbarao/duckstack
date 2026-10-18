@@ -165,8 +165,7 @@ ORDER BY start_line;
 
 
 -- ## Where a name is defined anywhere in a tree, in place of grep / git grep / rg (Opus 5.5, 2026-10-17)
--- when: a helper, function or class could be in any file under a folder. read_ast takes a literal list (no column,
---   no subquery; git:// does not expand globs), so the list is rendered once and dispatched.
+-- when: a helper, function or class could be in any file under a folder. The file list is rendered once and dispatched.
 -- uses: git_tree (duck_tails), read_ast (sitting_duck), tera_render, selfdispatch.
 -- returns: one receipt; its body is the rows: name, start_line, end_line, file_path (git:// URI pinned to the commit).
 -- tested: inframe-w5 HEAD, all of platform/backend/app/tests, 3 names → 4 definitions in one receipt.
