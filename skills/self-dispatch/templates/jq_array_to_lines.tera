@@ -1,0 +1,4 @@
+{# Only when read_json cannot read the output whole (e.g. gh api --paginate prints arrays back to back): jq splits one
+   array into one object per line and does nothing else. No field selection or reshaping in jq; SQL does that.
+   Row: command, array (the jq path to the array: '.' for a top-level array, or '.items'). #}
+SELECT * FROM read_json($cmd${{ command }} | jq -c '{{ array }}[]' |$cmd$, format := 'newline_delimited')

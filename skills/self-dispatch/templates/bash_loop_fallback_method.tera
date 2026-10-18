@@ -1,0 +1,3 @@
+{# FALLBACK, not a pattern. A bash loop, only when no row source exists; the audit lists every use. Rows replace it
+   almost always: put the items in the first CTE and render one statement per item with shell.tera. Row: items (list), body. #}
+SELECT * FROM read_lines($cmd$for item in {{ items | join(sep=" ") }}; do {{ body }}; done |$cmd$, "trim" := true)

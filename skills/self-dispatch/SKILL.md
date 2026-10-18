@@ -25,10 +25,10 @@ Pick the template by what the statement does. `templates/canonical.sql` has a ve
 | template | for | row columns |
 |---|---|---|
 | `shell.tera` | one shell command (files, processes, osascript, git, gh) | reader, command, options |
-| `pipeline.tera` | a command piped through jq | command, jq |
+| `jq_array_to_lines.tera` | only when read_json cannot read the output whole (e.g. `gh api --paginate`): jq splits one array into lines, nothing more | command, array |
 | `sql.tera` | in the database: SELECT, DDL, DML, PRAGMA, names from information_schema | table_schema, table_name, … |
 | `network.tera` | another host: curl through shellfs (or `quackapi_post` to another service) | reader, url, options |
-| `loop.tera` | a bash loop, when that really is simplest (rarely: rows usually replace it) | items, body |
+| `bash_loop_fallback_method.tera` | FALLBACK: a bash loop when no row source exists; the audit lists every use | items, body |
 
 Rules:
 

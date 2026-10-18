@@ -1,2 +1,0 @@
-{# 5. A bash loop, when that really is simplest (rarely): rows usually replace it. Row: items (list), body. #}
-SELECT * FROM read_lines($cmd$for item in {{ items | join(sep=" ") }}; do {{ body }}; done |$cmd$, "trim" := true)

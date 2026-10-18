@@ -2,12 +2,13 @@
 --   1. declare everything (rows; the command as text; options as text; values prequoted),
 --   2. rendered: tera_render('<template>.tera', c::JSON) — Tera only fills holes,
 --   3. dispatched: array_agg(selfdispatch(sql)), then CROSS JOIN UNNEST(receipts).
--- shell 1 command | pipeline command | jq | sql in the database | network curl out | loop a bash loop (rare).
--- Verified on dev 2026-10-17 (all five in one dispatch).
+-- shell: one command | sql: in the database | network: curl out | jq_array_to_lines: only when read_json can't read
+-- the output whole | bash_loop_fallback_method: a FALLBACK, listed by the audit wherever it is used.
+-- Verified on dev 2026-10-17.
 
 -- 1. shell: one command, one reader.
 WITH listings AS (
-    SELECT 'read_csv' AS reader, printf('find %s -maxdepth 1 -type d', quote_literal(path)) AS command, ', header := false' AS options
+    SELECT 'read_csv' AS reader, concat_ws(' ', 'find', quote_literal(path), '-maxdepth 1 -type d') AS command, ', header := false' AS options
     FROM (SELECT unnest(['/private/tmp', '/Users/aloksubbarao/inframe']) AS path)
 ), rendered AS (
     SELECT tera_render('shell.tera', c::JSON, autoescape := false,
@@ -18,14 +19,15 @@ WITH listings AS (
 )
 SELECT receipt.* FROM dispatched CROSS JOIN UNNEST(receipts) AS t(receipt);
 
--- 2. pipeline: a command through jq, one JSON object per line.
-WITH plists AS (
-    SELECT 'plutil -convert json -o - ' || quote_literal(path) AS command, '{name: .ProductName, version: .ProductVersion}' AS jq
-    FROM (SELECT unnest(['/System/Library/CoreServices/SystemVersion.plist']) AS path)
+-- 2. jq_array_to_lines: gh api --paginate prints one array per page back to back, which read_json can't read whole;
+--    jq only splits them into lines. Output read_json can read (a plist via plutil, one API page) goes through shell.tera.
+WITH pages AS (
+    SELECT concat_ws(' ', 'gh api --paginate', quote_literal(endpoint)) AS command, '.' AS array
+    FROM (SELECT unnest(['repos/duckdb/duckdb-quack/branches?per_page=100']) AS endpoint)
 ), rendered AS (
-    SELECT tera_render('pipeline.tera', c::JSON, autoescape := false,
+    SELECT tera_render('jq_array_to_lines.tera', c::JSON, autoescape := false,
                        template_path := '/Users/aloksubbarao/.duck/deploy/skills/self-dispatch/templates/*.tera') AS sql
-    FROM plists AS c
+    FROM pages AS c
 ), dispatched AS (
     SELECT array_agg(selfdispatch(sql)) AS receipts FROM rendered
 )
@@ -57,11 +59,12 @@ WITH endpoints AS (
 )
 SELECT receipt.* FROM dispatched CROSS JOIN UNNEST(receipts) AS t(receipt);
 
--- 5. loop: a bash loop, only when it really is the simplest thing (rows usually replace it).
+-- 5. bash_loop_fallback_method: a FALLBACK. This example has a row source, so example 1's shape is the right answer;
+--    it is here only to show the call. The audit lists every use of this template.
 WITH counts AS (
     SELECT ['server-exits.log', 'launchd.err'] AS items, 'wc -l < ~/.duck/logs/$item' AS body
 ), rendered AS (
-    SELECT tera_render('loop.tera', c::JSON, autoescape := false,
+    SELECT tera_render('bash_loop_fallback_method.tera', c::JSON, autoescape := false,
                        template_path := '/Users/aloksubbarao/.duck/deploy/skills/self-dispatch/templates/*.tera') AS sql
     FROM counts AS c
 ), dispatched AS (
