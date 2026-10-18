@@ -10,9 +10,12 @@ INSTALL duckdb_mcp FROM community;
 LOAD duckdb_mcp;
 -- Dev's views that are only files and host commands, here too, so they answer while dev is down.
 .read /Users/aloksubbarao/.duck/deploy/server/host.sql
+-- Every transcript line, read live from the .jsonl files: one raw json column, parsed at use (json ->> 'timestamp').
 CREATE SCHEMA IF NOT EXISTS agent;
 CREATE OR REPLACE VIEW agent.lines AS
-SELECT * FROM read_parquet('/Users/aloksubbarao/.duck/lake/agent/**/*.parquet', union_by_name := true);
+SELECT filename, json FROM read_json_objects(['/Users/aloksubbarao/.claude/projects/*/*.jsonl',
+    '/Users/aloksubbarao/.claude/projects/*/*/subagents/*.jsonl', '/Users/aloksubbarao/.codex/sessions/*/*/*/*.jsonl'],
+    format := 'newline_delimited', filename := true, ignore_errors := true, maximum_object_size := 268435456);
 -- Dev's two tools, query {sql} and execute {statement}, and no others.
 -- query is our own tool, not the built-in one: the built-in refuses any SQL that names read_text, read_json,
 -- read_csv, read_parquet or glob. query() is DuckDB's table function that runs one SELECT given as text.
