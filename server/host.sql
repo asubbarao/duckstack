@@ -57,8 +57,8 @@ WITH intent AS (          -- for each Terminal tab: every process holding its tt
 ), dispatched AS (       -- each receipt kept beside the tab it answers for
     SELECT array_agg({window_id: window_id, tab_index: tab_index, receipt: selfdispatch(sql)}) AS receipts FROM rendered
 ), tty_pids AS (
-    SELECT r.window_id, r.tab_index, unnest(json_extract_string(try_cast(r.receipt.body AS JSON), '$[*].pid'))::BIGINT AS pid
-    FROM dispatched CROSS JOIN UNNEST(receipts) AS t(r)
+    SELECT r.window_id, r.tab_index, (tty_row ->> 'pid')::BIGINT AS pid
+    FROM dispatched CROSS JOIN UNNEST(receipts) AS t(r) CROSS JOIN UNNEST(try_cast(r.receipt.body AS JSON[])) AS p(tty_row)
 )
 SELECT t.*, c.*
 FROM terminal_tabs AS t

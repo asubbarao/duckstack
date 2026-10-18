@@ -65,17 +65,17 @@ SELECT receipt.* FROM jobs_dispatched CROSS JOIN UNNEST(receipts) AS t(receipt);
 ```
 
 The files each run's PR changes (the gate question): runs, then each run's PR, then that PR's
-files, each stage rendered from the last one's receipts. The last statement `COPY`s its rows to
-raw/ itself, so every row carries `run_id`, `event` and `pr`. A run with no PR returns no rows at
-stage 2 and sends nothing at stage 3.
+files, each stage rendered from the last one's receipts, and the rows come back in the last
+stage's receipts: every row carries `run_id`, `event`, `pr` and `filename`. A run with no PR
+returns no rows at stage 2 and sends nothing at stage 3. §3 reads it as the view `pr_files`
+(`CREATE OR REPLACE VIEW pr_files AS` in front); wrap it in a `COPY` to keep a copy.
 
 ```sql
 WITH intent AS (
-    SELECT '<owner>/<repo>' AS repo, 'ci.yml' AS workflow, 40 AS run_limit, 'raw' AS raw_dir,
-           strftime(now(), '%Y%m%dT%H%M%SZ') AS ts
+    SELECT '<owner>/<repo>' AS repo, 'ci.yml' AS workflow, 40 AS run_limit
 ), runs_rendered AS (
     SELECT tera_render($tera$
-        SELECT '{{ repo }}' AS repo, '{{ raw_dir }}' AS raw_dir, '{{ ts }}' AS ts, databaseId AS run_id, headSha AS head_sha, event
+        SELECT '{{ repo }}' AS repo, databaseId AS run_id, headSha AS head_sha, event
         FROM read_json($cmd$gh run list --repo {{ repo }} --workflow {{ workflow }} --limit {{ run_limit }} --json databaseId,headSha,event |$cmd$)
     $tera$, intent::JSON, autoescape := false) AS sql
     FROM intent
@@ -83,7 +83,7 @@ WITH intent AS (
     SELECT array_agg(selfdispatch(sql)) AS receipts FROM runs_rendered
 ), prs_rendered AS (
     SELECT tera_render($tera$
-        SELECT '{{ repo }}' AS repo, '{{ raw_dir }}' AS raw_dir, '{{ ts }}' AS ts, {{ run_id }} AS run_id, '{{ event }}' AS event, number AS pr
+        SELECT '{{ repo }}' AS repo, {{ run_id }} AS run_id, '{{ event }}' AS event, number AS pr
         FROM read_json($cmd$gh api repos/{{ repo }}/commits/{{ head_sha }}/pulls |$cmd$)
     $tera$, run_row, autoescape := false) AS sql
     FROM runs_dispatched CROSS JOIN UNNEST(receipts) AS r(receipt) CROSS JOIN UNNEST(receipt.body::JSON[]) AS j(run_row)
@@ -91,17 +91,17 @@ WITH intent AS (
     SELECT array_agg(selfdispatch(sql)) AS receipts FROM prs_rendered
 ), files_rendered AS (
     SELECT tera_render($tera$
-        COPY (
-            SELECT {{ run_id }} AS run_id, '{{ event }}' AS event, {{ pr }} AS pr, file.filename
-            FROM read_json($cmd$gh api --paginate --slurp "repos/{{ repo }}/pulls/{{ pr }}/files?per_page=100" |$cmd$)
-            CROSS JOIN UNNEST(json) AS page(file)
-        ) TO '{{ raw_dir }}/prfiles-{{ run_id }}-{{ ts }}.json'
+        SELECT {{ run_id }} AS run_id, '{{ event }}' AS event, {{ pr }} AS pr, file.filename
+        FROM read_json($cmd$gh api --paginate --slurp "repos/{{ repo }}/pulls/{{ pr }}/files?per_page=100" |$cmd$)
+        CROSS JOIN UNNEST(json) AS page(file)
     $tera$, pr_row, autoescape := false) AS sql
     FROM prs_dispatched CROSS JOIN UNNEST(receipts) AS r(receipt) CROSS JOIN UNNEST(receipt.body::JSON[]) AS j(pr_row)
 ), files_dispatched AS (
     SELECT array_agg(selfdispatch(sql)) AS receipts FROM files_rendered
 )
-SELECT receipt.* FROM files_dispatched CROSS JOIN UNNEST(receipts) AS t(receipt);
+SELECT (file ->> 'run_id')::BIGINT AS run_id, file ->> 'event' AS event, (file ->> 'pr')::BIGINT AS pr, file ->> 'filename' AS filename
+FROM files_dispatched CROSS JOIN UNNEST(receipts) AS r(receipt) CROSS JOIN UNNEST(receipt.body::JSON[]) AS f(file);
+-- verified 2026-10-18 on inframe-risk/inframe, 6 runs: 192 rows, the same as the old raw/prfiles copies (EXCEPT ALL 0 both ways)
 ```
 
 One run's full log zip, for duck_hunt: fetched once, kept. The command's only job is to land the
@@ -123,7 +123,6 @@ SELECT * FROM read_lines($cmd${ [ -s raw/run-<run_id>.zip ] || gh api repos/<own
 ```sql
 CREATE OR REPLACE VIEW raw_runs     AS FROM read_json('raw/runs-*.json', filename := true);
 CREATE OR REPLACE VIEW raw_jobs     AS FROM read_json('raw/jobs-*.json', format := 'unstructured', filename := true);
-CREATE OR REPLACE VIEW raw_prfiles  AS FROM read_json('raw/prfiles-*.json', format := 'newline_delimited', filename := 'raw_file');  -- the rows carry their own `filename`
 
 CREATE OR REPLACE VIEW runs AS
 SELECT * EXCLUDE (filename),
@@ -177,7 +176,7 @@ A timeline (Gantt) of one run is each job's offset from the run's first job star
 dependency install, the test step, the aggregate. The test step is the suite; everything else is
 setup a cache or a smaller image can win back.
 
-**The change-detection gate.** Join `raw_prfiles` to the runs and classify each PR by where its
+**The change-detection gate.** Join `pr_files` (§1) to the runs and classify each PR by where its
 files live; a PR that only touches one side but ran the other side's jobs paid for nothing:
 
 ```sql
@@ -185,7 +184,7 @@ SELECT run_id, pr,
        list_filter(array_agg(filename), f -> starts_with(f, 'platform/backend/'))  AS backend_files,
        list_filter(array_agg(filename), f -> starts_with(f, 'platform/frontend/')) AS frontend_files,
        array_agg(filename) AS files
-FROM raw_prfiles GROUP BY ALL;
+FROM pr_files GROUP BY ALL;
 -- verified 2026-10-17: run 39075670966 (PR #1662) → 9 backend, 0 frontend of 14 files; no match is [], not NULL
 ```
 
