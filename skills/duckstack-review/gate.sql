@@ -9,7 +9,7 @@ LOAD markdown;
 CREATE OR REPLACE VIEW pr_sql AS
 SELECT pr_number, file_path, content FROM pr_files WHERE ends_with(file_path, '.sql')
 UNION ALL
-SELECT pr_number, file_path || '#sql' || block.ordinality AS file_path, block.code_block.code AS content
+SELECT pr_number, concat(file_path, '#sql', block.ordinality) AS file_path, block.code_block.code AS content
 FROM pr_files CROSS JOIN UNNEST(md_extract_code_blocks(content)) WITH ORDINALITY AS block(code_block, ordinality)
 -- duckstack-review's own BAD examples are deliberate.
 WHERE ends_with(file_path, '.md') AND block.code_block.language = 'sql' AND NOT starts_with(file_path, 'skills/duckstack-review/');

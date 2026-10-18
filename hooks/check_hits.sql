@@ -160,7 +160,7 @@ SELECT 'sql_http_server' AS check_id, call_id, tool_name, coalesce(next_prompt_c
 UNION ALL
 SELECT 'sql_join_on_constant' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((sql_has_join_on_constant), false)
 UNION ALL
-SELECT 'sql_json_each' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((list_has_any(sql_table_functions, ['json_each', 'json_tree'])), false)
+SELECT 'sql_json_each' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((list_contains(sql_table_functions, 'json_each')), false)
 UNION ALL
 SELECT 'sql_json_extract' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((list_has_any(sql_functions, ['json_extract', 'json_extract_string', 'json_extract_path', 'json_extract_path_text'])), false)
 UNION ALL
