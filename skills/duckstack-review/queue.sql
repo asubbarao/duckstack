@@ -14,7 +14,7 @@ LOAD shellfs;
 LOAD scalarfs;
 LOAD tera;
 LOAD markdown;
-SELECT * FROM read_lines($cmd$mkdir -p /Users/aloksubbarao/.duck/review/prompts /Users/aloksubbarao/.duck/review/results; git -C /Users/aloksubbarao/duckdb-skills fetch -q origin +refs/heads/main:refs/remotes/origin/main '+refs/pull/*/head:refs/remotes/origin/pr/*' 2>&1 |$cmd$);
+SELECT * FROM read_lines($cmd$mkdir -p /Users/aloksubbarao/.duck/review/results; git -C /Users/aloksubbarao/duckdb-skills fetch -q origin +refs/heads/main:refs/remotes/origin/main '+refs/pull/*/head:refs/remotes/origin/pr/*' 2>&1 |$cmd$);
 
 -- The PR list is read once into a ScalarFS variable: every view below refers to it, and a reader inside a view runs
 -- again at each reference. The seed is one draft row, so read_json still has the list's shape when no PR is open.
@@ -23,13 +23,14 @@ COPY (SELECT * FROM read_json(['skills/duckstack-review/queue_seed.json',
                               union_by_name := true))
 TO 'variable:open_prs.json' (FORMAT json);
 -- review_due: rules passed and no review yet, or the review errored and its result file was removed (a re-run).
+-- repo, review_dir and checkout (the checkout this tick runs in) are declared here once, as columns.
 CREATE OR REPLACE VIEW open_prs AS
 WITH listed AS (
     SELECT id AS pr_id, number AS pr_number, title, body, headRefOid AS head_sha, concat_ws('-', number, left(headRefOid, 12)) AS review_key,
            autoMergeRequest IS NOT NULL AS auto_merge,
-           upper(list_filter(statusCheckRollup, s -> s.context = 'duckstack/rules')[1].state) AS rules_state,
-           upper(list_filter(statusCheckRollup, s -> s.context = 'duckstack/review')[1].state) AS review_state,
-           '/Users/aloksubbarao/duckdb-skills' AS repo
+           map_from_entries([{k: s.context, v: upper(s.state)} FOR s IN statusCheckRollup IF s.context IS NOT NULL]) AS statuses,
+           statuses['duckstack/rules'] AS rules_state, statuses['duckstack/review'] AS review_state,
+           '/Users/aloksubbarao/duckdb-skills' AS repo, '/Users/aloksubbarao/.duck/review' AS review_dir, getenv('PWD') AS checkout
     FROM read_json('variable:open_prs.json')
     WHERE NOT isDraft
 )
@@ -178,58 +179,49 @@ WITH status_text AS (
 {{ text }}$t$, json_object('text', left(reviews.result_text, 3000)), autoescape := false)
                 ELSE finding_lines.lines END AS lines
     FROM reviews LEFT JOIN finding_lines USING (review_key)
-), rules_verdicts AS (
-    SELECT open_prs.pr_number, open_prs.head_sha, rules_summary.lines,
-           CASE WHEN rules_summary.blocked THEN 'failure' ELSE 'success' END AS state
-    FROM open_prs LEFT JOIN rules_summary USING (pr_number)
-    WHERE open_prs.rules_state IS NULL
-), review_verdicts AS (
-    SELECT open_prs.pr_number, open_prs.head_sha, review_summary.lines,
-           CASE review_summary.verdict WHEN 'clean' THEN 'success' WHEN 'changes' THEN 'failure' ELSE 'error' END AS state
+), outcomes AS (        -- one row per PR and status to post this tick; lines and signature make its comment
+    SELECT open_prs.pr_number, open_prs.head_sha, 'duckstack/rules' AS context,
+           CASE WHEN rules_summary.blocked THEN 'failure' ELSE 'success' END AS state, rules_summary.lines,
+           'duckstack review queue, rule gate (hooks/hook_checks.sql)' AS signature
+    FROM open_prs LEFT JOIN rules_summary USING (pr_number) WHERE open_prs.rules_state IS NULL
+    UNION ALL
+    SELECT pr_number, head_sha, 'duckstack/review', 'pending', NULL, NULL FROM open_prs WHERE review_due
+    UNION ALL
+    SELECT open_prs.pr_number, open_prs.head_sha, 'duckstack/review',
+           CASE review_summary.verdict WHEN 'clean' THEN 'success' WHEN 'changes' THEN 'failure' ELSE 'error' END,
+           coalesce(review_summary.lines, 'No findings.'), 'Opus 5.5, duckstack review queue (duckstack-review skill)'
     FROM open_prs JOIN review_summary USING (review_key)
-), due_statuses AS (
-    SELECT pr_number, head_sha, 'duckstack/rules' AS context, state FROM rules_verdicts
-    UNION ALL
-    SELECT pr_number, head_sha, 'duckstack/review', 'pending' FROM open_prs WHERE review_due
-    UNION ALL
-    SELECT pr_number, head_sha, 'duckstack/review', state FROM review_verdicts
-), comment_rows AS (
-    SELECT pr_number, 'duckstack/rules' AS context, state, lines, 'duckstack review queue, rule gate (hooks/hook_checks.sql)' AS signature
-    FROM rules_verdicts WHERE lines IS NOT NULL
-    UNION ALL
-    SELECT pr_number, 'duckstack/review', state, coalesce(lines, 'No findings.'), 'Opus 5.5, duckstack review queue (duckstack-review skill)'
-    FROM review_verdicts
-), comments AS (
-    SELECT pr_number, tera_render($t$**{{ context }}: {{ state }}**
-
-{{ lines }}
-
-_{{ signature }}_$t$, c::JSON, autoescape := false) AS body
-    FROM comment_rows AS c
 )
 SELECT pr_number, concat('https://api.github.com/repos/asubbarao/duckstack/statuses/', head_sha) AS url,
        json_object('context', context, 'state', state, 'description', status_text.description) AS payload
-FROM due_statuses JOIN status_text USING (context, state)
+FROM outcomes JOIN status_text USING (context, state)
 UNION ALL
-SELECT pr_number, concat('https://api.github.com/repos/asubbarao/duckstack/issues/', pr_number, '/comments'), json_object('body', body)
-FROM comments
+SELECT pr_number, concat('https://api.github.com/repos/asubbarao/duckstack/issues/', pr_number, '/comments'),
+       json_object('body', tera_render($t$**{{ context }}: {{ state }}**
+
+{{ lines }}
+
+_{{ signature }}_$t$, outcome::JSON, autoescape := false))
+FROM outcomes AS outcome WHERE lines IS NOT NULL
 UNION ALL
 SELECT pr_number, 'https://api.github.com/graphql',
        json_object('query', 'mutation($id: ID!) { enablePullRequestAutoMerge(input: {pullRequestId: $id, mergeMethod: MERGE}) { clientMutationId } }',
                    'variables', json_object('id', pr_id))
 FROM open_prs WHERE NOT auto_merge;
 
--- The review's launch (review_launch.tera): the rubric and schema come from the checkout this tick runs in ($PWD),
--- so they match its queue.sql; a missing schema file hands claude --json-schema "" and free text instead of a verdict.
+-- The review's launch (review_launch.tera): rubric, schema and settings come from the checkout this tick runs in, so
+-- they match its queue.sql; a missing schema file hands claude --json-schema "" and free text instead of a verdict.
 CREATE OR REPLACE VIEW review_launches AS
 WITH launch_rows AS (
-    SELECT pr_number, review_key,
-           [concat(getenv('PWD'), '/skills/duckstack-review/SKILL.md'), concat(getenv('PWD'), '/skills/self-dispatch/RULES.md'),
-            concat(getenv('PWD'), '/SQL-MANIFESTO.md')] AS rubric,
-           concat(getenv('PWD'), '/skills/duckstack-review/review_schema.json') AS schema,
-           ['/Users/aloksubbarao/.local/bin/claude', '-p', '--model claude-opus-5-5', '--tools ""', '--output-format json',
+    SELECT pr_number, review_dir,
+           [concat(checkout, '/skills/duckstack-review/SKILL.md'), concat(checkout, '/skills/self-dispatch/RULES.md'),
+            concat(checkout, '/SQL-MANIFESTO.md')] AS rubric,
+           concat('prompts/review_key=', review_key, '/data_0.csv') AS prompt,
+           concat(checkout, '/skills/duckstack-review/review_schema.json') AS schema,
+           concat('results/', review_key, '.part') AS part, concat('results/', review_key, '.json') AS result,
+           ['/Users/aloksubbarao/.local/bin/claude', '-p', '--model', 'claude-opus-5-5', '--tools', '""', '--output-format', 'json',
             '--no-session-persistence', '--strict-mcp-config', '--disable-slash-commands',
-            $q$--settings '{"disableAllHooks": true}'$q$] AS claude
+            '--settings', concat(checkout, '/skills/duckstack-review/review_settings.json')] AS claude
     FROM open_prs WHERE review_due
 )
 SELECT pr_number,

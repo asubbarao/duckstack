@@ -1,3 +1,3 @@
-{# The review's launch, run on dev in the background. The row declares everything: rubric (files fed to claude
-   ahead of the prompt), claude (the command and its flags), schema (the JSON schema file), review_key. #}
-(cd /Users/aloksubbarao/.duck/review && cat {{ rubric | join(sep=" ") }} prompts/review_key={{ review_key }}/data_0.csv | {{ claude | join(sep=" ") }} --json-schema "$(cat {{ schema }})" > results/{{ review_key }}.part 2>&1; mv results/{{ review_key }}.part results/{{ review_key }}.json) > /dev/null 2>&1 & echo $! |
+{# The review's launch, run on dev in the background. The row declares everything: review_dir, rubric (files fed to
+   claude ahead of the prompt), prompt, claude (the command and its flags, one word each), schema, part and result. #}
+(cd {{ review_dir }} && cat {{ rubric | join(sep=" ") }} {{ prompt }} | {{ claude | join(sep=" ") }} --json-schema "$(cat {{ schema }})" > {{ part }} 2>&1; mv {{ part }} {{ result }}) > /dev/null 2>&1 & echo $! |

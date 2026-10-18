@@ -164,7 +164,7 @@ SELECT 'sql_json_each' AS check_id, call_id, tool_name, coalesce(next_prompt_cor
 UNION ALL
 SELECT 'sql_json_extract' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((list_has_any(sql_functions, ['json_extract', 'json_extract_string', 'json_extract_path', 'json_extract_path_text'])), false)
 UNION ALL
-SELECT 'sql_lateral_not_allowlisted' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((sql_has_lateral_function_join AND NOT list_has_all(['read_lines_lateral', 'git_read_each', 'git_log_each', 'git_tree_each', 'json_each', 'json_tree', 'unnest', 'generate_series', 'range'], sql_table_functions)), false)
+SELECT 'sql_lateral_not_allowlisted' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((sql_has_lateral_function_join AND NOT list_has_all(['read_lines_lateral', 'git_read_each', 'git_log_each', 'git_tree_each', 'git_diff_tree_each', 'json_tree', 'unnest', 'generate_series', 'range'], sql_table_functions)), false)
 UNION ALL
 SELECT 'sql_left_join_lateral' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((sql_has_left_join_lateral), false)
 UNION ALL

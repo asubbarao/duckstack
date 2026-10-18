@@ -226,7 +226,7 @@ WITH primary_checks AS (SELECT unnest([
  'message': 'Expand arrays with CROSS JOIN UNNEST (WITH ORDINALITY when order matters); no LEFT JOIN to a lateral function or subquery.',
  'action': 'block', 'hook_event': 'PreToolUse', 'hook_decision': 'deny', 'replaces_hooks': []::VARCHAR[]},
 {'check_id': 'sql_lateral_not_allowlisted', 'rule_id': '01a14840-e49f-77e1-8874-77ed8d5acc48', 'tools': ['@sql'],
- 'predicate_sql': $p$sql_has_lateral_function_join AND NOT list_has_all(['read_lines_lateral', 'git_read_each', 'git_log_each', 'git_tree_each', 'json_each', 'json_tree', 'unnest', 'generate_series', 'range'], sql_table_functions)$p$,
+ 'predicate_sql': $p$sql_has_lateral_function_join AND NOT list_has_all(['read_lines_lateral', 'git_read_each', 'git_log_each', 'git_tree_each', 'git_diff_tree_each', 'json_tree', 'unnest', 'generate_series', 'range'], sql_table_functions)$p$,
  'message': 'For per-row work self-dispatch one statement per row; the only lateral form is CROSS JOIN LATERAL of a per-row reader (read_lines_lateral, git_read_each).',
  'action': 'warn', 'hook_event': 'PreToolUse', 'hook_decision': 'context', 'replaces_hooks': []::VARCHAR[]},
 {'check_id': 'sql_recursive_cte', 'rule_id': '01a14840-dca3-7feb-bda0-71382c291b6a', 'tools': ['@sql'],
