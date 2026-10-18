@@ -331,7 +331,7 @@ WITH primary_checks AS (SELECT unnest([
  'action': 'warn', 'hook_event': 'PreToolUse', 'hook_decision': 'context', 'replaces_hooks': []::VARCHAR[]},
 {'check_id': 'sql_dispatch_shape', 'rule_id': '01a14840-e49f-753e-a22c-bd6dff7ed361', 'tools': ['@sql'],
  'predicate_sql': $p$list_contains(sql_functions, 'selfdispatch') AND NOT (list_has_any(sql_functions, ['array_agg', 'list']) AND sql_has_unnest_cross_join AND sql_uses_canonical_template)$p$,
- 'message': 'Self-dispatch has one shape: declare the rows, render each statement with a canonical template from skills/self-dispatch/templates/ by name (tera_render(''<name>.tera'', c::JSON, template_path := ...)), dispatch them as array_agg(selfdispatch(sql)), then CROSS JOIN UNNEST the receipts and read receipt.* (status, body, error) as columns. See skills/self-dispatch/templates/canonical.sql.',
+ 'message': 'Self-dispatch has one shape: declare the rows, render each statement with a template from skills/self-dispatch/templates/ by name (tera_render(''<name>.tera'', c::JSON, template_path := ...)), dispatch them as array_agg(selfdispatch(sql)), then CROSS JOIN UNNEST the receipts and read receipt.* (status, body, error) as columns. See skills/self-dispatch/templates/canonical.sql.',
  'action': 'block', 'hook_event': 'PreToolUse', 'hook_decision': 'deny', 'replaces_hooks': []::VARCHAR[]},
 {'check_id': 'sql_dispatch_direct_post', 'rule_id': '01a14840-e49f-753e-a22c-bd6dff7ed361', 'tools': ['@sql'],
  'predicate_sql': $p$len(list_filter(sql_function_calls, f -> f.name = 'quackapi_post' AND len(list_filter(f.literals, l -> contains(l, ':9495/sql'))) > 0)) > 0$p$,
