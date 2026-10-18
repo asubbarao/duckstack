@@ -206,6 +206,8 @@ SELECT 'sql_text_join_function' AS check_id, call_id, tool_name, coalesce(next_p
 UNION ALL
 SELECT 'sql_update_delete' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((list_has_any(sql_statement_kinds, ['update_statement', 'delete_statement'])), false)
 UNION ALL
+SELECT 'sql_url_build' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((list_contains(sql_functions, 'url_build')), false)
+UNION ALL
 SELECT 'sql_vague_cte_names' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((len(list_filter(sql_cte_names, n -> CASE WHEN length(n) <= 2 THEN true ELSE n IN ('tmp', 'data', 'data2', 'kind', 'stuff', 'foo', 'temp') END)) > 0), false)
 UNION ALL
 SELECT 'sql_variable_get' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((list_contains(sql_functions, 'getvariable')), false)
