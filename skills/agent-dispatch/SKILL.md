@@ -161,35 +161,35 @@ statement writes them and the next stage reads the files").
 WITH verification AS (     -- 1. everything declared: inputs, signature, notes, log directory
     SELECT [<inputs>] AS raws, quote_literal('<agent>') AS agent, quote_literal('<session id>') AS session_id,
            quote_literal('<agent>-<session id>') AS agent_signature, quote_literal('<skill>') AS skill,
-           quote_literal($n$<notes>$n$) AS notes, quote_literal('<agent_log_dir>') AS log_dir
+           $n$<notes>$n$ AS notes, quote_literal('<agent_log_dir>') AS log_dir
 ), declared AS (
-    SELECT *, to_json(raws)::VARCHAR AS raws_json, quote_literal(to_json(raws)::VARCHAR) AS raws_literal
-    FROM verification
-), rendered AS (           -- 2. the agent-log COPY; <both sides> appears twice, stored and executed
+    SELECT *, to_json(raws)::VARCHAR AS raws_json FROM verification
+), rendered AS (           -- 2. the agent-log COPY; <both sides> is stored as text and run as a subquery
     SELECT tera_render($tera$COPY (SELECT uuidv7() AS row_id, 'verification' AS type, {{ agent }} AS agent,
                {{ session_id }} AS session_id, {{ agent_signature }} AS agent_signature, {{ skill }} AS skill,
-               $query$<both sides>$query$ AS query_was_ran, r.*, {{ notes }} AS markdown_notes, now() AS ts
-        FROM query($query$<both sides>$query$) r)
+               $query$<both sides>$query$ AS query_was_ran, r.*, $n${{ notes }}$n$ AS markdown_notes, now() AS ts
+        FROM (<both sides>) AS r)
     TO {{ log_dir }} (FORMAT parquet, PARTITION_BY (type, agent_signature), OVERWRITE_OR_IGNORE true, FILENAME_PATTERN '{uuid}')$tera$,
         d::JSON, autoescape := false) AS sql
     FROM declared AS d
 ), dispatched AS (         -- 3. post it
     SELECT array_agg(selfdispatch(sql)) AS receipts FROM rendered
 )
-SELECT receipt.status, receipt.body FROM dispatched CROSS JOIN UNNEST(receipts) AS t(receipt);
+SELECT receipt.* FROM dispatched CROSS JOIN UNNEST(receipts) AS t(receipt);
 ```
 `<both sides>` is `<duckdb side> UNION ALL BY NAME <python side>` over the same declared list:
 - **DuckDB side:** `SELECT 'duckdb' AS side, raw, <duckdb expression over raw> AS <compared column>
-  FROM (SELECT unnest({{ raws_literal }}::JSON::VARCHAR[]) AS raw)`.
+  FROM (SELECT unnest($raws${{ raws_json }}$raws$::JSON::VARCHAR[]) AS raw)`.
 - **Python side:** `SELECT 'python' AS side, * FROM read_json($cmd$/opt/homebrew/bin/uv run --quiet
   --no-project python - <<'PY' … for raw in {{ raws_json }}: … PY |$cmd$, format := 'newline_delimited')`.
   The script prints one JSON line per input, and for an input that raises it prints the exception
   type in `error`, so every input is a row on both sides. The reader infers the columns.
 
-`quote_literal` is `concat(chr(39), s, chr(39))` by design, with no escaping, so keep `'` out of
-the notes and inputs; put text that needs one in a `$n$…$n$` dollar quote inside the template. A worker testing ponytail's or Thermos's proposal
-writes it as the Python (or bash) side. Worked example (verified on dev 2026-10-18): `skill =
-'T4-check-dispatched'` under `~/.duck/agent_log/skill_trial_2026_10_17/type=verification`.
+The inputs and the notes are rendered inside dollar quotes (`$raws$…$raws$`, `$n$…$n$`), so
+either may contain a single quote. A worker testing ponytail's or Thermos's proposal writes it as
+the Python (or bash) side. Worked example (verified on dev 2026-10-18, an input and the notes
+containing `'`): `skill = 'T4-check-dispatched-v2'` under
+`~/.duck/agent_log/skill_trial_2026_10_17/type=verification`.
 Readback: `query/references/useful_queries.sql`, "Verification: both sides".
 
 ## 4. Evidence is false-first
