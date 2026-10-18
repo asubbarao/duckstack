@@ -31,13 +31,14 @@ WITH listed AS (
            autoMergeRequest IS NOT NULL AS auto_merge,
            map_from_entries([{k: s.context, v: upper(s.state)} FOR s IN statusCheckRollup IF s.context IS NOT NULL]) AS statuses,
            statuses['duckstack/rules'] AS rules_state, statuses['duckstack/review'] AS review_state,
-           '/Users/aloksubbarao/duckdb-skills' AS repo, '/Users/aloksubbarao/.duck/review' AS review_dir, getenv('PWD') AS checkout
+           '/Users/aloksubbarao/duckdb-skills' AS repo, '/Users/aloksubbarao/.duck/review' AS review_dir, getenv('PWD') AS checkout,
+           concat(review_dir, '/results/', review_key, '.json') AS result_path   -- the head's review result, looked up once
     FROM read_json('variable:open_prs.json')
     WHERE NOT isDraft
 )
-SELECT *, path_exists(result_path) AS has_result,   -- the head's review result, the one place it is looked up
+SELECT *, path_exists(result_path) AS has_result,
        rules_state = 'SUCCESS' AND CASE review_state WHEN 'ERROR' THEN NOT has_result ELSE review_state IS NULL END AS review_due
-FROM (SELECT *, concat(review_dir, '/results/', review_key, '.json') AS result_path FROM listed);
+FROM listed;
 -- PRs with a step due this tick: rules not yet posted, or a review due. Only these are read.
 CREATE OR REPLACE VIEW due_prs AS
 SELECT * FROM open_prs WHERE list_contains([rules_state IS NULL, review_due], true);
