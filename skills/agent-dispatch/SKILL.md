@@ -152,6 +152,21 @@ ran it, and the lead passed it on. When run, it mistyped week dates and `+HH:MM`
 crashed on year-1 offsets. The same claim had already been disproved on 10-15: the Python version
 needed a regex and grew to 74 lines.
 
+**The verification row is one agent-log COPY that runs both sides.** Its query is
+`<duckdb side> UNION ALL BY NAME <python side>`:
+- **DuckDB side:** native SQL over the inputs, tagged `'duckdb' AS side`.
+- **Python side:** one shellfs reader, `read_json($cmd$/opt/homebrew/bin/uv run --quiet --no-project
+  python - <<'PY' … PY |$cmd$, columns := {…})`. The script prints one JSON line per input with
+  the same column names and puts an exception's type in an `error` column. It is tagged
+  `'python' AS side`.
+
+The same `$query$` token is stored as `query_was_ran` and executed, and `markdown_notes` carries
+the worker's reading. Every row is a result one engine actually produced. A worker who wants to
+test ponytail's or Thermos's proposal writes it as the Python (or bash) side. To read it back,
+join the two sides on the input and compare. Worked example: `skill = 'T4-check-union'` under
+`~/.duck/agent_log/skill_trial_2026_10_17/type=verification`. Readback query:
+`query/references/useful_queries.sql`, "verification: both sides".
+
 ## 4. Evidence is false-first
 
 A guard nobody has seen fail is not a guard, and **he does not accept assertion

@@ -33,5 +33,5 @@ FROM final_turn WHERE contains(text, 'duckdb');
 .mode list
 .headers off
 SELECT json_object('decision', 'block', 'reason',
-       printf('stop_check: this reply weighs DuckDB against Python/stdlib (%s) and this session has no agent-log row with type ''verification''. Run both versions on the same inputs and log it (agent-dispatch section 3), or drop the claim and say it was not run.', array_to_string(terms, ', '))) AS hook_output
+       printf('stop_check: this reply weighs DuckDB against Python/stdlib (%s) and this session has no agent-log row with type ''verification''. Run both in one agent-log COPY, the DuckDB side as SQL UNION ALL BY NAME the Python side as a shellfs uv run python reader, with type ''verification'' (agent-dispatch section 3), or drop the claim and say it was not run.', array_to_string(terms, ', '))) AS hook_output
 FROM claim WHERE len(terms) > 0 AND NOT EXISTS (FROM verification_calls);

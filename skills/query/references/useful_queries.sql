@@ -241,3 +241,16 @@ WITH c AS (
     SELECT array_agg(selfdispatch(sql)) AS receipts FROM rendered
 )
 SELECT receipt.* FROM dispatched CROSS JOIN UNNEST(receipts) AS t(receipt);
+
+-- verification: both sides. A DuckDB-vs-Python claim is one agent-log COPY whose query is
+-- <duckdb side> UNION ALL BY NAME <python side: read_json over a shellfs `uv run --no-project python -` heredoc>,
+-- each tagged with a side column (agent-dispatch section 3). Read it back by joining the sides on the input.
+-- Verified 2026-10-17: T4's fromisoformat proposal vs INF-1535's classifier, 19 inputs, 3 disagreements.
+WITH logged AS (
+  SELECT side, raw, value_type, iso, error
+  FROM read_parquet('/Users/aloksubbarao/.duck/agent_log/skill_trial_2026_10_17/type=verification/**/*.parquet', hive_partitioning := true, union_by_name := true)
+  WHERE skill = 'T4-check-union'
+), duckdb_side AS (SELECT * FROM logged WHERE side = 'duckdb'), python_side AS (SELECT * FROM logged WHERE side = 'python')
+SELECT d.raw, d.value_type AS duckdb_type, d.iso AS duckdb_iso, p.value_type AS python_type, p.iso AS python_iso, p.error AS python_error,
+       d.value_type IS DISTINCT FROM p.value_type AS type_differs
+FROM duckdb_side d JOIN python_side p USING (raw) ORDER BY type_differs DESC, d.raw;
