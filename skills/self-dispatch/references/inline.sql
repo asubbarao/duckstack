@@ -76,3 +76,20 @@ $t$, c::JSON, autoescape := false) AS sql FROM c
     FROM rendered
 )
 SELECT r.* FROM posted CROSS JOIN UNNEST(receipts) AS t(r);
+
+-- 5. Reading results back: each statement writes its rows; the next stage reads the files.
+-- Never parse the receipt body (no from_json structure string, no json_each). Expected answers: 42, 43.
+-- The output directory must already exist; a missing one is a 500 "Cannot open file" receipt.
+WITH c AS (
+    SELECT n FROM range(42, 44) AS t(n)
+), rendered AS (
+    SELECT tera_render($t$
+COPY (SELECT {{ n }} AS answer) TO '/private/tmp/selfdispatch_answer_{{ n }}.parquet' (FORMAT parquet)
+$t$, c::JSON, autoescape := false) AS sql FROM c
+), posted AS (
+    SELECT array_agg(selfdispatch(sql)) AS receipts
+    FROM rendered
+)
+SELECT r.status FROM posted CROSS JOIN UNNEST(receipts) AS t(r);
+
+SELECT answer FROM read_parquet('/private/tmp/selfdispatch_answer_*.parquet') ORDER BY answer;

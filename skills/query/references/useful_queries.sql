@@ -155,3 +155,39 @@ SELECT login, len(prs) AS n_prs, len(merged) AS n_merged, len(closed_unmerged) A
        len(ship_fingerprint) AS n_ship_fingerprint, round(100.0 * len(ship_fingerprint) / len(prs)) AS pct_ship_fingerprint,
        len(no_issue_branch) AS n_no_issue_branch, closed_unmerged, no_issue_branch
 FROM per_author ORDER BY n_prs DESC LIMIT 10;
+
+
+-- ## Definitions in one file at a commit (Opus 5.5, 2026-10-17)
+-- when: you need where a function or class is defined, with its lines, instead of grep / git grep / rg.
+-- uses: read_ast (sitting_duck) over a git:// path (duck_tails).
+-- returns: name VARCHAR, type VARCHAR, start_line, end_line; one row per definition in the committed file.
+-- tested: inframe-w5 HEAD, app/tests/services/test_client_recipients.py, 26 definitions (_watch at 220-237).
+SELECT name, type, start_line, end_line
+FROM read_ast('git://<worktree>/<path/to/file.py>@HEAD', 'python')
+WHERE type IN ('function_definition', 'class_definition')
+ORDER BY start_line;
+
+
+-- ## A name defined anywhere in a tree, written to Parquet (Opus 5.5, 2026-10-17)
+-- when: a helper or function could be in any file under a folder; read_ast takes a literal list, so render once and dispatch.
+-- uses: git_tree (duck_tails), read_ast (sitting_duck), tera_render, selfdispatch; side effect: writes <out_file>.
+-- returns: the dispatch receipt (status 200, body Count); then read_parquet(<out_file>) gives name, start_line, end_line, file_path (commit-pinned git:// URI).
+-- tested: inframe-w5 HEAD, all of platform/backend/app/tests, 4 names → 20 definitions.
+WITH python_files AS (
+    SELECT list(quote_literal(t.git_uri) ORDER BY t.file_path) AS uris
+    FROM git_tree('<worktree>', 'HEAD') t
+    WHERE t.kind = 'file' AND starts_with(t.file_path, '<folder>/') AND ends_with(t.file_path, '.py')
+), search AS (
+    SELECT uris, ['<name1>', '<name2>'] AS names, '<out_file>.parquet' AS out_file FROM python_files
+), rendered AS (
+    SELECT tera_render($t$
+COPY (
+    SELECT name, start_line, end_line, file_path
+    FROM read_ast([{{ uris | join(sep=", ") }}], 'python')
+    WHERE type = 'function_definition' AND name IN ('{{ names | join(sep="', '") }}')
+) TO '{{ out_file }}' (FORMAT parquet)
+$t$, s::JSON, autoescape := false) AS sql FROM search s
+), posted AS (
+    SELECT array_agg(selfdispatch(sql)) AS receipts FROM rendered
+)
+SELECT r.status, r.body FROM posted CROSS JOIN UNNEST(receipts) AS t(r);

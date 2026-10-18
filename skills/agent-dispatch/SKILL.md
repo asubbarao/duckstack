@@ -136,6 +136,19 @@ property of the diff blesses every existing violation.
 - Never `-init` against DuckDB; it replaces `~/.duckdbrc`. Never `SET`/`INSTALL`/
   `LOAD` against the dev quack.
 - Crude-oil repos are material to read, never services to depend on.
+- **DuckDB is part of the stack by decision, in the backend too** (INF-1535 shipped it in PR #1653).
+  A finding that says replace DuckDB with Python, bash or the stdlib, or avoid it as "a new
+  dependency", counts only when it carries both versions run on the same inputs, logged as an
+  agent-log row with `type = 'verification'`. Without that run it is a guess and is not logged.
+  Review rubrics that rank "stdlib before a new dependency" (ponytail's ladder, thermos's "canonical
+  helper") do not apply to DuckDB.
+
+The lead does not relay a worker's claim against DuckDB. It re-runs the worker's verification row
+first. If there is no row, the claim is dropped and the report says so. 2026-10-17: two Sonnet
+reviewers said ~15 lines of `fromisoformat` would replace INF-1535's DuckDB classifier. Neither
+ran it, and the lead passed it on. When run, it mistyped week dates and `+HH:MM` midnights and
+crashed on year-1 offsets. The same claim had already been disproved on 10-15: the Python version
+needed a regex and grew to 74 lines.
 
 ## 4. Evidence is false-first
 
