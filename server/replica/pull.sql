@@ -34,23 +34,21 @@ WITH source AS (
     QUALIFY row_number() OVER (PARTITION BY table_name ORDER BY run_started DESC) = 1
 ), due AS (
     SELECT s.key AS table_name, now() AS run_started, strftime(now(), '%Y%m%dT%H%M%SZ') AS run_id,
-        s.target || '.' || chr(34) || s.table_name || chr(34) AS ident,
-        s.src || '.' || s.target || '.' || chr(34) || s.table_name || chr(34) AS origin, chr(39) || s.key || chr(39) AS lit,
-        chr(34) || '_pull_' || s.target || '_' || s.table_name || chr(34) AS mark
+        s.src, s.target, s.table_name AS source_table, s.key
     FROM source s LEFT JOIN last_attempt l USING (key)
     WHERE coalesce(l.due_at, '-infinity'::TIMESTAMPTZ) <= now()
     ORDER BY l.due_at NULLS FIRST, s.key
     LIMIT 4
 ), statements AS (
     SELECT table_name, run_started, run_id, tera_render($t$
-CREATE OR REPLACE TEMP TABLE {{ mark }} AS SELECT {{ lit }} AS table_name, now() AS started;
-CREATE OR REPLACE TABLE {{ ident }} AS FROM {{ origin }};
+CREATE OR REPLACE TEMP TABLE "_pull_{{ target }}_{{ source_table }}" AS SELECT '{{ key }}' AS table_name, now() AS started;
+CREATE OR REPLACE TABLE {{ target }}."{{ source_table }}" AS FROM {{ src }}.{{ target }}."{{ source_table }}";
 INSERT OR IGNORE INTO pull_log BY NAME
 SELECT '{{ run_id }}' AS run_id, '{{ run_started }}'::TIMESTAMPTZ AS run_started, n.table_name, n.rows, m.started, now() AS finished, 'ok' AS status
-FROM {{ mark }} m JOIN (
-    SELECT {{ lit }} AS table_name, coalesce(len(array_agg(true)), 0) AS rows FROM {{ ident }}
+FROM "_pull_{{ target }}_{{ source_table }}" m JOIN (
+    SELECT '{{ key }}' AS table_name, coalesce(len(array_agg(true)), 0) AS rows FROM {{ target }}."{{ source_table }}"
 ) n USING (table_name);
-DROP TABLE {{ mark }};
+DROP TABLE "_pull_{{ target }}_{{ source_table }}";
 $t$, c::JSON, autoescape := false) AS statement
     FROM due c
 ), posted AS (
