@@ -27,7 +27,7 @@ that works but is ugly, slow or unreusable is a finding. The contract is
 
 ## Checks, in order of how often agents fail them
 
-Report every hit with file:line, the rule, and the rewrite.
+Fix every hit (see How to run it), then report it with file:line, the rule, and the rewrite.
 
 The baseline: a query under ~50 lines that has no bash loop, no tera loop or conditional, and no
 pile of new tables or views is assumed good. Self-dispatch is the usual shape, not a requirement.
@@ -269,12 +269,14 @@ main accepts only PRs with both of its statuses green:
 - `duckstack/review`: this skill, run by Opus 5.5 headless on the lines the PR adds, with RULES.md and the manifesto.
 Findings come back as a PR comment; push a fix and the new head is checked again. Auto-merge does the rest.
 
-By hand:
+By hand, the review fixes what it finds. A finding left as a comment is not done.
 0. Run [references/audit.sql](references/audit.sql) on dev: one query, every rule hit in skills/ and server/ as
    file:line:rule. New antipattern named by the owner = one more row in its `rules` CTE.
-1. Read SQL-MANIFESTO.md, then the diff (`duck_tails`, or `gh pr diff` read through shellfs).
-2. Go through checks 1–10 in order. Run what can be run on dev: `EXPLAIN`, row counts as
-   `len(array_agg(…))`, timing. A claim about speed needs a measurement.
-3. For each finding, give the rewrite in the target shape, not just the complaint.
-4. Verdict: findings by check, the one change that would most improve the work, and the shared
-   relation it should have created.
+1. Read SQL-MANIFESTO.md and RULES.md, then the code (`duck_tails`, or `gh pr diff` read through shellfs).
+2. For each finding, rewrite the query in the target shape, in place, on a branch from main.
+3. Run the old and the new query on dev on the same inputs and compare the rows (`EXCEPT ALL` both ways). Keep the
+   rewrite only when they match, or when the old one was wrong and the difference is the fix. Server files: test in a
+   `:memory:` client that `.read`s extensions.sql and macros.sql first, never by restarting dev.
+4. Delete before adding: a rule, example or file that teaches the antipattern goes, it is not reworded.
+5. Push and open a PR; the queue checks it. Report what was rewritten, the row comparison, and what could not be
+   fixed and why.
