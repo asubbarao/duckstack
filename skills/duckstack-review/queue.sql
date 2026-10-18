@@ -87,8 +87,8 @@ CREATE OR REPLACE VIEW review_prompts AS
 WITH added_by_file AS (
     SELECT pr_number, file_path, string_agg(concat_ws(': ', line_number, line), E'\n' ORDER BY line_number) AS added
     FROM pr_added_lines GROUP BY pr_number, file_path
-), file_sections AS (
-    SELECT pr_files.pr_number, pr_files.file_path,
+), file_sections AS (   -- every changed file, deletions included, so a PR that only deletes still has a prompt
+    SELECT pr_changes.pr_number, pr_changes.file_path,
            tera_render($t$## {{ file_path }} ({{ status }})
 
 Lines this PR adds, as line: text
@@ -96,10 +96,13 @@ Lines this PR adds, as line: text
 
 The whole file after the PR
 {{ content }}
-$t$, json_object('file_path', pr_files.file_path, 'status', pr_files.status, 'added', added_by_file.added, 'content', pr_files.content),
+$t$, json_object('file_path', pr_changes.file_path, 'status', pr_changes.status,
+                 'added', coalesce(added_by_file.added, '(none)'), 'content', coalesce(pr_files.content, '(the file is deleted)')),
                        autoescape := false) AS section
-    FROM pr_files JOIN added_by_file USING (pr_number, file_path)
-    WHERE pr_files.file_path <> 'hooks/check_hits.sql'   -- generated from hook_checks.sql by render_hits.sql
+    FROM pr_changes
+    LEFT JOIN pr_files ON pr_files.pr_number = pr_changes.pr_number AND pr_files.file_path = pr_changes.file_path
+    LEFT JOIN added_by_file ON added_by_file.pr_number = pr_changes.pr_number AND added_by_file.file_path = pr_changes.file_path
+    WHERE pr_changes.file_path <> 'hooks/check_hits.sql'   -- generated from hook_checks.sql by render_hits.sql
 ), warnings AS (
     SELECT pr_number, string_agg(concat_ws(' ', file_path, check_id, message), E'\n') AS warnings
     FROM pr_rule_hits WHERE action = 'warn' GROUP BY pr_number
