@@ -10,6 +10,7 @@
 -- The state is the statuses on GitHub and the files in ~/.duck/review; a new push is a new head and is checked again.
 .output /dev/null
 LOAD duck_tails;
+LOAD hostfs;
 LOAD shellfs;
 LOAD scalarfs;
 LOAD tera;
@@ -34,11 +35,9 @@ WITH listed AS (
     FROM read_json('variable:open_prs.json')
     WHERE NOT isDraft
 )
-SELECT listed.*, result_file.file AS result_path,   -- the head's review result, the one place it is looked up
-       listed.rules_state = 'SUCCESS' AND CASE listed.review_state WHEN 'ERROR' THEN result_file.file IS NULL
-                                                                 ELSE listed.review_state IS NULL END AS review_due
-FROM listed LEFT JOIN glob('/Users/aloksubbarao/.duck/review/results/*.json') AS result_file
-  ON parse_filename(result_file.file, true) = listed.review_key;
+SELECT *, path_exists(result_path) AS has_result,   -- the head's review result, the one place it is looked up
+       rules_state = 'SUCCESS' AND CASE review_state WHEN 'ERROR' THEN NOT has_result ELSE review_state IS NULL END AS review_due
+FROM (SELECT *, concat(review_dir, '/results/', review_key, '.json') AS result_path FROM listed);
 -- PRs with a step due this tick: rules not yet posted, or a review due. Only these are read.
 CREATE OR REPLACE VIEW due_prs AS
 SELECT * FROM open_prs WHERE list_contains([rules_state IS NULL, review_due], true);
@@ -46,7 +45,8 @@ SELECT * FROM open_prs WHERE list_contains([rules_state IS NULL, review_due], tr
 -- What each PR changes since it left main: base = the newest commit of the PR's history that main also has.
 CREATE OR REPLACE VIEW pr_changes AS
 WITH main_history AS (
-    SELECT commit_hash FROM git_log('/Users/aloksubbarao/duckdb-skills', 'origin/main')
+    SELECT main_log.commit_hash
+    FROM (SELECT DISTINCT repo FROM due_prs) AS repos CROSS JOIN LATERAL git_log_each(repos.repo, 'origin/main') AS main_log
 ), pr_history AS (
     SELECT due_prs.pr_number, due_prs.repo, due_prs.head_sha, pr_log.commit_hash, pr_log.commit_date
     FROM due_prs CROSS JOIN LATERAL git_log_each(due_prs.repo, due_prs.head_sha) AS pr_log
@@ -131,7 +131,7 @@ TO '/Users/aloksubbarao/.duck/review/prompts'
 -- structured_output (from --json-schema); a run without it leaves review NULL, which posts 'error' with its text.
 CREATE OR REPLACE VIEW review_results AS
 WITH result_files AS (
-    SELECT review_key, result_path AS path FROM open_prs WHERE review_state = 'PENDING' AND result_path IS NOT NULL
+    SELECT review_key, result_path AS path FROM open_prs WHERE review_state = 'PENDING' AND has_result
 ), rendered AS (
     SELECT review_key, tera_render($t$SELECT * FROM read_json('{{ path }}')$t$, f::JSON, autoescape := false) AS sql
     FROM result_files AS f
@@ -207,19 +207,23 @@ SELECT pr_number, 'https://api.github.com/graphql',
                    'variables', json_object('id', pr_id))
 FROM open_prs WHERE NOT auto_merge;
 
--- The review's launch (review_launch.tera): rubric, schema and settings come from the checkout this tick runs in, so
--- they match its queue.sql; a missing schema file hands claude --json-schema "" and free text instead of a verdict.
+-- The review's launch (review_launch.tera). The rubric comes from the checkout this tick runs in, so it matches this
+-- queue.sql; the verdict schema and claude's settings are constants here, passed inline.
 CREATE OR REPLACE VIEW review_launches AS
 WITH launch_rows AS (
     SELECT pr_number, review_dir,
            [concat(checkout, '/skills/duckstack-review/SKILL.md'), concat(checkout, '/skills/self-dispatch/RULES.md'),
             concat(checkout, '/SQL-MANIFESTO.md')] AS rubric,
            concat('prompts/review_key=', review_key, '/data_0.csv') AS prompt,
-           concat(checkout, '/skills/duckstack-review/review_schema.json') AS schema,
            concat('results/', review_key, '.part') AS part, concat('results/', review_key, '.json') AS result,
-           ['/Users/aloksubbarao/.local/bin/claude', '-p', '--model', 'claude-opus-5-5', '--tools', '""', '--output-format', 'json',
-            '--no-session-persistence', '--strict-mcp-config', '--disable-slash-commands',
-            '--settings', concat(checkout, '/skills/duckstack-review/review_settings.json')] AS claude
+           ['/Users/aloksubbarao/.local/bin/claude', '-p', '--model', 'claude-opus-5-5', '--tools=', '--output-format', 'json',
+            '--no-session-persistence', '--strict-mcp-config', '--disable-slash-commands'] AS claude,
+           {'disableAllHooks': true}::JSON::VARCHAR AS settings,
+           {'type': 'object', 'required': ['verdict', 'findings'],
+            'properties': {'verdict': {'type': 'string', 'enum': ['clean', 'changes']},
+                           'findings': {'type': 'array', 'items': {'type': 'object', 'required': ['file', 'line', 'rule', 'problem', 'rewrite'],
+                                        'properties': {'file': {'type': 'string'}, 'line': {'type': 'integer'}, 'rule': {'type': 'string'},
+                                                       'problem': {'type': 'string'}, 'rewrite': {'type': 'string'}}}}}}::JSON::VARCHAR AS schema
     FROM open_prs WHERE review_due
 )
 SELECT pr_number,

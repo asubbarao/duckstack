@@ -1,3 +1,4 @@
 {# The review's launch, run on dev in the background. The row declares everything: review_dir, rubric (files fed to
-   claude ahead of the prompt), prompt, claude (the command and its flags, one word each), schema, part and result. #}
-(cd {{ review_dir }} && cat {{ rubric | join(sep=" ") }} {{ prompt }} | {{ claude | join(sep=" ") }} --json-schema "$(cat {{ schema }})" > {{ part }} 2>&1; mv {{ part }} {{ result }}) > /dev/null 2>&1 & echo $! |
+   claude ahead of the prompt), prompt, claude (the command and its flags, one word each), settings and schema (JSON),
+   part and result. #}
+(cd {{ review_dir }} && cat {{ rubric | join(sep=" ") }} {{ prompt }} | {{ claude | join(sep=" ") }} --settings '{{ settings }}' --json-schema '{{ schema }}' > {{ part }} 2>&1; mv {{ part }} {{ result }}) > /dev/null 2>&1 & echo $! |

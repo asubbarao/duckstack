@@ -164,7 +164,7 @@ SELECT 'sql_json_each' AS check_id, call_id, tool_name, coalesce(next_prompt_cor
 UNION ALL
 SELECT 'sql_json_extract' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((list_has_any(sql_functions, ['json_extract', 'json_extract_string', 'json_extract_path', 'json_extract_path_text'])), false)
 UNION ALL
-SELECT 'sql_lateral_not_allowlisted' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((sql_has_lateral_function_join AND NOT list_has_all(['read_lines_lateral', 'git_read_each', 'git_log_each', 'git_tree_each', 'git_diff_tree_each', 'json_tree', 'unnest', 'generate_series', 'range'], sql_table_functions)), false)
+SELECT 'sql_lateral_not_allowlisted' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((sql_has_lateral_function_join AND NOT list_has_all(['read_lines_lateral', 'git_read_each', 'git_log_each', 'git_tree_each', 'git_diff_tree_each', 'json_tree', 'unnest'], sql_lateral_functions)), false)
 UNION ALL
 SELECT 'sql_left_join_lateral' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((sql_has_left_join_lateral), false)
 UNION ALL
@@ -204,7 +204,7 @@ SELECT 'sql_scalar_subquery_select' AS check_id, call_id, tool_name, coalesce(ne
 UNION ALL
 SELECT 'sql_set_on_dev' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((list_contains(sql_sources, 'tool') AND list_contains(sql_verbs, 'SET') AND NOT list_contains([h[1:2] FOR h IN sql_heads], ['SET', 'VARIABLE'])), false)
 UNION ALL
-SELECT 'sql_shellfs_grep' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((len(list_filter(sql_table_function_calls, t -> len(list_filter(t.literals, l -> contains(l, 'grep '))) > 0)) > 0), false)
+SELECT 'sql_shellfs_grep' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((len(list_filter(sql_table_function_calls, t -> len(list_filter(t.literals, l -> list_has_any(string_split(translate(l, E'|;&\t\n', '     '), ' '), ['grep', 'egrep', 'rg']))) > 0)) > 0), false)
 UNION ALL
 SELECT 'sql_shellfs_raw_pytest' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((len(list_filter(sql_table_function_calls, t -> t.name <> 'read_duck_hunt_log' AND len(list_filter(t.literals, l -> contains(l, 'pytest'))) > 0)) > 0), false)
 UNION ALL
