@@ -69,7 +69,10 @@ writing SQL on this machine.
     `{% for %}` only for output that is genuinely loop-shaped (an osascript or bash loop) when that is
     simpler (09-28, 10-15).
 17. **A few canonical templates by shape**, called by name with `template_path :=` and the row as context
-    (`c::JSON`): `templates/` here holds `shell.tera`, `sql.tera` and the fallback `bash_loop_fallback_method.tera` (10-16, 10-17). "if tera dont
+    (`c::JSON`): `templates/` here holds `sql.tera` (a SQL statement), `shell.tera` (shellfs readers),
+    `bash_loop_fallback_method.tera` (a shell loop, the fallback) and `network.tera` (a request to another host,
+    including an array of statements sent to another DuckDB's `:9495`) (10-16, 10-17, 10-18). Git data comes from the
+    duck_tails views already on dev (`git_changes`, `branch_diff`, ...), joined; no template needed (10-18). "if tera dont
     help reduce complexity, we will toss" (10-08). Someone without the `.tera` files must find the SQL easy
     to rewrite without Tera (10-16).
 
@@ -132,12 +135,13 @@ receipt problems below have one place to be checked.
     not wrapped in a dispatch. Never paste a `$$` body inline; render it from a template (10-09, 10-12).
     Pass the row as `c::JSON`, not `row_to_json` (hook, 10-15). Never pass a subquery as a table-function
     argument (10-13).
-34a. **The row rides inside its statement.** Each receipt comes back with its row after the UNNEST because the
-    statement's own output carries the row's key. Ask the command for it (`gh pr view N --json number,…`) or let the
-    reader add it (`read_json(…, filename := true)`). Never two parallel arrays matched by position (`prs` plus
-    `receipts[n]`) (10-18).
-34b. **One `tera_render` per statement, never nested** (hook). Build a joined command in its own CTE or column,
-    then render once (10-18).
+34a. **The row and its receipt are aggregated together.** The row already has its key columns, so collect them
+    with the receipt: `array_agg({'pr_number': pr_number, 'receipt': selfdispatch(sql)}) AS dispatched`, or
+    `array_agg(struct_insert(c, receipt := selfdispatch(sql)))`. Then `CROSS JOIN UNNEST(dispatched) AS t(d)` and read
+    `d.pr_number` and `d.receipt.*`. Never two parallel arrays matched by position (`prs` plus `receipts[n]`) (10-18).
+34b. **Nested `tera_render` is allowed when it helps**, for example a statement that itself dispatches further: render the
+    per-row statements, `array_agg` them, and send that whole array to another host's `:9495`, which self-dispatches
+    it. Don't nest when one render plus a CTE does the same job (10-18).
 34c. **Command words are split by role in the first CTE**: the program (`[gh, 'pr', 'list']`), its arguments and
     its flags as separate arrays, then put together with same-query aliases (`list_concat(gh_pr_list, repo_args,
     list_flags)`). A parallel comments array is optional (10-18).

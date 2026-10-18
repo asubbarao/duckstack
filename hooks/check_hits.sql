@@ -244,8 +244,6 @@ SELECT 'sql_temp_object' AS check_id, call_id, tool_name, coalesce(next_prompt_c
 UNION ALL
 SELECT 'sql_tera_logic' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((len(list_filter(sql_function_calls, f -> f.name = 'tera_render' AND len(list_filter(f.literals, l -> contains(l, '{%'))) > 0)) > 0), false)
 UNION ALL
-SELECT 'sql_tera_nested' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((sql_has_nested_tera), false)
-UNION ALL
 SELECT 'sql_tera_row_to_json' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((len(list_filter(sql_function_calls, f -> f.name = 'tera_render' AND list_contains(f.args, 'row_to_json'))) > 0), false)
 UNION ALL
 SELECT 'sql_text_join_function' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((list_contains(sql_functions, 'array_to_string')), false)

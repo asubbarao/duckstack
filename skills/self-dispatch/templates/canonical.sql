@@ -45,6 +45,19 @@ WITH tables AS (
 )
 SELECT receipt.* FROM dispatched CROSS JOIN UNNEST(receipts) AS t(receipt);
 
+-- 4. network: one request per row to another host; here another DuckDB's /sql. The row's own columns ride with
+--    its receipt: array_agg the row and the receipt together, then read d.target next to d.receipt.*.
+WITH requests AS (
+    SELECT 'other_host' AS target, 'http://127.0.0.1:9495/sql' AS url, json_object('sql', 'SELECT 42 AS answer')::VARCHAR AS body
+), rendered AS (
+    SELECT target, tera_render('network.tera', c::JSON, autoescape := false,
+                               template_path := concat_ws('/', getenv('HOME'), '.duck/deploy/skills/self-dispatch/templates/*.tera')) AS sql
+    FROM requests AS c
+), dispatched AS (
+    SELECT array_agg({'target': target, 'receipt': selfdispatch(sql)}) AS dispatched FROM rendered
+)
+SELECT d.target, d.receipt.* FROM dispatched CROSS JOIN UNNEST(dispatched) AS t(d);
+
 -- 3. bash_loop_fallback_method: a FALLBACK. This example has a row source, so example 1 is the right answer;
 --    it is here only to show the call. The audit lists every use of this template.
 WITH counts AS (
