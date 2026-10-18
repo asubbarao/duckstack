@@ -1,7 +1,6 @@
 -- Dev DuckDB. launchd runs `duckdb -bail ~/.duck/db/dev.duckdb -init setup.sql` and keeps stdin open.
--- Dev boots ~/.duck/deploy/server/setup.sql, the duckdb-skills branch `deploy`. A save here changes nothing until
--- it is committed and the branch moved (git update-ref refs/heads/deploy <new> <old>); the watcher restarts dev within 30 s, and once
--- dev has served it 60 s and answers SQL, pushes it to main (merging when main moved too). A push to main deploys it.
+-- Dev boots ~/.duck/deploy/server/setup.sql, a checkout of GitHub main. A save here changes nothing until it is
+-- pushed to main; the watcher checks main out within 30 s and restarts dev when server/ changed.
 -- The rest is read from server/*.sql, one concern per file, relative to the checkout root: the launchd wrapper starts
 -- DuckDB in ~/.duck/deploy and CI in its checkout (.read expands no ~). branches.sql moves into ~/inframe, so it is last.
 SET GLOBAL extension_directory = '~/.duck/extensions';

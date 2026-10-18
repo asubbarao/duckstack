@@ -3,9 +3,9 @@
 Alok's DuckDB skills for the **duckstack**: one persistent DuckDB per machine
 (`~/.duck/dev.duckdb`) held by an always-on server, agents as stateless `:memory:` clients, the
 `dev` MCP as the agent door, and his SQL process rules. The server is `server/setup.sql` in this
-repo; dev boots the copy checked out at `~/.duck/deploy` (branch `deploy`). The launchd watcher
-`com.inframe.quack-reload` keeps `main` and `deploy` one commit: a `deploy` that boots and serves for
-60 s is pushed to `main`, and a push to `main` is deployed. The style guide is his
+repo; dev runs GitHub `main`: the launchd watcher `com.inframe.quack-reload` checks it out at
+`~/.duck/deploy` within 30 s of a push and restarts dev when `server/` changed. There is no other
+branch to move. The style guide is his
 own repos (`duckdb-ops-toolkit` conduit, `duckdb-chrome-bridge`, `claudes-console`,
 `takehome-granica`); upstream `duckdb/duckdb-skills` is reference material, not a base.
 
