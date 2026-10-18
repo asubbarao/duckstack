@@ -186,8 +186,8 @@ SELECT receipt.status, receipt.body FROM dispatched CROSS JOIN UNNEST(receipts) 
   The script prints one JSON line per input, and for an input that raises it prints the exception
   type in `error`, so every input is a row on both sides. The reader infers the columns.
 
-`quote_literal` does not double embedded single quotes (`concat(chr(39), s, chr(39))`), so keep
-`'` out of the notes and inputs until it does. A worker testing ponytail's or Thermos's proposal
+`quote_literal` is `concat(chr(39), s, chr(39))` by design, with no escaping, so keep `'` out of
+the notes and inputs; put text that needs one in a `$n$…$n$` dollar quote inside the template. A worker testing ponytail's or Thermos's proposal
 writes it as the Python (or bash) side. Worked example (verified on dev 2026-10-18): `skill =
 'T4-check-dispatched'` under `~/.duck/agent_log/skill_trial_2026_10_17/type=verification`.
 Readback: `query/references/useful_queries.sql`, "Verification: both sides".
