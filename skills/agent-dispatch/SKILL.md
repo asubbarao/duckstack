@@ -152,34 +152,45 @@ ran it, and the lead passed it on. When run, it mistyped week dates and `+HH:MM`
 crashed on year-1 offsets. The same claim had already been disproved on 10-15: the Python version
 needed a regex and grew to 74 lines.
 
-**The verification row is one agent-log COPY that runs both sides.** The inputs are written once:
+**The verification is one self-dispatched agent-log COPY that runs both sides.** The inputs and
+the signature are declared once, in the first CTE. The dispatched statement is the agent-log COPY,
+so both sides run as typed columns inside it and land as signed rows. The receipt says only
+whether the write happened, and the readback reads the rows as columns (compendium: "each
+statement writes them and the next stage reads the files").
 ```sql
-WITH python_side AS (       -- first CTE: holds the inputs and runs the proposal on them
-    SELECT 'python' AS side, * FROM read_json($cmd$/opt/homebrew/bin/uv run --quiet --no-project python - <<'PY'
-import json
-for raw in [<inputs>]:
-    try:
-        print(json.dumps(dict(raw=raw, <compared column>=<proposal>(raw), error=None)))
-    except Exception as e:
-        print(json.dumps(dict(raw=raw, <compared column>=None, error=type(e).__name__)))
-PY
-|$cmd$, format := 'newline_delimited')
-), duckdb_side AS (         -- the same inputs, read from the Python side's own rows
-    SELECT 'duckdb' AS side, raw, <duckdb expression over raw> AS <compared column> FROM python_side
+WITH verification AS (     -- 1. everything declared: inputs, signature, notes, log directory
+    SELECT [<inputs>] AS raws, quote_literal('<agent>') AS agent, quote_literal('<session id>') AS session_id,
+           quote_literal('<agent>-<session id>') AS agent_signature, quote_literal('<skill>') AS skill,
+           quote_literal($n$<notes>$n$) AS notes, quote_literal('<agent_log_dir>') AS log_dir
+), declared AS (
+    SELECT *, to_json(raws)::VARCHAR AS raws_json, quote_literal(to_json(raws)::VARCHAR) AS raws_literal
+    FROM verification
+), rendered AS (           -- 2. the agent-log COPY; <both sides> appears twice, stored and executed
+    SELECT tera_render($tera$COPY (SELECT uuidv7() AS row_id, 'verification' AS type, {{ agent }} AS agent,
+               {{ session_id }} AS session_id, {{ agent_signature }} AS agent_signature, {{ skill }} AS skill,
+               $query$<both sides>$query$ AS query_was_ran, r.*, {{ notes }} AS markdown_notes, now() AS ts
+        FROM query($query$<both sides>$query$) r)
+    TO {{ log_dir }} (FORMAT parquet, PARTITION_BY (type, agent_signature), OVERWRITE_OR_IGNORE true, FILENAME_PATTERN '{uuid}')$tera$,
+        d::JSON, autoescape := false) AS sql
+    FROM declared AS d
+), dispatched AS (         -- 3. post it
+    SELECT array_agg(selfdispatch(sql)) AS receipts FROM rendered
 )
-SELECT * FROM duckdb_side UNION ALL BY NAME SELECT * FROM python_side
+SELECT receipt.status, receipt.body FROM dispatched CROSS JOIN UNNEST(receipts) AS t(receipt);
 ```
-The reader infers the columns. An input the proposal crashes on is still a row, with its
-exception type in `error`. A self-dispatched Python side does not fit here: `selfdispatch` returns
-receipts (`status`, `body`), not the script's columns, so the two sides would not line up by name.
-Verified 2026-10-18 on dev.
+`<both sides>` is `<duckdb side> UNION ALL BY NAME <python side>` over the same declared list:
+- **DuckDB side:** `SELECT 'duckdb' AS side, raw, <duckdb expression over raw> AS <compared column>
+  FROM (SELECT unnest({{ raws_literal }}::JSON::VARCHAR[]) AS raw)`.
+- **Python side:** `SELECT 'python' AS side, * FROM read_json($cmd$/opt/homebrew/bin/uv run --quiet
+  --no-project python - <<'PY' … for raw in {{ raws_json }}: … PY |$cmd$, format := 'newline_delimited')`.
+  The script prints one JSON line per input, and for an input that raises it prints the exception
+  type in `error`, so every input is a row on both sides. The reader infers the columns.
 
-The same `$query$` token is stored as `query_was_ran` and executed, and `markdown_notes` carries
-the worker's reading. Every row is a result one engine actually produced. A worker who wants to
-test ponytail's or Thermos's proposal writes it as the Python (or bash) side. To read it back,
-join the two sides on the input and compare. Worked example: `skill = 'T4-check-union'` under
-`~/.duck/agent_log/skill_trial_2026_10_17/type=verification`. Readback query:
-`query/references/useful_queries.sql`, "verification: both sides".
+`quote_literal` does not double embedded single quotes (`concat(chr(39), s, chr(39))`), so keep
+`'` out of the notes and inputs until it does. A worker testing ponytail's or Thermos's proposal
+writes it as the Python (or bash) side. Worked example (verified on dev 2026-10-18): `skill =
+'T4-check-dispatched'` under `~/.duck/agent_log/skill_trial_2026_10_17/type=verification`.
+Readback: `query/references/useful_queries.sql`, "Verification: both sides".
 
 ## 4. Evidence is false-first
 
