@@ -76,8 +76,7 @@ $refresh$ AS sql
 SELECT cron(sql, '0 */5 * * * *') AS job, r.*
 FROM posted CROSS JOIN UNNEST(receipts) AS t(r);
 -- agent.messages: one row per message block, agent_data's column names. content_bytes sizes every block, so large
--- tool results are filtered by size; message_text is the content, or its first and last 1,500 characters when it is
--- over 4 KB, so a 290 KB paste never fills a reply. is_prompt is a person's typed message.
+-- tool results and pastes are filtered by size, not pulled into a reply. is_prompt is a person's typed message.
 CREATE OR REPLACE VIEW agent.messages AS
 WITH line AS (
     SELECT transcript AS file_path, CASE WHEN contains(transcript, '/.codex/') THEN 'codex' ELSE 'claude' END AS source,
@@ -98,10 +97,7 @@ WITH line AS (
            coalesce(b -> 'input', try_cast(b ->> 'arguments' AS JSON)) AS tool_input, strlen(b::VARCHAR) AS content_bytes
     FROM block
 )
-SELECT *, CASE WHEN content_bytes > 4000
-            THEN concat_ws(chr(10), left(message_content, 1500), printf('[... %d bytes ...]', content_bytes), right(message_content, 1500))
-            ELSE message_content END AS message_text,
-          message_role = 'user' AND block_type IN ('text', 'input_text') AND NOT is_agent
+SELECT *, message_role = 'user' AND block_type IN ('text', 'input_text') AND NOT is_agent
           AND NOT starts_with(ltrim(message_content), '<') AND NOT starts_with(message_content, '[Request interrupted')
           AND NOT starts_with(message_content, 'This session is being continued') AS is_prompt
 FROM parsed;
