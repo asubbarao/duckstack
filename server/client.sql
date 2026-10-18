@@ -16,6 +16,12 @@ CREATE OR REPLACE VIEW agent.lines AS
 SELECT filename, json FROM read_json_objects(['/Users/aloksubbarao/.claude/projects/*/*.jsonl',
     '/Users/aloksubbarao/.claude/projects/*/*/subagents/*.jsonl', '/Users/aloksubbarao/.codex/sessions/*/*/*/*.jsonl'],
     format := 'newline_delimited', filename := true, ignore_errors := true, maximum_object_size := 268435456);
+-- Every memory, plan and instruction file Claude and Codex keep, one row per file, read live.
+CREATE OR REPLACE VIEW agent.docs AS
+SELECT filename AS path, file_name(filename) AS name, size, last_modified, content
+FROM read_text(['/Users/aloksubbarao/.claude/projects/*/memory/*.md', '/Users/aloksubbarao/.claude/plans/*.md',
+    '/Users/aloksubbarao/.codex/memories/*.md', '/Users/aloksubbarao/.codex/memories/*/*/*/*.md',
+    '/Users/aloksubbarao/.claude/CLAUDE.md', '/Users/aloksubbarao/AGENTS.md', '/Users/aloksubbarao/.codex/AGENTS.md']);
 -- Dev's two tools, query {sql} and execute {statement}, and no others.
 -- query is our own tool, not the built-in one: the built-in refuses any SQL that names read_text, read_json,
 -- read_csv, read_parquet or glob. query() is DuckDB's table function that runs one SELECT given as text.
