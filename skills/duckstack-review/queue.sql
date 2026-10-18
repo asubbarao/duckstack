@@ -139,7 +139,11 @@ WITH result_files AS (
 ), result_rows AS (
     SELECT sent.review_key, result_row
     FROM dispatched CROSS JOIN UNNEST(receipts) AS each_receipt(sent)
-    CROSS JOIN UNNEST(TRY_CAST(sent.receipt.body AS JSON[])) AS each_row(result_row)
+    -- A receipt that is not rows (dev's error) still yields one row, so the PR gets 'error' with the reason, not a
+    -- pending status forever.
+    CROSS JOIN UNNEST(coalesce(TRY_CAST(sent.receipt.body AS JSON[]),
+                               [json_object('result', concat_ws(' ', 'dev could not read the result file:', left(sent.receipt.body, 2000)))]))
+         AS each_row(result_row)
 )
 SELECT review_key, result_row ->> 'result' AS result_text, result_row -> 'structured_output' AS review
 FROM result_rows;
