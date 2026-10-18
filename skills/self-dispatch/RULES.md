@@ -77,7 +77,8 @@ writing SQL on this machine.
 18. **Every host command through shellfs readers** with their `:=` options: `read_csv` / `read_json` /
     `read_lines('cmd |')` for curl, gh, git, osascript, aws, codex (09-28, 10-08, 10-11 "curl is not
     banned through shellfs"). Never `column0 VARCHAR`: use the reader's options. `read_text` is batch,
-    `read_lines` streams. At most a simple `jq` in the pipe; no `sed`/`tr`/`awk` — do it in SQL (09-24, 09-29).
+    `read_lines` streams. No `sed`, `tr` or `awk` in the pipe, and no `jq` beyond shell.tera's fixed
+    `jq -c '.[]'` array split; parse in SQL with json_schema or the reader's options (09-24, 09-29, 10-14).
 19. **Use the extensions built for the job:** hostfs for the filesystem, duck_tails for git, duck_hunt for
     test/CI logs, sitting_duck and parser_tools for code, webbed for HTML, agent_data / `agent.stream` for
     transcripts, urlpattern / netquack for URLs, scalarfs for content-as-file. Never grep/find/cat (10-07, 10-08, 10-14).
@@ -99,3 +100,72 @@ writing SQL on this machine.
     some AI slop that the AI didn't even test" (10-17). Run it, show the rows.
 27. **Code reaches main through a PR that passed the review queue** (skills/duckstack-review/queue.sql): the
     hook's checks on every changed file, then an Opus review against this file. Nobody pushes main (10-17).
+
+## Added 2026-10-18 from every session
+
+Mined from all 5,361 of Alok's prompts that mention SQL, dispatch, Tera or DuckDB tools (Claude and Codex,
+2026-09-14 → 10-18, read with the agent-stream skill's prompts query). Only rules not already above.
+Where two of his messages disagree, the newer wins. "(hook)" means `hooks/hook_checks.sql` now enforces it.
+
+**Dispatch shape.** The shape in rule 1 is a block (hook `sql_dispatch_shape`): the rows are declared, each
+statement is rendered by a canonical template called by name (`shell.tera`, `sql.tera`,
+`bash_loop_fallback_method.tera`), sent as `array_agg(selfdispatch(sql))`, then `CROSS JOIN UNNEST` and
+`receipt.*`. `templates/canonical.sql` is the reference. Because every dispatch takes that shape, the
+receipt problems below have one place to be checked.
+
+28. **Receipts are typed columns.** Read `receipt.status`, `receipt.error` and `receipt.body` as columns.
+    Never walk them with `->>` ladders. Never `from_json` / `::JSON[]` over a body; return typed rows instead
+    (10-09, 10-13, 10-14).
+29. **Check every stage's receipts.** The next stage filters on `receipt.status` and keeps failed receipts as
+    rows behind a flag. A timeout, an error status or an empty or unparsed body counts as a failure, not as
+    an empty result (10-14, 10-16). Judge by `receipt.status`: a failed statement comes back as a 500 with the
+    error in the body and `receipt.error` NULL (verified 2026-10-18).
+30. **One array, one `CROSS JOIN UNNEST` per step**, never `unnest()` in a SELECT list. A receipt stays on its
+    source row, so nothing joins back afterwards (10-12, 10-13).
+31. **Source rows are real rows** (catalog, hostfs, a table), never `range()` / `generate_series` (hook, 10-12).
+    Order with `array_agg(… ORDER BY …)` or `array_sort`. `WITH ORDINALITY` only numbers the elements (10-14).
+    No sleep or wait rows (hook, 10-17).
+32. **Post through the macro.** Use `selfdispatch(sql)`, never `quackapi_post('…:9495/sql', …)` by hand (hook).
+    Never curl /sql from a reader (hook, 10-16). Never `quack_query` back to dev (10-09, 10-14). Never add a
+    route that /sql already covers; fix /sql instead (10-09, 10-12).
+33. **Inside generated statements:** create views, not tables (10-13, 10-14). A constant statement runs as is,
+    not wrapped in a dispatch. Never paste a `$$` body inline; render it from a template (10-09, 10-12).
+    Pass the row as `c::JSON`, not `row_to_json` (hook, 10-15). Never pass a subquery as a table-function
+    argument (10-13).
+34. **Push the filter into each generated statement**, so a receipt carries only what is needed (10-08, 10-09).
+
+**Readers and shell.**
+
+35. Use plain `read_csv` / `read_json`, not the `_auto` variants (hook, 09-16, 09-29).
+36. `read_text` over a pipe needs a stated reason (hook warns, 10-10, 10-13).
+37. A shellfs pipe never contains:
+    - `tail` / `head` (hook, 09-29);
+    - a `timeout` wrapper, since the tool's own option bounds it (hook, 09-15);
+    - a nested `duckdb -c` (hook, 09-25);
+    - `|| true` / `; true`, since the shell template takes the accepted exit codes (hook warns, 10-16).
+38. Hard-code no `/Users/…` path. Use scalarfs path variables, `getenv('HOME')`, or a column declared once
+    (hook warns, 09-25, 10-15).
+39. Git status and diff come from a view: the hostfs tree joined to duck_tails `git_tree` hashes. Never shell
+    out to `git diff` / `git status` (10-13).
+
+**SQL forms.**
+
+40. No `replace(replace(…))`: use `translate()` or a template (hook, 09-30). No `list_transform(range(…))`
+    index loops (hook, 10-08). Never pick by position (`split[1]`, neighbour joins on `i + 1`) (10-09, 10-13).
+41. `QUALIFY` and `first_value` / `last_value` are suspect. Use `arg_max` / `max_by` or a key join (hook warns,
+    10-08, 10-15). Never `MERGE INTO`; use CTAS or `INSERT OR REPLACE … BY NAME` (10-09).
+42. Appended tables have a key and take `INSERT OR IGNORE` / `OR REPLACE … BY NAME` (10-08).
+43. Profile with `SUMMARIZE` / `DESCRIBE`, never a list of per-column aggregates (09-29, 10-08). Keep
+    `array_agg(ts)` and take `list_min` / `list_max` later (10-01, 10-08). `count(DISTINCT …)` or
+    `len(array_agg(…))` used as a readout is still a count (10-09).
+44. A `CASE` classification returns a descriptive label, not `true` / `false` (09-30). Label union branches
+    with a projected scalar, not `* REPLACE (literal AS col)` (10-09).
+45. Filter a view with `WHERE`, never through a macro that takes a path (10-13). Derive input lists from
+    relations, never as typed literal lists (10-08).
+46. Refresh incrementally from a watermark: `max(ts)` or the hostfs mtime, plus an anti-join. Fetches skip
+    what is already stored, so a rerun only shrinks in scope (10-08, 10-14).
+47. Never COPY a result out and read it back. Put `CREATE OR REPLACE TABLE … AS` on the SELECT (09-29).
+48. In exploratory queries show `len(content)` with `[left(content,100), right(content,100)]`, never the full
+    text (10-02, 10-04).
+49. Credentials are `CREATE SECRET` statements in setup.sql, read from env vars (09-30). Postgres objects
+    are created with `postgres_execute` in Postgres SQL, not with ATTACH plus DuckDB DDL (09-30).

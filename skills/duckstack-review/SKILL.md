@@ -139,51 +139,56 @@ Parquet is temporary: a carry across a light switch, or a shared output director
 `COPY … (FORMAT parquet, OVERWRITE_OR_IGNORE)`. Flag Parquet used as a cache to hide a heavy
 view (fix the view), and inserts where a COPY would do.
 
+## Self-dispatch checklist
+
+Every dispatch has one shape, and the hook blocks any other (`sql_dispatch_shape`). The reference is
+[../self-dispatch/templates/canonical.sql](../self-dispatch/templates/canonical.sql). Because the shape is fixed,
+the review checks these points in that one place:
+
+1. **Rows first.** The first CTE declares real rows (catalog, hostfs, a table) with every value as a column.
+   No `range()` / `generate_series` source, no literal list of what a relation already holds.
+2. **A canonical template by name.** `tera_render('shell.tera' | 'sql.tera' | 'bash_loop_fallback_method.tera',
+   c::JSON, autoescape := false, template_path := …)`. No inline template, no new `.tera` without a new shape, no
+   `row_to_json`. The bash loop template is a fallback and needs a reason.
+3. **The macro.** `array_agg(selfdispatch(sql)) AS receipts`. Never a hand-written `quackapi_post` to /sql, a
+   curl to /sql, a `quack_query` back to dev, or a lone post.
+4. **One `CROSS JOIN UNNEST(receipts)` per step**, never `unnest()` in a SELECT list, and nothing joined back
+   to the source afterwards.
+5. **Receipts read as columns.** `receipt.*` gives status, body and error. No `->>` ladders and no `from_json` /
+   `::JSON[]` over the body.
+6. **Status checked.** The next stage (or the final SELECT) derives a flag from `receipt.status` and keeps the
+   failed rows. Judge by status: when the generated statement fails, dev answers 500 with the DuckDB error in
+   the body and `receipt.error` stays NULL (verified 2026-10-18). `receipt.error` is set only when the post
+   itself fails. A pipeline that reads bodies without looking at status is a finding.
+7. **Unparsed bodies.** An empty body, or a body that came back as text where rows were expected, is a failure:
+   the reader or its `:=` options are wrong. Fix the generated statement; don't parse around it.
+8. **Timeouts.** Each command bounds itself with its own option (`curl --max-time`, a reader's timeout), never a
+   `timeout` wrapper. A receipt that timed out is a failure row, not a missing row. The post itself is bounded
+   by quackapi's HTTP timeout.
+9. **Narrow statements.** Each generated statement filters and projects what the next stage needs, creates
+   views rather than tables, and carries no `$$` body pasted inline.
+10. **Order by dependency.** A later stage is built from the earlier stage's receipts. Use `array_agg(… ORDER BY …)`
+    only when order inside one array matters. No sleep or wait rows.
+
 ## What good looks like
 
 ```sql
-WITH intent AS (                          -- what is being done, as data
-    SELECT parent AS path, ['git', '-C', parent, 'log', '--oneline', '-5'] AS cmd
-    FROM fs.folders WHERE name = '.git'
-), rendered AS (                          -- generic template, substitution only
-    SELECT path, tera_render('reader-shellfs.tera', intent::JSON, autoescape := false,
-                             template_path := '<templates>/*.tera') AS sql
-    FROM intent
+WITH tables AS (                          -- real rows, every value a column
+    SELECT table_schema, table_name, 5 AS row_limit
+    FROM information_schema.tables WHERE table_schema = 'fs'
+), rendered AS (                          -- a canonical template by name; Tera only fills holes
+    SELECT tera_render('sql.tera', c::JSON, autoescape := false,
+                       template_path := '/Users/aloksubbarao/.duck/deploy/skills/self-dispatch/templates/*.tera') AS sql
+    FROM tables AS c
 ), dispatched AS (                        -- visible self-dispatch
     SELECT array_agg(selfdispatch(sql)) AS receipts FROM rendered
 )
-SELECT r.* FROM dispatched CROSS JOIN UNNEST(receipts) AS t(r);
+SELECT receipt.*, receipt.status IS DISTINCT FROM 200 AS failed
+FROM dispatched CROSS JOIN UNNEST(receipts) AS t(receipt);
 ```
 
-The owner's own examples (2026-10-17); he wrote the post out as `quackapi_post(...)`, written here as
-`selfdispatch(sql)`, the same call since PR #50. The first CTE declares everything; tera only substitutes; the
-reader is `SELECT *` and brings its own columns; the result is `receipt.*`:
-
-```sql
-WITH c AS (
-    SELECT unnest(['/tmp', '/Users/aloksubbarao/inframe']) AS path
-), rendered AS (
-    SELECT tera_render(
-        $tera$
-        SELECT * FROM read_csv(
-            $cmd$find "{{ path }}" -maxdepth 1 -type d |$cmd$,
-            header := false
-        )
-        $tera$,
-        c::JSON,
-        autoescape := false
-    ) AS sql
-    FROM c
-), dispatched AS (
-    SELECT array_agg(selfdispatch(sql)) AS receipts
-    FROM rendered
-)
-SELECT receipt.*
-FROM dispatched
-CROSS JOIN UNNEST(receipts) AS t(receipt);
-```
-
-`selfdispatch(sql)` is exactly `quackapi_post('http://127.0.0.1:9495/sql', json_object('sql', sql)::VARCHAR)`: the
+The first CTE declares everything, the template only substitutes, the reader is `SELECT *` and brings its own
+columns, and the result is `receipt.*` with failures kept as flagged rows. `selfdispatch(sql)` is exactly `quackapi_post('http://127.0.0.1:9495/sql', json_object('sql', sql)::VARCHAR)`: the
 post always goes to dev itself, and whatever varies by row goes inside the statement. A query that hand-writes the
 post, takes a URL per row, or builds it with `url_build` is a finding.
 
@@ -208,16 +213,15 @@ SELECT TRY_CAST(content AS JSON) FROM read_lines($cmd$for f in a35d1dd0-… 1f83
   tail -n 300 ~/.claude/projects/-Users-aloksubbarao-inframe/$f.jsonl | sed "s/^/{\"_s\":\"$f\",\"_l\":/; s/\$/}/"; done |$cmd$)
 ```
 ```sql
--- GOOD: the ids are rows; one statement per row; receipts unnested
-WITH c AS (
-    SELECT name, getenv('HOME') AS home, replace(cwd, '/', '-') AS project, sessionId AS session_id
+-- GOOD: the sessions are rows; one statement per row through shell.tera; receipts unnested
+WITH sessions AS (
+    SELECT 'read_json' AS reader, ', format := ''newline_delimited''' AS options,
+           [concat_ws('/', getenv('HOME'), '.claude/projects', translate(cwd, '/.', '--'), concat(sessionId, '.jsonl'))] AS sources
     FROM terminal_sessions WHERE sessionId IS NOT NULL
 ), rendered AS (
-    SELECT tera_render($tera$
-        SELECT * FROM read_json($cmd$tail -n 200 "{{ home }}/.claude/projects/{{ project }}/{{ session_id }}.jsonl" |$cmd$,
-                                format := 'newline_delimited')
-    $tera$, c::JSON, autoescape := false) AS sql
-    FROM c
+    SELECT tera_render('shell.tera', c::JSON, autoescape := false,
+                       template_path := '/Users/aloksubbarao/.duck/deploy/skills/self-dispatch/templates/*.tera') AS sql
+    FROM sessions AS c
 ), dispatched AS (
     SELECT array_agg(selfdispatch(sql)) AS receipts FROM rendered
 )
