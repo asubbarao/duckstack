@@ -4,6 +4,10 @@
 -- and repo the list page names that has no fetch from the last day. Both statements are self-dispatched at boot, so a
 -- lake failure is a failed receipt and dev keeps serving; the refresh also runs daily.
 CREATE SCHEMA IF NOT EXISTS agents;
+-- The lake starts empty on a fresh machine (or CI's empty HOME); the view and the refresh below both read and
+-- write lake.agents.ext_fetch, so the table must exist before the dispatched program runs. No-op where it exists.
+CREATE SCHEMA IF NOT EXISTS lake.agents;
+CREATE TABLE IF NOT EXISTS lake.agents.ext_fetch (url VARCHAR, fetched_at TIMESTAMPTZ, response JSON);
 WITH program AS (
     SELECT 'view' AS step, $v$CREATE OR REPLACE VIEW agents.ext_catalog AS
 WITH newest AS (

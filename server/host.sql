@@ -8,7 +8,7 @@
 
 CREATE OR REPLACE VIEW terminal_tabs AS
 WITH terminal_read AS (   -- one osascript call: every window, every tab, column arrays
-    SELECT * FROM read_json($cmd$osascript -l JavaScript -e 'var A = Application("Terminal"), W = A.windows; function g(f) { try { return A.running() ? f() : []; } catch (e) { return []; } } JSON.stringify({window_id: g(() => W.id()), window_index: g(() => W.index()), frontmost: g(() => W.frontmost()), miniaturized: g(() => W.miniaturized()), custom_title: g(() => W.tabs.customTitle()), tty: g(() => W.tabs.tty()), busy: g(() => W.tabs.busy()), processes: g(() => W.tabs.processes()), selected: g(() => W.tabs.selected()), rows: g(() => W.tabs.numberOfRows()), columns: g(() => W.tabs.numberOfColumns())})' |$cmd$)
+    SELECT * FROM read_json($cmd$command -v osascript >/dev/null 2>&1 && osascript -l JavaScript -e 'var A = Application("Terminal"), W = A.windows; function g(f) { try { return A.running() ? f() : []; } catch (e) { return []; } } JSON.stringify({window_id: g(() => W.id()), window_index: g(() => W.index()), frontmost: g(() => W.frontmost()), miniaturized: g(() => W.miniaturized()), custom_title: g(() => W.tabs.customTitle()), tty: g(() => W.tabs.tty()), busy: g(() => W.tabs.busy()), processes: g(() => W.tabs.processes()), selected: g(() => W.tabs.selected()), rows: g(() => W.tabs.numberOfRows()), columns: g(() => W.tabs.numberOfColumns())})' || echo '{"window_id":[],"window_index":[],"frontmost":[],"miniaturized":[],"custom_title":[],"tty":[],"busy":[],"processes":[],"selected":[],"rows":[],"columns":[]}'|$cmd$)
 ), per_window AS (
     SELECT unnest(window_id)::BIGINT AS window_id, unnest(window_index)::INT AS window_index,
            unnest(frontmost)::BOOLEAN AS frontmost, unnest(miniaturized)::BOOLEAN AS miniaturized,
@@ -27,7 +27,7 @@ FROM per_window;
 -- What each tab shows now, one row per screen line. Heavier than terminal_tabs: filter by window_id.
 CREATE OR REPLACE VIEW terminal_screen_lines AS
 WITH terminal_read AS (
-    SELECT * FROM read_json($cmd$osascript -l JavaScript -e 'var A = Application("Terminal"), W = A.windows; function g(f) { try { return A.running() ? f() : []; } catch (e) { return []; } } JSON.stringify({window_id: g(() => W.id()), contents: g(() => W.tabs.contents())})' |$cmd$,
+    SELECT * FROM read_json($cmd$command -v osascript >/dev/null 2>&1 && osascript -l JavaScript -e 'var A = Application("Terminal"), W = A.windows; function g(f) { try { return A.running() ? f() : []; } catch (e) { return []; } } JSON.stringify({window_id: g(() => W.id()), contents: g(() => W.tabs.contents())})' || echo '{"window_id":[],"contents":[]}'|$cmd$,
                             maximum_object_size := 67108864)
 ), per_window AS (
     SELECT unnest(window_id)::BIGINT AS window_id, unnest(contents)::VARCHAR[] AS screens FROM terminal_read
@@ -40,12 +40,15 @@ $n$)) WITH ORDINALITY AS l(line, line_number);
 
 -- One row per live claude process, written by Claude Code itself (~/.claude/sessions/<pid>.json), with every key the
 -- files hold as a column. Nothing names a key, so a key Claude Code stops writing is simply absent.
-CREATE OR REPLACE VIEW claude_sessions AS
-SELECT * FROM read_json('/Users/aloksubbarao/.claude/sessions/*.json', union_by_name := true, ignore_errors := true);
+-- read_json throws on a zero-match glob, so where no sessions exist (CI's empty HOME) the view is not created at all.
+SELECT selfdispatch($t$CREATE OR REPLACE VIEW claude_sessions AS
+SELECT * FROM read_json(getenv('HOME') || '/.claude/sessions/*.json', union_by_name := true, ignore_errors := true);$t$) AS claude_sessions_receipt
+WHERE path_exists(getenv('HOME') || '/.claude/sessions');
 
 -- Each Terminal tab, the claude process holding its tty, and that session. pgrep -t ignores the tty
 -- on macOS; lsof -t <tty> lists exactly the processes on it, one pid per line.
-CREATE OR REPLACE VIEW terminal_sessions AS
+-- Gated like claude_sessions: it joins that view, so it can only exist where the view does.
+SELECT selfdispatch($v$CREATE OR REPLACE VIEW terminal_sessions AS
 WITH intent AS (          -- for each Terminal tab: every process holding its tty open
     SELECT window_id, tab_index, ['lsof', '-t', tty] AS cmd FROM terminal_tabs
 ), rendered AS (
@@ -61,7 +64,8 @@ WITH intent AS (          -- for each Terminal tab: every process holding its tt
 )
 SELECT t.*, c.*
 FROM terminal_tabs AS t
-LEFT JOIN (tty_pids JOIN claude_sessions AS c USING (pid)) USING (window_id, tab_index);
+LEFT JOIN (tty_pids JOIN claude_sessions AS c USING (pid)) USING (window_id, tab_index);$v$) AS terminal_sessions_receipt
+WHERE path_exists(getenv('HOME') || '/.claude/sessions');
 
 -- Grammar: a new Terminal action is a new row. `do script` types into the tab; long text arrives in
 -- claude as a paste and does not submit, so `submit` (a bare carriage return) goes in a SEPARATE send,
@@ -83,7 +87,7 @@ SELECT 'work', 'inframerisk.net', '';
 
 CREATE OR REPLACE VIEW chrome_all_tabs AS
 WITH chrome_read AS (     -- one osascript call: every window, every tab, column arrays
-    SELECT * FROM read_json($cmd$osascript -l JavaScript -e 'var A = Application("Google Chrome"), W = A.windows; function g(f) { try { return A.running() ? f() : []; } catch (e) { return []; } } JSON.stringify({window_id: g(() => W.id()), window_index: g(() => W.index()), given_name: g(() => W.givenName()), active_tab_index: g(() => W.activeTabIndex()), mode: g(() => W.mode()), tab_id: g(() => W.tabs.id()), url: g(() => W.tabs.url()), title: g(() => W.tabs.title()), loading: g(() => W.tabs.loading())})' |$cmd$)
+    SELECT * FROM read_json($cmd$command -v osascript >/dev/null 2>&1 && osascript -l JavaScript -e 'var A = Application("Google Chrome"), W = A.windows; function g(f) { try { return A.running() ? f() : []; } catch (e) { return []; } } JSON.stringify({window_id: g(() => W.id()), window_index: g(() => W.index()), given_name: g(() => W.givenName()), active_tab_index: g(() => W.activeTabIndex()), mode: g(() => W.mode()), tab_id: g(() => W.tabs.id()), url: g(() => W.tabs.url()), title: g(() => W.tabs.title()), loading: g(() => W.tabs.loading())})' || echo '{"window_id":[],"window_index":[],"given_name":[],"active_tab_index":[],"mode":[],"tab_id":[],"url":[],"title":[],"loading":[]}'|$cmd$)
 ), per_window AS (
     SELECT unnest(window_id)::BIGINT AS window_id, unnest(window_index)::INT AS window_index, unnest(given_name)::VARCHAR AS given_name,
            unnest(active_tab_index)::INT AS active_tab_index, unnest(mode)::VARCHAR AS mode,
@@ -118,7 +122,7 @@ FROM chrome_all_tabs WHERE profile = 'work';
 -- Safari's windows and tabs, one JXA call (empty when Safari is not running; nothing launches it).
 CREATE OR REPLACE VIEW safari_tabs AS
 WITH safari_read AS (
-    SELECT * FROM read_json($cmd$osascript -l JavaScript -e 'var A = Application("Safari"); function g(f) { try { return A.running() ? f() : []; } catch (e) { return []; } } JSON.stringify({window_id: g(() => A.windows.id()), url: g(() => A.windows.tabs.url())})' |$cmd$)
+    SELECT * FROM read_json($cmd$command -v osascript >/dev/null 2>&1 && osascript -l JavaScript -e 'var A = Application("Safari"); function g(f) { try { return A.running() ? f() : []; } catch (e) { return []; } } JSON.stringify({window_id: g(() => A.windows.id()), url: g(() => A.windows.tabs.url())})' || echo '{"window_id":[],"url":[]}'|$cmd$)
 ), per_window AS (
     SELECT unnest(window_id)::BIGINT AS window_id, unnest(url)::VARCHAR[] AS urls FROM safari_read
 )
@@ -205,7 +209,7 @@ WITH ps_words AS (
     FROM ps_words
 ), top_words AS (
     SELECT list_filter(string_split(content, ' '), w -> w <> '') AS words
-    FROM read_lines($cmd$top -l 1 -stats pid,mem |$cmd$, "trim" := true)
+    FROM read_lines($cmd$(top -l 1 -stats pid,mem 2>/dev/null || true) |$cmd$, "trim" := true)
 ), top AS (   -- top's process rows are a pid and its MEM; no header line starts with a number
     SELECT TRY_CAST(words[1] AS BIGINT) AS pid, words[2] AS mem FROM top_words WHERE len(words) = 2
 ), procs AS (
@@ -263,7 +267,7 @@ FROM doc CROSS JOIN UNNEST((b -> 'processes')::JSON[]) AS t(p);
 CREATE OR REPLACE VIEW host_kernel_memory_log AS
 WITH l AS (
     SELECT content::JSON AS e
-    FROM read_lines($cmd$log show --last 30m --style ndjson --predicate 'eventMessage CONTAINS[c] "jetsam" AND process != "log"' |$cmd$)
+    FROM read_lines($cmd$(log show --last 30m --style ndjson --predicate 'eventMessage CONTAINS[c] "jetsam" AND process != "log"' 2>/dev/null || true) |$cmd$)
 )
 SELECT strptime(e ->> 'timestamp', '%Y-%m-%d %H:%M:%S.%f%z') AS logged_at, file_name(e ->> 'processImagePath') AS process,
        (e ->> 'processID')::BIGINT AS pid, e ->> 'messageType' AS message_type, e ->> 'subsystem' AS subsystem,
@@ -293,7 +297,7 @@ FROM h;
 CREATE OR REPLACE VIEW host_memory AS
 WITH kv AS (
     SELECT trim(split_part(content, ':', 1), ' "') AS k, rtrim(trim(substr(content, position(':' IN content) + 1)), '.') AS v
-    FROM read_lines($cmd$sysctl hw.memsize hw.pagesize kern.memorystatus_level vm.memory_pressure vm.swapusage; vm_stat |$cmd$, "trim" := true)
+    FROM read_lines($cmd$(sysctl hw.memsize hw.pagesize kern.memorystatus_level vm.memory_pressure vm.swapusage 2>/dev/null || true; vm_stat 2>/dev/null || true) |$cmd$, "trim" := true)
     WHERE position(':' IN content) > 0
 ), h AS (   -- vm.swapusage reads "total = 5120.00M  used = 3542.56M  free = …"
     SELECT map_from_entries(list((k, v))) AS h, list_filter(string_split(h['vm.swapusage'], ' '), w -> w <> '') AS swap FROM kv
