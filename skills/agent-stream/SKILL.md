@@ -6,8 +6,18 @@ allowed-tools: mcp__dev__query
 
 # Agent stream
 
-Transcripts are already stored on dev. Query `agent.lines` and `agent.entries` through `mcp__dev__query`. Do not
-re-parse the raw JSONL.
+Start from `agent.messages`: one row per message block, agent_data's column names (`source, session_id, file_path,
+is_agent, timestamp, message_role, block_type, message_content, tool_name, tool_use_id, tool_input, model, cwd,
+git_branch, entrypoint`), plus `content_bytes` and `is_prompt` (a person's typed message). Never unpack
+`agent.lines` JSON by hand, and never read `lake.agent.stream` (stale since 2026-10-12).
+
+```sql
+SELECT timestamp, session_id, message_content FROM agent.messages
+WHERE is_prompt AND timestamp > now() - INTERVAL 3 DAY ORDER BY timestamp;
+```
+
+Large blocks: filter or list by `content_bytes` (`content_bytes < 4000`, or show `content_bytes` instead of the text)
+rather than pulling a 290 KB paste into a reply. The raw store below is for what `agent.messages` doesn't carry.
 
 ## The store
 

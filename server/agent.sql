@@ -78,3 +78,29 @@ $refresh$ AS sql
 )
 SELECT cron(sql, '0 */5 * * * *') AS job, r.*
 FROM posted CROSS JOIN UNNEST(receipts) AS t(r);
+-- agent.messages: one row per message block, agent_data's column names. content_bytes sizes every block, so large
+-- tool results are filtered by size, not pulled into a reply; is_prompt is a person's typed message.
+CREATE OR REPLACE VIEW agent.messages AS
+WITH line AS (
+    SELECT transcript AS file_path, CASE WHEN contains(transcript, '/.codex/') THEN 'codex' ELSE 'claude' END AS source,
+           contains(transcript, '/subagents/') AS is_agent, coalesce(sessionId ->> '$', parse_filename(transcript, true)) AS session_id,
+           (timestamp ->> '$')::TIMESTAMPTZ AS timestamp, type ->> '$' AS message_type, uuid ->> '$' AS uuid,
+           parentUuid ->> '$' AS parent_uuid, cwd ->> '$' AS cwd, gitBranch ->> '$' AS git_branch, entrypoint ->> '$' AS entrypoint,
+           CASE WHEN type ->> '$' IN ('user', 'assistant') THEN message
+                WHEN payload ->> 'type' IN ('message', 'agent_message', 'function_call', 'custom_tool_call', 'function_call_output') THEN payload END AS msg
+    FROM agent.lines
+), block AS (
+    SELECT * EXCLUDE (msg), coalesce(msg ->> 'role', msg ->> 'type') AS message_role, msg ->> 'model' AS model,
+           unnest(CASE json_type(msg -> 'content') WHEN 'ARRAY' THEN json_extract(msg, '$.content[*]') ELSE [coalesce(msg -> 'content', msg)] END) AS b
+    FROM line WHERE msg IS NOT NULL
+), parsed AS (
+    SELECT * EXCLUDE (b), coalesce(b ->> 'type', 'text') AS block_type,
+           coalesce(b ->> 'text', b ->> 'thinking', CASE WHEN json_type(b) = 'VARCHAR' THEN b ->> '$' END, b ->> 'output', (b -> 'content')::VARCHAR) AS message_content,
+           coalesce(b ->> 'name', b ->> 'call_id') AS tool_name, coalesce(b ->> 'id', b ->> 'tool_use_id', b ->> 'call_id') AS tool_use_id,
+           coalesce(b -> 'input', try_cast(b ->> 'arguments' AS JSON)) AS tool_input, strlen(b::VARCHAR) AS content_bytes
+    FROM block
+)
+SELECT *, message_role = 'user' AND block_type IN ('text', 'input_text') AND NOT is_agent
+          AND NOT starts_with(ltrim(message_content), '<') AND NOT starts_with(message_content, '[Request interrupted')
+          AND NOT starts_with(message_content, 'This session is being continued') AS is_prompt
+FROM parsed;
