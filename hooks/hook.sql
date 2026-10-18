@@ -11,7 +11,7 @@
 .mode list
 .headers off
 WITH fired AS (
-  SELECT c.check_id, c.hook_decision, printf('%s: %s', c.check_id, c.message) AS reason
+  SELECT c.check_id, c.hook_decision, concat_ws(': ', c.check_id, c.message) AS reason
   FROM check_hits h JOIN hook_checks c USING (check_id)
   WHERE c.action IN ('block', 'warn')),
 verdict AS (
