@@ -242,15 +242,21 @@ WITH c AS (
 )
 SELECT receipt.* FROM dispatched CROSS JOIN UNNEST(receipts) AS t(receipt);
 
--- verification: both sides. A DuckDB-vs-Python claim is one agent-log COPY whose query is
--- <duckdb side> UNION ALL BY NAME <python side: read_json over a shellfs `uv run --no-project python -` heredoc>,
--- each tagged with a side column (agent-dispatch section 3). Read it back by joining the sides on the input.
--- Verified 2026-10-17: T4's fromisoformat proposal vs INF-1535's classifier, 19 inputs, 3 disagreements.
+-- ## Verification: both sides of a DuckDB-vs-Python claim, joined on the input (Opus 5.5, 2026-10-17)
+-- when: reading back an agent-log `type=verification` row whose query was <duckdb side> UNION ALL BY NAME <python side> (agent-dispatch section 3).
+-- uses: read_parquet (core).
+-- returns: one row per input: raw, duckdb_type, duckdb_iso, python_type, python_iso, python_error VARCHAR, missing_duckdb, missing_python, type_differs BOOLEAN; a missing_* row is an input only one side produced.
+-- tested: T4 fromisoformat proposal vs the INF-1535 classifier, 19 inputs, 3 disagreements (all Python errors).
 WITH logged AS (
-  SELECT side, raw, value_type, iso, error
-  FROM read_parquet('/Users/aloksubbarao/.duck/agent_log/skill_trial_2026_10_17/type=verification/**/*.parquet', hive_partitioning := true, union_by_name := true)
-  WHERE skill = 'T4-check-union'
-), duckdb_side AS (SELECT * FROM logged WHERE side = 'duckdb'), python_side AS (SELECT * FROM logged WHERE side = 'python')
-SELECT d.raw, d.value_type AS duckdb_type, d.iso AS duckdb_iso, p.value_type AS python_type, p.iso AS python_iso, p.error AS python_error,
+  SELECT * FROM read_parquet('<agent_log_dir>/type=verification/**/*.parquet', hive_partitioning := true, union_by_name := true)
+  WHERE skill = '<skill>'
+), duckdb_side AS (
+  SELECT * FROM logged WHERE side = 'duckdb'
+), python_side AS (
+  SELECT * FROM logged WHERE side = 'python'
+)
+SELECT raw, d.value_type AS duckdb_type, d.iso AS duckdb_iso, p.value_type AS python_type, p.iso AS python_iso, p.error AS python_error,
+       d.side IS NULL AS missing_duckdb, p.side IS NULL AS missing_python,
        d.value_type IS DISTINCT FROM p.value_type AS type_differs
-FROM duckdb_side d JOIN python_side p USING (raw) ORDER BY type_differs DESC, d.raw;
+FROM duckdb_side d FULL JOIN python_side p USING (raw)
+ORDER BY type_differs DESC, raw;

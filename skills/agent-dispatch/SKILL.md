@@ -156,9 +156,9 @@ needed a regex and grew to 74 lines.
 `<duckdb side> UNION ALL BY NAME <python side>`:
 - **DuckDB side:** native SQL over the inputs, tagged `'duckdb' AS side`.
 - **Python side:** one shellfs reader, `read_json($cmd$/opt/homebrew/bin/uv run --quiet --no-project
-  python - <<'PY' … PY |$cmd$, columns := {…})`. The script prints one JSON line per input with
-  the same column names and puts an exception's type in an `error` column. It is tagged
-  `'python' AS side`.
+  python - <<'PY' … PY |$cmd$, format := 'newline_delimited')`. The reader infers the columns. The
+  script prints one JSON line per input with the same column names as the DuckDB side and puts an
+  exception's type in an `error` column. It is tagged `'python' AS side`.
 
 The same `$query$` token is stored as `query_was_ran` and executed, and `markdown_notes` carries
 the worker's reading. Every row is a result one engine actually produced. A worker who wants to
