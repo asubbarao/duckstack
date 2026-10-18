@@ -20,18 +20,18 @@ WITH newest AS (
     FROM newest WHERE starts_with(url, 'https://github.com/')
 )
 SELECT extension_name, yml, page, html_extract_tables_json(page) AS functions, readme.readme
-FROM yml FULL JOIN page USING (extension_name) LEFT JOIN readme ON readme.url = 'https://github.com/' || (yml ->> '$.repo.github')$v$ AS sql
+FROM yml FULL JOIN page USING (extension_name) LEFT JOIN readme ON ltrim(url_parse(readme.url).pathname, '/') = (yml ->> '$.repo.github')$v$ AS sql
     UNION ALL
     SELECT 'refresh', $r$INSERT INTO lake.agents.ext_fetch BY NAME
 WITH links AS (
-    SELECT i, url_resolve('https://duckdb.org/community_extensions/list_of_extensions', l.href) AS url, l.text
-    FROM read_html_objects('https://duckdb.org/community_extensions/list_of_extensions') CROSS JOIN UNNEST(html_extract_links(html)) WITH ORDINALITY AS u(l, i)
+    SELECT url_resolve('https://duckdb.org/community_extensions/list_of_extensions', l.href) AS url, l.text
+    FROM read_html_objects('https://duckdb.org/community_extensions/list_of_extensions') CROSS JOIN UNNEST(html_extract_links(html)) AS u(l)
 ), pages AS (
     SELECT url, urlpattern_extract('https://duckdb.org/community_extensions/extensions/:name.html', url, 'name') AS name
     FROM links WHERE urlpattern_test('https://duckdb.org/community_extensions/extensions/:name.html', url)
 ), urls AS (
     SELECT url FROM pages
-    UNION ALL SELECT 'https://raw.githubusercontent.com/duckdb/community-extensions/main/extensions/' || name || '/description.yml' FROM pages
+    UNION ALL SELECT tera_render('https://raw.githubusercontent.com/duckdb/community-extensions/main/extensions/{{ name }}/description.yml', p::JSON, autoescape := false) FROM pages AS p
     UNION ALL SELECT url FROM links WHERE text = 'GitHub'
 )
 SELECT url, now() AS fetched_at, to_json(quackapi_fetch(url)) AS response

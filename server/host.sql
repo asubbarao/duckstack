@@ -49,14 +49,15 @@ CREATE OR REPLACE VIEW terminal_sessions AS
 WITH intent AS (          -- for each Terminal tab: every process holding its tty open
     SELECT window_id, tab_index, ['lsof', '-t', tty] AS cmd FROM terminal_tabs
 ), rendered AS (
-    SELECT tera_render($t$SELECT {{ window_id }} AS window_id, {{ tab_index }} AS tab_index, pid FROM read_csv($cmd${{ cmd | join(sep=" ") }} |$cmd$, header := false, names := ['pid'])$t$,
+    SELECT window_id, tab_index,
+           tera_render($t$SELECT * FROM read_csv($cmd${{ cmd | join(sep=" ") }} |$cmd$, header := false, names := ['pid'])$t$,
                        intent::JSON, autoescape := false) AS sql
     FROM intent
-), dispatched AS (
-    SELECT array_agg(selfdispatch(sql)) AS receipts FROM rendered
+), dispatched AS (       -- each receipt kept beside the tab it answers for
+    SELECT array_agg({window_id: window_id, tab_index: tab_index, receipt: selfdispatch(sql)}) AS receipts FROM rendered
 ), tty_pids AS (
-    SELECT (row ->> 'window_id')::BIGINT AS window_id, (row ->> 'tab_index')::INT AS tab_index, (row ->> 'pid')::BIGINT AS pid
-    FROM dispatched CROSS JOIN UNNEST(receipts) AS t(r) CROSS JOIN UNNEST(coalesce(try_cast(r.body AS JSON[]), [])) AS u(row)
+    SELECT r.window_id, r.tab_index, unnest(json_extract_string(try_cast(r.receipt.body AS JSON), '$[*].pid'))::BIGINT AS pid
+    FROM dispatched CROSS JOIN UNNEST(receipts) AS t(r)
 )
 SELECT t.*, c.*
 FROM terminal_tabs AS t
@@ -146,7 +147,7 @@ JOIN browser_tabs AS t ON t.application = s.application AND t.profile = s.profil
 
 -- Processes and macOS diagnostics -------------------------------------------------------------------
 
--- Every process now. ps gives the numbers and the command line; awk only puts tabs between fields. age_s comes from
+-- Every process now. ps gives the numbers and the command line as words. age_s comes from
 -- ps's etime ([[dd-]hh:]mm:ss), so no clock is compared. footprint_mb is top's MEM, what Activity Monitor shows: it
 -- counts compressed and swapped pages, which ps's RSS does not. spawned_by names the agent behind a process: 'claude'
 -- (its group leader is the zsh a Claude Bash call starts, sourcing ~/.claude/shell-snapshots), 'codex' (a child of
@@ -154,13 +155,18 @@ JOIN browser_tabs AS t ON t.application = s.application AND t.profile = s.profil
 -- its job running). reap marks every process of a group the reaper kills: the group's oldest process was spawned by
 -- an agent, the group is 10 minutes old, and it is not an orphaned app or system helper.
 CREATE OR REPLACE VIEW host_processes AS
-WITH ps AS (
-    FROM read_csv($cmd$ps -axww -o pid=,ppid=,pgid=,etime=,args= | awk '{p=$1; q=$2; g=$3; e=$4; $1=$2=$3=$4=""; print p"\t"q"\t"g"\t"e"\t"substr($0,5,2000)}' |$cmd$,
-                  delim := '\t', header := false, quote := '', escape := '',
-                  columns := {'pid': 'BIGINT', 'ppid': 'BIGINT', 'pgid': 'BIGINT', 'etime': 'VARCHAR', 'args': 'VARCHAR'})
-), top AS (
-    FROM read_csv($cmd$top -l 1 -stats pid,mem | awk 'NR>12 {print $1"\t"$2}' |$cmd$, delim := '\t', header := false,
-                  columns := {'pid': 'BIGINT', 'mem': 'VARCHAR'})
+WITH ps_words AS (
+    SELECT content, list_filter(string_split(content, ' '), w -> w <> '') AS words
+    FROM read_lines($cmd$ps -axww -o pid=,ppid=,pgid=,etime=,args= |$cmd$, "trim" := true)
+), ps AS (   -- args is the rest of the line after etime, which alone of the first four holds a ':'
+    SELECT words[1]::BIGINT AS pid, words[2]::BIGINT AS ppid, words[3]::BIGINT AS pgid, words[4] AS etime,
+           left(trim(substr(content, strpos(content, words[4]) + len(words[4]))), 2000) AS args
+    FROM ps_words
+), top_words AS (
+    SELECT list_filter(string_split(content, ' '), w -> w <> '') AS words
+    FROM read_lines($cmd$top -l 1 -stats pid,mem |$cmd$, "trim" := true)
+), top AS (   -- top's process rows are a pid and its MEM; no header line starts with a number
+    SELECT TRY_CAST(words[1] AS BIGINT) AS pid, words[2] AS mem FROM top_words WHERE len(words) = 2
 ), procs AS (
     SELECT ps.*, string_split(etime, '-') AS day_split, list_reverse(string_split(day_split[-1], ':')) AS smh,
            CASE len(day_split) WHEN 2 THEN day_split[1]::BIGINT ELSE 0 END * 86400
@@ -246,10 +252,10 @@ FROM h;
 CREATE OR REPLACE VIEW host_memory AS
 WITH kv AS (
     SELECT trim(split_part(content, ':', 1), ' "') AS k, rtrim(trim(substr(content, position(':' IN content) + 1)), '.') AS v
-    FROM read_lines($cmd$sysctl hw.memsize hw.pagesize kern.memorystatus_level vm.memory_pressure; sysctl -n vm.swapusage | awk '{print "swap_total: "$3; print "swap_used: "$6}'; vm_stat |$cmd$, "trim" := true)
+    FROM read_lines($cmd$sysctl hw.memsize hw.pagesize kern.memorystatus_level vm.memory_pressure vm.swapusage; vm_stat |$cmd$, "trim" := true)
     WHERE position(':' IN content) > 0
-), h AS (
-    SELECT map_from_entries(list((k, v))) AS h FROM kv
+), h AS (   -- vm.swapusage reads "total = 5120.00M  used = 3542.56M  free = …"
+    SELECT map_from_entries(list((k, v))) AS h, list_filter(string_split(h['vm.swapusage'], ' '), w -> w <> '') AS swap FROM kv
 )
 SELECT now() AS observed_at,
        h['hw.memsize']::UBIGINT >> 20 AS ram_mb,
@@ -260,6 +266,6 @@ SELECT now() AS observed_at,
        (h['Pages occupied by compressor']::BIGINT * page_bytes) >> 20 AS compressor_mb,
        (h['Pages stored in compressor']::BIGINT * page_bytes) >> 20 AS compressed_data_mb,
        (h['Pages wired down']::BIGINT * page_bytes) >> 20 AS wired_mb,
-       rtrim(h['swap_total'], 'M')::DOUBLE AS swap_total_mb, rtrim(h['swap_used'], 'M')::DOUBLE AS swap_used_mb,
+       rtrim(swap[3], 'M')::DOUBLE AS swap_total_mb, rtrim(swap[6], 'M')::DOUBLE AS swap_used_mb,
        h['Swapins']::BIGINT AS swapins, h['Swapouts']::BIGINT AS swapouts, h AS counters
 FROM h;

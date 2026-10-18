@@ -58,8 +58,9 @@ SELECT content FROM read_text('mkdir -p ~/.duck/logs/profiles |');
 CREATE OR REPLACE ROUTE profile GET '/profile' AS
 WITH run AS (
     SELECT explain_value::JSON AS profile, explain_value AS profile_text,
-           '~/.duck/logs/profiles/' || strftime(now(), '%Y%m%dT%H%M%S.%fZ') || '.json' AS path, quote_literal(path) AS target
-    FROM quack_query('quack:localhost:9494', 'EXPLAIN (ANALYZE, FORMAT json) ' || $sql, token := getenv('QUACK_TOKEN'))
+           strftime(now(), '~/.duck/logs/profiles/%Y%m%dT%H%M%S.%fZ.json') AS path, quote_literal(path) AS target
+    FROM quack_query('quack:localhost:9494', tera_render('EXPLAIN (ANALYZE, FORMAT json) {{ sql }}', json_object('sql', $sql), autoescape := false),
+                     token := getenv('QUACK_TOKEN'))
 ), saved AS (
     SELECT *, selfdispatch(tera_render($copy$
 COPY (SELECT $profile${{ profile_text }}$profile$) TO {{ target }} (FORMAT csv, HEADER false, QUOTE '', ESCAPE '');

@@ -1,5 +1,5 @@
 -- Dev works in the inframe checkout: duck_tails calls take '.' or no path at all.
-SELECT content FROM read_text('mkdir -p ' || getenv('HOME') || '/inframe && echo ok |') LIMIT 1;
+SELECT content FROM read_text($cmd$mkdir -p ~/inframe && echo ok |$cmd$);
 FROM cd(getenv('HOME') || '/inframe');
 -- The branch views read the inframe git checkout (the working directory), which a machine without it (CI) lacks; they
 -- are posted once dev is serving, so a missing checkout fails this post and nothing else.
@@ -15,7 +15,8 @@ FROM cd(getenv('HOME') || '/inframe');
 -- transcripts), for both repos. git_changes: every file each commit on any branch changed against each parent, read
 -- live; a WHERE on commit_date diffs only those commits (2 days, both repos: 24 s, most of it walking the branches).
 -- git_worktrees: every checkout of either repo with its branch and its uncommitted files (none: one row, NULL file).
-SELECT selfdispatch($views$
+WITH program AS (
+    SELECT $views$
 CREATE OR REPLACE VIEW git_changes AS
 WITH repos AS (
   SELECT unnest([getenv('HOME') || '/inframe', getenv('HOME') || '/duckdb-skills']) AS repo
@@ -34,14 +35,18 @@ WITH repos AS (
   SELECT unnest([getenv('HOME') || '/inframe', getenv('HOME') || '/duckdb-skills']) AS repo
 ), worktrees AS (
   SELECT r.repo, rtrim(substr(l.content, 10), E'\n') AS worktree
-  FROM repos r CROSS JOIN LATERAL read_lines_lateral('git -C ' || r.repo || ' worktree list --porcelain |') l
+  FROM repos r CROSS JOIN LATERAL read_lines_lateral(tera_render($c$git -C '{{ repo }}' worktree list --porcelain |$c$, r::JSON, autoescape := false)) l
   WHERE starts_with(l.content, 'worktree ')
 ), branches AS (
   SELECT w.*, rtrim(b.content, E'\n') AS branch
-  FROM worktrees w CROSS JOIN LATERAL read_lines_lateral('git -C ' || w.worktree || ' rev-parse --abbrev-ref HEAD |') b
+  FROM worktrees w CROSS JOIN LATERAL read_lines_lateral(tera_render($c$git -C '{{ worktree }}' rev-parse --abbrev-ref HEAD |$c$, w::JSON, autoescape := false)) b
+), changed AS (
+  SELECT b.repo, b.worktree, b.branch, s.file_path, s.file_ext, s.status, s.staged, s.unstaged, s.old_path
+  FROM branches b CROSS JOIN LATERAL git_status_each(b.worktree) s
 )
-SELECT b.repo, b.worktree, b.branch, s.file_path, s.file_ext, s.status, s.staged, s.unstaged, s.old_path
-FROM branches b LEFT JOIN LATERAL (SELECT * FROM git_status_each(b.worktree)) s ON true;
+SELECT * FROM changed
+UNION ALL BY NAME
+SELECT repo, worktree, branch FROM branches ANTI JOIN changed USING (worktree);
 CREATE OR REPLACE VIEW branch_diff AS
 WITH local_branches AS (
     SELECT * FROM git_branches() WHERE NOT is_remote
@@ -58,7 +63,7 @@ WITH local_branches AS (
     SELECT commit_hash, parent_hash FROM git_parents('.', 'origin/staging')
 ), branch_history AS (
     SELECT tracked_branches.branch_name, history.commit_hash
-    FROM tracked_branches, LATERAL git_log_each(tracked_branches.repo_path, tracked_branches.commit_hash) history
+    FROM tracked_branches CROSS JOIN LATERAL git_log_each(tracked_branches.repo_path, tracked_branches.commit_hash) history
 ), shared_history AS (
     SELECT * FROM branch_history SEMI JOIN staging_commits USING (commit_hash)
 ), shared_parents AS (
@@ -77,11 +82,11 @@ CROSS JOIN LATERAL git_diff_tree_each(tracked_branches.repo_path, branch_points.
 CREATE OR REPLACE VIEW branch_definition_changes AS
 WITH file_sides AS (
     SELECT branch_diff.branch_name, branch_diff.file_path, 'before' AS side, file_read.text
-    FROM branch_diff, LATERAL git_read_each(branch_diff.before_uri) file_read
+    FROM branch_diff CROSS JOIN LATERAL git_read_each(branch_diff.before_uri) file_read
     WHERE branch_diff.status <> 'added'
     UNION ALL
     SELECT branch_diff.branch_name, branch_diff.file_path, 'after' AS side, file_read.text
-    FROM branch_diff, LATERAL git_read_each(branch_diff.after_uri) file_read
+    FROM branch_diff CROSS JOIN LATERAL git_read_each(branch_diff.after_uri) file_read
     WHERE branch_diff.status <> 'deleted'
 ), nodes AS (
     SELECT branch_name, file_path, side, unnest(parse_ast_list(text, detect_language(file_path)), recursive := true)
@@ -119,4 +124,8 @@ FROM before_definitions FULL JOIN after_definitions
   ON after_definitions.branch_name = before_definitions.branch_name
  AND after_definitions.file_path = before_definitions.file_path
  AND after_definitions.qualified_name = before_definitions.qualified_name
-$views$).status;
+$views$ AS sql
+), dispatched AS (
+    SELECT array_agg(selfdispatch(sql)) AS receipts FROM program
+)
+SELECT receipt.status FROM dispatched CROSS JOIN UNNEST(receipts) AS t(receipt);

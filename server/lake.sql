@@ -4,8 +4,13 @@
 -- kill drops them. After its commits it runs CHECKPOINT lake, and it sets the lake's GLOBAL expire_older_than /
 -- delete_older_than to maintenance_retention_ms (default 15 min): every lake table's snapshots older than that are
 -- expired. 30 days here.
-SELECT selfdispatch($lake$
+WITH program AS (
+    SELECT $lake$
 ATTACH IF NOT EXISTS 'ducklake:~/.duck/lake/duckstack/catalog.ducklake' AS lake (DATA_INLINING_ROW_LIMIT 0);
 CREATE SCHEMA IF NOT EXISTS lake.otel;
 FROM otlp_serve('otlp:127.0.0.1:4318', catalog := 'lake', schema := 'otel', disable_auth := true, maintenance_retention_ms := 2592000000);
-$lake$).status;
+$lake$ AS sql
+), dispatched AS (
+    SELECT array_agg(selfdispatch(sql)) AS receipts FROM program
+)
+SELECT receipt.* FROM dispatched CROSS JOIN UNNEST(receipts) AS t(receipt);

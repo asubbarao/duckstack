@@ -27,12 +27,12 @@ WITH d AS (
          string_split(path, '/')[len(string_split(getenv('HOME'), '/')) + 1:] AS rel
   FROM fs.dirs
 ), segments AS (
-  SELECT d.path, s.seg, s.idx FROM d CROSS JOIN UNNEST(d.rel) WITH ORDINALITY AS s(seg, idx)
+  SELECT d.path, d.rel, s.seg, s.idx FROM d CROSS JOIN UNNEST(d.rel) WITH ORDINALITY AS s(seg, idx)
 ), hits AS (
   SELECT s.path, s.idx FROM segments s JOIN fs.rules r ON r.name = s.seg AND r.scope = 'any'
   UNION ALL
   SELECT s.path, s.idx FROM segments s JOIN fs.rules r ON r.name = s.seg AND r.scope = 'top'
-  WHERE s.idx = 1 AND NOT starts_with(s.path || '/', getenv('HOME') || '/Library/LaunchAgents/')
+  WHERE s.idx = 1 AND s.rel[1:2] IS DISTINCT FROM ['Library', 'LaunchAgents']
 ), cut AS (
   SELECT path, min(idx) AS cut FROM hits GROUP BY path
 )
@@ -58,17 +58,18 @@ WITH program AS (
 WITH roots AS (
   SELECT unnest([getenv('HOME'), getenv('HOME') || '/Library/LaunchAgents']) AS path
 ), worklist AS (
-  SELECT path, f.modified,
+  SELECT path, f.modified, 'any' AS scope,
          CASE WHEN f.depth IS NULL THEN 'list'
               WHEN NOT path_exists(path) THEN 'gone'
               WHEN f.excluded THEN NULL
               WHEN f.modified = '-infinity'::TIMESTAMP THEN 'walk'
               WHEN file_last_modified(path) > f.modified THEN 'list' END AS action
   FROM fs.folders f FULL OUTER JOIN roots r USING (path)
+), pruned AS (   -- a walk prunes the names excluded at any depth
+  SELECT scope, list(name) AS names FROM fs.rules GROUP BY scope
 ), work AS (
   SELECT w.path, w.action, file_last_modified(w.path) AS now_modified, p.names
-  FROM worklist w
-  CROSS JOIN LATERAL (SELECT list(name) AS names FROM fs.rules WHERE scope = 'any') p
+  FROM worklist w JOIN pruned p USING (scope)
   WHERE w.action IS NOT NULL
 ), statements AS (
   SELECT action, tera_render(CASE action
@@ -87,7 +88,7 @@ FROM (SELECT rtrim(content, E'\n') AS path FROM read_lines($c$find '{{ path | re
 ), posted AS (
   SELECT array_agg({action: action, receipt: selfdispatch(sql)}) AS receipts FROM statements
 )
-SELECT t.r.action, t.r.receipt.status, count() AS posts FROM posted CROSS JOIN UNNEST(receipts) AS t(r) GROUP BY ALL;
+SELECT r.* FROM posted CROSS JOIN UNNEST(receipts) AS t(r);
 $refresh$ AS sql
 ), posted AS (
     SELECT sql, array_agg(selfdispatch(sql)) AS receipts FROM program GROUP BY sql

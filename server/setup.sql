@@ -1,6 +1,6 @@
 -- Dev DuckDB. launchd runs `duckdb -bail ~/.duck/db/dev.duckdb -init setup.sql` and keeps stdin open.
 -- Dev boots ~/.duck/deploy/server/setup.sql, the duckdb-skills branch `deploy`. A save here changes nothing until
--- it is committed and the branch moved: git branch -f deploy <commit>; the watcher restarts dev within 30 s, and once
+-- it is committed and the branch moved (git update-ref refs/heads/deploy <new> <old>); the watcher restarts dev within 30 s, and once
 -- dev has served it 60 s and answers SQL, pushes it to main (merging when main moved too). A push to main deploys it.
 -- The rest is read from server/*.sql, one concern per file, relative to the checkout root: the launchd wrapper starts
 -- DuckDB in ~/.duck/deploy and CI in its checkout (.read expands no ~). branches.sql moves into ~/inframe, so it is last.
@@ -68,9 +68,9 @@ FROM quackapi_serve(9495, host := '127.0.0.1', query_timeout_ms := 120000);
 -- quackapi_serve switches logging off.
 CALL enable_logging(['QueryLog', 'HTTP', 'Quack', 'Metrics'], storage := 'file', storage_path := getenv('QUACK_NATIVE_LOG'), storage_buffer_size := 0);
 
-.read server/agent.sql
 .read server/lake.sql
 .read server/fs.sql
+.read server/agent.sql
 .read server/ext_catalog.sql
 .read server/host.sql
 .read server/reaper.sql

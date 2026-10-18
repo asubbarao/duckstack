@@ -3,8 +3,8 @@
 FROM otlp_stop();
 -- cronjob 0571110 holds its mutex through Query: deletion waits for in-flight work.
 SELECT cron_delete(job_id) AS removed FROM cron_jobs() LIMIT ALL;
-SELECT CASE WHEN EXISTS (FROM cron_jobs()) THEN error('shutdown: scheduled jobs remain')
-            ELSE 'drained' END AS scheduler;
+SELECT CASE WHEN len(list(job_id)) > 0 THEN error('shutdown: scheduled jobs remain') ELSE 'drained' END AS scheduler
+FROM cron_jobs();
 -- Close both ports, 9495 last because this request answers through it. Neither stop waits for requests already
 -- running (each joins its workers on a detached thread), so the wrapper waits for their sockets before closing stdin.
 FROM quack_stop('quack:localhost:9494');
