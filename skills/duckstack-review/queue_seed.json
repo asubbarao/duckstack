@@ -1,0 +1,18 @@
+[
+  {
+    "number": 0,
+    "title": "seed: gives read_json the PR list's shape when no PR is open",
+    "headRefOid": "",
+    "isDraft": true,
+    "autoMergeRequest": null,
+    "statusCheckRollup": [
+      {
+        "__typename": "StatusContext",
+        "context": "",
+        "state": "",
+        "name": "",
+        "conclusion": ""
+      }
+    ]
+  }
+]

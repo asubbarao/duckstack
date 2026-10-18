@@ -120,6 +120,8 @@ SELECT 'sql_any_value' AS check_id, call_id, tool_name, coalesce(next_prompt_cor
 UNION ALL
 SELECT 'sql_attach_on_dev' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((list_contains(sql_sources, 'tool') AND list_has_any(sql_verbs, ['ATTACH', 'DETACH'])), false)
 UNION ALL
+SELECT 'sql_base64' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((list_has_any(sql_functions, ['to_base64', 'from_base64', 'base64'])), false)
+UNION ALL
 SELECT 'sql_char_code_newline' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((len(list_filter(sql_function_calls, f -> f.name IN ('chr', 'char') AND list_contains(f.literals, '10'))) > 0), false)
 UNION ALL
 SELECT 'sql_char_code_quotes' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((len(list_filter(sql_function_calls, f -> f.name IN ('chr', 'char') AND list_has_any(f.literals, ['39', '34']))) > 0), false)
@@ -158,6 +160,8 @@ SELECT 'sql_http_server' AS check_id, call_id, tool_name, coalesce(next_prompt_c
 UNION ALL
 SELECT 'sql_join_on_constant' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((sql_has_join_on_constant), false)
 UNION ALL
+SELECT 'sql_json_each' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((list_has_any(sql_table_functions, ['json_each', 'json_tree'])), false)
+UNION ALL
 SELECT 'sql_json_extract' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((list_has_any(sql_functions, ['json_extract', 'json_extract_string', 'json_extract_path', 'json_extract_path_text'])), false)
 UNION ALL
 SELECT 'sql_lateral_not_allowlisted' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((sql_has_lateral_function_join AND NOT list_has_all(['read_lines_lateral', 'git_read_each', 'git_log_each', 'git_tree_each', 'json_each', 'json_tree', 'unnest', 'generate_series', 'range'], sql_table_functions)), false)
@@ -182,6 +186,8 @@ SELECT 'sql_pattern_functions' AS check_id, call_id, tool_name, coalesce(next_pr
 UNION ALL
 SELECT 'sql_pattern_functions__tooling' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((list_has_any(sql_functions, ['regexp_matches', 'regexp_full_match', 'regexp_replace', 'regexp_extract', 'regexp_extract_all', 'regexp_split_to_array', 'regexp_split_to_table', 'string_split_regex', 'str_split_regex', 'regexp_escape'])), false)
 UNION ALL
+SELECT 'sql_printf' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((list_has_any(sql_functions, ['printf', 'format'])), false)
+UNION ALL
 SELECT 'sql_query_constant' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((len(list_filter(sql_table_function_calls, t -> t.name IN ('query', 'query_table') AND list_contains(t.args, 'constant'))) > 0), false)
 UNION ALL
 SELECT 'sql_reads_sql_file_as_text' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((len(list_filter(sql_table_function_calls, t -> t.name IN ('read_text', 'read_lines') AND len(list_filter(t.literals, l -> substr(parse_filename(l), length(parse_filename(l, true)) + 1) = '.sql')) > 0)) > 0 AND list_has_any(sql_functions, ['selfdispatch', 'quackapi_post', 'http_post', 'http_post_form', 'json_object'])), false)
@@ -192,15 +198,23 @@ SELECT 'sql_recursive_glob' AS check_id, call_id, tool_name, coalesce(next_promp
 UNION ALL
 SELECT 'sql_row_constructor' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((sql_has_values_clause), false)
 UNION ALL
+SELECT 'sql_row_number_pick' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((list_contains(sql_functions, 'row_number')), false)
+UNION ALL
 SELECT 'sql_scalar_subquery_select' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((sql_has_scalar_subquery_in_select), false)
 UNION ALL
 SELECT 'sql_set_on_dev' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((list_contains(sql_sources, 'tool') AND list_contains(sql_verbs, 'SET') AND NOT list_contains([h[1:2] FOR h IN sql_heads], ['SET', 'VARIABLE'])), false)
+UNION ALL
+SELECT 'sql_shellfs_grep' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((len(list_filter(sql_table_function_calls, t -> len(list_filter(t.literals, l -> contains(l, 'grep '))) > 0)) > 0), false)
+UNION ALL
+SELECT 'sql_shellfs_raw_pytest' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((len(list_filter(sql_table_function_calls, t -> t.name <> 'read_duck_hunt_log' AND len(list_filter(t.literals, l -> contains(l, 'pytest'))) > 0)) > 0), false)
 UNION ALL
 SELECT 'sql_star_count' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((sql_has_count_star), false)
 UNION ALL
 SELECT 'sql_statement_too_long' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((sql_max_statement_lines > 80), false)
 UNION ALL
 SELECT 'sql_temp_object' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((len(list_filter(sql_heads, h -> h[1] = 'CREATE' AND list_has_any(h, ['TEMP', 'TEMPORARY']))) > 0), false)
+UNION ALL
+SELECT 'sql_tera_logic' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((len(list_filter(sql_function_calls, f -> f.name = 'tera_render' AND len(list_filter(f.literals, l -> contains(l, '{%'))) > 0)) > 0), false)
 UNION ALL
 SELECT 'sql_text_join_function' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((list_contains(sql_functions, 'array_to_string')), false)
 UNION ALL

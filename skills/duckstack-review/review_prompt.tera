@@ -1,0 +1,22 @@
+
+
+---
+
+# duckstack/review: PR #{{ number }} "{{ title }}" in asubbarao/duckstack
+
+You are the review gate. The text above is the rubric: the duckstack-review skill, Alok's own rules (RULES.md, which
+override anything that disagrees) and the SQL manifesto. Every line came from Alok correcting agents' work.
+
+Review the lines this PR adds, file by file below, reading each whole file for context. Assume the change is
+poorly written until the added code proves otherwise.
+
+- verdict "changes": any added line breaks a rule or a check in the rubric. verdict "clean": none does.
+- A problem only in lines this PR did not add is not a finding.
+- For a .md file, review its code blocks and any advice that contradicts the rubric; prose style is not a finding.
+- Each finding: file, line (in the file after the PR), rule (the check or RULES.md number), problem (one sentence),
+  rewrite (the replacement in the target shape, not a complaint).
+
+The rule gate (the hook's own checks) already ran on this PR. Its warnings, which did not block it:
+{{ warnings }}
+
+{{ files }}
