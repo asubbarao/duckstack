@@ -222,11 +222,20 @@ FROM open_prs WHERE NOT auto_merge;
 -- The review's launch (review_launch.tera): the rubric and schema come from the checkout this tick runs in ($PWD),
 -- so they match its queue.sql; a missing schema file hands claude --json-schema "" and free text instead of a verdict.
 CREATE OR REPLACE VIEW review_launches AS
+WITH launch_rows AS (
+    SELECT pr_number, review_key,
+           [concat(getenv('PWD'), '/skills/duckstack-review/SKILL.md'), concat(getenv('PWD'), '/skills/self-dispatch/RULES.md'),
+            concat(getenv('PWD'), '/SQL-MANIFESTO.md')] AS rubric,
+           concat(getenv('PWD'), '/skills/duckstack-review/review_schema.json') AS schema,
+           ['/Users/aloksubbarao/.local/bin/claude', '-p', '--model claude-opus-5-5', '--tools ""', '--output-format json',
+            '--no-session-persistence', '--strict-mcp-config', '--disable-slash-commands',
+            $q$--settings '{"disableAllHooks": true}'$q$] AS claude
+    FROM open_prs WHERE review_due
+)
 SELECT pr_number,
        -- trim newlines too: shellfs runs a source as a command only when it ends with '|'
-       trim(tera_render('review_launch.tera', json_object('checkout', getenv('PWD'), 'review_key', review_key),
-                        autoescape := false, template_path := 'skills/duckstack-review/*.tera'), E' \n') AS command
-FROM open_prs WHERE review_due;
+       trim(tera_render('review_launch.tera', launch::JSON, autoescape := false, template_path := 'skills/duckstack-review/*.tera'), E' \n') AS command
+FROM launch_rows AS launch;
 
 .output stdout
 WITH posted AS (

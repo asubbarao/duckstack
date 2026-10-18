@@ -10,7 +10,8 @@ LOAD markdown;
 CREATE OR REPLACE VIEW pr_sql AS
 SELECT pr_number, file_path, content, false AS bad_example FROM pr_files WHERE ends_with(file_path, '.sql')
 UNION ALL
-SELECT pr_number, concat(file_path, '#sql', block.ordinality) AS file_path, block.code_block.code AS content,
+-- named <file>#<n>.sql so toolcall_facts reads its extension as .sql
+SELECT pr_number, concat(file_path, '#', block.ordinality, '.sql') AS file_path, block.code_block.code AS content,
        starts_with(ltrim(block.code_block.code), '-- BAD') AS bad_example
 FROM pr_files CROSS JOIN UNNEST(md_extract_code_blocks(content)) WITH ORDINALITY AS block(code_block, ordinality)
 WHERE ends_with(file_path, '.md') AND block.code_block.language = 'sql';
