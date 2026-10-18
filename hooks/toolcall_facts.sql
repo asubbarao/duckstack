@@ -136,6 +136,12 @@ WITH roots AS (
   GROUP BY ALL)
 SELECT call_id, sql_source, program_index, statement_no, max(ops) + 1 AS concat_chain_max FROM roots GROUP BY ALL;
 
+-- Statements with a tera_render inside another tera_render's arguments.
+CREATE OR REPLACE VIEW sql_nested_tera AS
+SELECT DISTINCT n.call_id, n.sql_source, n.program_index, n.statement_no
+FROM sql_nodes n CROSS JOIN LATERAL json_tree(n.v) AS s
+WHERE n.fn = 'tera_render' AND s.type = 'OBJECT' AND s.id > 0 AND (s.value ->> 'function_name') = 'tera_render';
+
 CREATE OR REPLACE VIEW sql_statement_facts AS
 WITH node_facts AS (
   SELECT call_id, sql_source, program_index, statement_no,
@@ -180,6 +186,7 @@ SELECT s.call_id, s.sql_source, s.program_index, s.statement_no, s.statement_kin
        coalesce(f.table_function_calls, []) AS table_function_calls,
        coalesce(f.shellfs_pipes, []) AS shellfs_pipes,
        coalesce(f.uses_canonical_template, false) AS uses_canonical_template,
+       nt.call_id IS NOT NULL AS has_nested_tera,
        coalesce(f.cte_names, []) AS cte_names,
        coalesce(f.has_count_star, false) AS has_count_star,
        coalesce(f.has_filter_clause, false) AS has_filter_clause,
@@ -202,7 +209,8 @@ SELECT s.call_id, s.sql_source, s.program_index, s.statement_no, s.statement_kin
        coalesce(c.concat_chain_max, 0) AS concat_chain_max
 FROM sql_statements s
 LEFT JOIN node_facts f USING (call_id, sql_source, program_index, statement_no)
-LEFT JOIN sql_concat c USING (call_id, sql_source, program_index, statement_no);
+LEFT JOIN sql_concat c USING (call_id, sql_source, program_index, statement_no)
+LEFT JOIN sql_nested_tera nt USING (call_id, sql_source, program_index, statement_no);
 
 -- Per call: the statements' facts folded into lists, counts and any-statement booleans.
 CREATE OR REPLACE VIEW sql_call_facts AS
@@ -241,6 +249,7 @@ stmts AS (
          bool_or(has_join_on_constant) AS sql_has_join_on_constant,
          bool_or(has_scalar_subquery_in_select) AS sql_has_scalar_subquery_in_select,
          bool_or(has_qualify) AS sql_has_qualify,
+         bool_or(has_nested_tera) AS sql_has_nested_tera,
          list_distinct(flatten(list(lateral_functions))) AS sql_lateral_functions,
          max(concat_chain_max) AS sql_concat_chain_max
   FROM sql_statement_facts GROUP BY ALL)
