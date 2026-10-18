@@ -132,9 +132,10 @@ receipt problems below have one place to be checked.
     not wrapped in a dispatch. Never paste a `$$` body inline; render it from a template (10-09, 10-12).
     Pass the row as `c::JSON`, not `row_to_json` (hook, 10-15). Never pass a subquery as a table-function
     argument (10-13).
-34a. **The row rides inside its statement.** The generated statement carries the row's keys
-    (`SELECT 63 AS pr_number, * FROM read_json(…)`), so each receipt comes back with its row after the UNNEST. Never
-    two parallel arrays matched by position (`prs` plus `receipts[n]`) (10-18).
+34a. **The row rides inside its statement.** Each receipt comes back with its row after the UNNEST because the
+    statement's own output carries the row's key. Ask the command for it (`gh pr view N --json number,…`) or let the
+    reader add it (`read_json(…, filename := true)`). Never two parallel arrays matched by position (`prs` plus
+    `receipts[n]`) (10-18).
 34b. **One `tera_render` per statement, never nested** (hook). Build a joined command in its own CTE or column,
     then render once (10-18).
 34c. **Command words are split by role in the first CTE**: the program (`[gh, 'pr', 'list']`), its arguments and
