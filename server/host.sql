@@ -145,6 +145,47 @@ CREATE OR REPLACE VIEW browser_targets AS
 SELECT s.surface, t.* FROM browser_surfaces AS s
 JOIN browser_tabs AS t ON t.application = s.application AND t.profile = s.profile AND starts_with(t.url, s.url_prefix);
 
+-- What can be done in a browser, as AppleScript with Tera holes ({{ window_id }}, {{ tab_id }}, {{ tab_index }},
+-- {{ url }}, {{ js }}). scope 'tab' runs on a browser_targets row, 'window' on a window of the surface's profile.
+-- Everything stays in the background: no verb activates the app, and open puts the window's active tab back.
+CREATE OR REPLACE VIEW browser_verbs AS
+SELECT 'Google Chrome' AS application, 'open' AS verb, 'window' AS scope, $osa$tell application "Google Chrome"
+  set w to window id {{ window_id }}
+  set k to active tab index of w
+  set t to make new tab at end of tabs of w with properties {URL:"{{ url }}"}
+  set active tab index of w to k
+  return id of t
+end tell$osa$ AS osascript UNION ALL
+SELECT 'Google Chrome', 'wait', 'tab', $osa$tell application "Google Chrome"
+  set t to tab id {{ tab_id }} of window id {{ window_id }}
+  repeat 60 times
+    if not (loading of t) then exit repeat
+    delay 0.25
+  end repeat
+  return URL of t
+end tell$osa$ UNION ALL
+SELECT 'Google Chrome', 'eval', 'tab', $osa$tell application "Google Chrome"
+  set t to tab id {{ tab_id }} of window id {{ window_id }}
+  repeat 60 times
+    if not (loading of t) then exit repeat
+    delay 0.25
+  end repeat
+  execute t javascript "{{ js }}"
+end tell$osa$ UNION ALL
+SELECT 'Google Chrome', 'go', 'tab', $osa$tell application "Google Chrome"
+  set t to tab id {{ tab_id }} of window id {{ window_id }}
+  set URL of t to "{{ url }}"
+  repeat 60 times
+    if not (loading of t) then exit repeat
+    delay 0.25
+  end repeat
+  return URL of t
+end tell$osa$ UNION ALL
+SELECT 'Google Chrome', 'close', 'tab', $osa$tell application "Google Chrome" to close tab id {{ tab_id }} of window id {{ window_id }}$osa$ UNION ALL
+SELECT 'Safari', 'eval', 'tab', $osa$tell application "Safari" to do JavaScript "{{ js }}" in tab {{ tab_index }} of window id {{ window_id }}$osa$ UNION ALL
+SELECT 'Safari', 'go', 'tab', $osa$tell application "Safari" to set URL of tab {{ tab_index }} of window id {{ window_id }} to "{{ url }}"$osa$ UNION ALL
+SELECT 'Safari', 'close', 'tab', $osa$tell application "Safari" to close tab {{ tab_index }} of window id {{ window_id }}$osa$;
+
 -- Processes and macOS diagnostics -------------------------------------------------------------------
 
 -- Every process now. ps gives the numbers and the command line as words. age_s comes from
