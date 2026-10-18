@@ -130,8 +130,6 @@ SELECT 'sql_coalesce_empty_default' AS check_id, call_id, tool_name, coalesce(ne
 UNION ALL
 SELECT 'sql_comma_join' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((sql_has_comma_join), false)
 UNION ALL
-SELECT 'sql_concat_chain' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((sql_concat_chain_max > 2), false)
-UNION ALL
 SELECT 'sql_create_macro' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((list_contains(sql_statement_kinds, 'create_macro')), false)
 UNION ALL
 SELECT 'sql_create_macro__dev' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((list_contains(sql_statement_kinds, 'create_macro')), false)
