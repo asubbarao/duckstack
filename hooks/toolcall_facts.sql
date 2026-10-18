@@ -98,14 +98,14 @@ SELECT s.call_id, s.sql_source, s.program_index, s.statement_no, t.id AS node_id
        t.value ->> 'class' AS cls, t.value ->> 'type' AS typ,
        CASE WHEN (t.value ->> 'class') IN ('FUNCTION', 'WINDOW') AND t.key IS DISTINCT FROM 'function' THEN t.value ->> 'function_name' END AS fn,
        CASE WHEN (t.value ->> 'type') = 'TABLE_FUNCTION' THEN t.value -> 'function' ->> 'function_name' END AS tfn,
+       t.value -> 'right' -> 'function' ->> 'function_name' AS join_right_fn,
        CASE WHEN (t.value ->> 'type') = 'JOIN' AND (t.value ->> 'class') IS NULL THEN
             -- CROSS JOIN UNNEST(...) WITH ORDINALITY also comes without a query_location; it is a cross join.
             CASE WHEN (t.value ->> 'ref_type') = 'CROSS' AND (t.value -> 'query_location') IS NULL
-                      AND (t.value -> 'right' -> 'function' ->> 'function_name') IS DISTINCT FROM 'unnest' THEN 'COMMA'
+                      AND join_right_fn IS DISTINCT FROM 'unnest' THEN 'COMMA'
                  WHEN (t.value ->> 'ref_type') = 'REGULAR' THEN t.value ->> 'join_type'
                  ELSE t.value ->> 'ref_type' END END AS join_kind,
        t.value -> 'right' ->> 'type' AS join_right_type,
-       t.value -> 'right' -> 'function' ->> 'function_name' AS join_right_fn,
        [lower(c ->> 'class') FOR c IN json_extract(t.value, '$.right.function.children[*]')] AS join_right_arg_kinds,
        [CASE WHEN (c ->> 'class') = 'FUNCTION' THEN c ->> 'function_name'
              WHEN (c ->> 'class') = 'CAST' AND (c -> 'child' ->> 'class') = 'CONSTANT' THEN 'constant'

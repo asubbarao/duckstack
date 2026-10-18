@@ -6,15 +6,16 @@ LOAD scalarfs;
 LOAD shellfs;
 LOAD sitting_duck;
 LOAD markdown;
+-- A ```sql block whose first line is '-- BAD' is a deliberate counter-example: its hits are reported as 'example'.
 CREATE OR REPLACE VIEW pr_sql AS
-SELECT pr_number, file_path, content FROM pr_files WHERE ends_with(file_path, '.sql')
+SELECT pr_number, file_path, content, false AS bad_example FROM pr_files WHERE ends_with(file_path, '.sql')
 UNION ALL
-SELECT pr_number, concat(file_path, '#sql', block.ordinality) AS file_path, block.code_block.code AS content
+SELECT pr_number, concat(file_path, '#sql', block.ordinality) AS file_path, block.code_block.code AS content,
+       starts_with(ltrim(block.code_block.code), '-- BAD') AS bad_example
 FROM pr_files CROSS JOIN UNNEST(md_extract_code_blocks(content)) WITH ORDINALITY AS block(code_block, ordinality)
--- duckstack-review's own BAD examples are deliberate.
-WHERE ends_with(file_path, '.md') AND block.code_block.language = 'sql' AND NOT starts_with(file_path, 'skills/duckstack-review/');
+WHERE ends_with(file_path, '.md') AND block.code_block.language = 'sql';
 CREATE OR REPLACE VIEW tc_src AS
-SELECT pr_number, file_path, concat_ws(':', pr_number, file_path) AS call_id, 'pr' AS session, now() AS ts, false AS subagent, 'Write' AS tool_name,
+SELECT pr_number, file_path, bad_example, concat_ws(':', pr_number, file_path) AS call_id, 'pr' AS session, now() AS ts, false AS subagent, 'Write' AS tool_name,
        json_object('file_path', file_path, 'content', content)::VARCHAR AS input, NULL::BOOLEAN AS next_prompt_corrects
 FROM pr_sql;
 -- The hook's own parse-bash inputs; no Bash calls come from a PR, so they are empty.
@@ -23,8 +24,9 @@ FROM pr_sql;
 .read hooks/toolcall_facts.sql
 .read hooks/hook_checks.sql
 .read hooks/check_hits.sql
--- One row per PR, file and check that fired; action 'block' fails the PR, 'warn' is reported with it.
+-- One row per PR, file and check that fired; action 'block' fails the PR, 'warn' and 'example' are reported with it.
 CREATE OR REPLACE VIEW pr_rule_hits AS
-SELECT tc_src.pr_number, tc_src.file_path, hook_checks.check_id, hook_checks.action, hook_checks.message
+SELECT tc_src.pr_number, tc_src.file_path, hook_checks.check_id,
+       CASE WHEN tc_src.bad_example THEN 'example' ELSE hook_checks.action END AS action, hook_checks.message
 FROM check_hits JOIN tc_src USING (call_id) JOIN hook_checks USING (check_id)
 WHERE hook_checks.action IN ('block', 'warn');
