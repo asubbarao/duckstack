@@ -33,7 +33,7 @@ WITH listed AS (
     FROM read_json('variable:open_prs.json')
     WHERE NOT isDraft
 )
-SELECT listed.*,
+SELECT listed.*, result_file.file AS result_path,   -- the head's review result, the one place it is looked up
        listed.rules_state = 'SUCCESS' AND CASE listed.review_state WHEN 'ERROR' THEN result_file.file IS NULL
                                                                  ELSE listed.review_state IS NULL END AS review_due
 FROM listed LEFT JOIN glob('/Users/aloksubbarao/.duck/review/results/*.json') AS result_file
@@ -80,6 +80,12 @@ SELECT new_lines.pr_number, new_lines.file_path, added.line_number, new_lines.li
 FROM new_lines LEFT JOIN old_lines USING (pr_number, file_path, line)
 CROSS JOIN UNNEST(new_lines.line_numbers[coalesce(old_lines.copies, 0) + 1:]) AS added(line_number);
 
+-- Each rule hit as one line of text, the same in the PR comment and in the reviewer's prompt.
+CREATE OR REPLACE VIEW rule_hit_lines AS
+SELECT pr_number, action, file_path,
+       tera_render($t$- **{{ action }}** `{{ check_id }}` in {{ file_path }}: {{ message }}$t$, hit::JSON, autoescape := false) AS line
+FROM pr_rule_hits AS hit;
+
 -- One prompt per PR that passed the rules and has no review yet; the launch puts the rubric files in front of it.
 CREATE OR REPLACE VIEW review_prompts AS
 WITH added_by_file AS (
@@ -102,8 +108,8 @@ $t$, json_object('file_path', pr_changes.file_path, 'status', pr_changes.status,
     LEFT JOIN added_by_file ON added_by_file.pr_number = pr_changes.pr_number AND added_by_file.file_path = pr_changes.file_path
     WHERE pr_changes.file_path <> 'hooks/check_hits.sql'   -- generated from hook_checks.sql by render_hits.sql
 ), warnings AS (
-    SELECT pr_number, string_agg(concat_ws(' ', file_path, check_id, message), E'\n') AS warnings
-    FROM pr_rule_hits WHERE action = 'warn' GROUP BY pr_number
+    SELECT pr_number, string_agg(line, E'\n' ORDER BY file_path) AS warnings
+    FROM rule_hit_lines WHERE action = 'warn' GROUP BY pr_number
 )
 SELECT open_prs.review_key,
        tera_render('review_prompt.tera',
@@ -124,10 +130,7 @@ TO '/Users/aloksubbarao/.duck/review/prompts'
 -- structured_output (from --json-schema); a run without it leaves review NULL, which posts 'error' with its text.
 CREATE OR REPLACE VIEW review_results AS
 WITH result_files AS (
-    SELECT open_prs.review_key, result_file.file AS path
-    FROM open_prs JOIN glob('/Users/aloksubbarao/.duck/review/results/*.json') AS result_file
-      ON parse_filename(result_file.file, true) = open_prs.review_key
-    WHERE open_prs.review_state = 'PENDING'
+    SELECT review_key, result_path AS path FROM open_prs WHERE review_state = 'PENDING' AND result_path IS NOT NULL
 ), rendered AS (
     SELECT review_key, tera_render($t$SELECT * FROM read_json('{{ path }}')$t$, f::JSON, autoescape := false) AS sql
     FROM result_files AS f
@@ -152,11 +155,9 @@ WITH status_text AS (
         {'context': 'duckstack/review', 'state': 'failure', 'description': 'Opus 5.5: changes needed; see the PR comment'},
         {'context': 'duckstack/review', 'state': 'error',   'description': 'No verdict; see the comment. Remove its result file to rerun'}
     ], recursive := true)
-), rules_summary AS (   -- the only read of pr_rule_hits in this view
-    SELECT pr_number, bool_or(action = 'block') AS blocked,
-           string_agg(tera_render($t$- **{{ action }}** `{{ check_id }}` in {{ file_path }}: {{ message }}$t$, hit::JSON, autoescape := false),
-                      E'\n' ORDER BY action, file_path) AS lines
-    FROM pr_rule_hits AS hit GROUP BY pr_number
+), rules_summary AS (   -- the only read of the rule hits in this view
+    SELECT pr_number, bool_or(action = 'block') AS blocked, string_agg(line, E'\n' ORDER BY action, file_path) AS lines
+    FROM rule_hit_lines GROUP BY pr_number
 ), reviews AS (         -- the only read of review_results in this view
     FROM review_results
 ), finding_lines AS (
@@ -175,7 +176,7 @@ WITH status_text AS (
     FROM reviews LEFT JOIN finding_lines USING (review_key)
 ), rules_verdicts AS (
     SELECT open_prs.pr_number, open_prs.head_sha, rules_summary.lines,
-           CASE WHEN coalesce(rules_summary.blocked, false) THEN 'failure' ELSE 'success' END AS state
+           CASE WHEN rules_summary.blocked THEN 'failure' ELSE 'success' END AS state
     FROM open_prs LEFT JOIN rules_summary USING (pr_number)
     WHERE open_prs.rules_state IS NULL
 ), review_verdicts AS (
@@ -188,24 +189,19 @@ WITH status_text AS (
     SELECT pr_number, head_sha, 'duckstack/review', 'pending' FROM open_prs WHERE review_due
     UNION ALL
     SELECT pr_number, head_sha, 'duckstack/review', state FROM review_verdicts
-), comments AS (
-    SELECT pr_number,
-           tera_render($t$**duckstack/rules: {{ state }}**
-
-{{ lines }}
-
-_duckstack review queue, rule gate (hooks/hook_checks.sql)_$t$,
-                       json_object('state', state, 'lines', lines), autoescape := false) AS body
+), comment_rows AS (
+    SELECT pr_number, 'duckstack/rules' AS context, state, lines, 'duckstack review queue, rule gate (hooks/hook_checks.sql)' AS signature
     FROM rules_verdicts WHERE lines IS NOT NULL
     UNION ALL
-    SELECT pr_number,
-           tera_render($t$**duckstack/review: {{ state }}**
+    SELECT pr_number, 'duckstack/review', state, coalesce(lines, 'No findings.'), 'Opus 5.5, duckstack review queue (duckstack-review skill)'
+    FROM review_verdicts
+), comments AS (
+    SELECT pr_number, tera_render($t$**{{ context }}: {{ state }}**
 
 {{ lines }}
 
-_Opus 5.5, duckstack review queue (duckstack-review skill)_$t$,
-                       json_object('state', state, 'lines', coalesce(lines, 'No findings.')), autoescape := false) AS body
-    FROM review_verdicts
+_{{ signature }}_$t$, c::JSON, autoescape := false) AS body
+    FROM comment_rows AS c
 )
 SELECT pr_number, concat('https://api.github.com/repos/asubbarao/duckstack/statuses/', head_sha) AS url,
        json_object('context', context, 'state', state, 'description', status_text.description) AS payload
