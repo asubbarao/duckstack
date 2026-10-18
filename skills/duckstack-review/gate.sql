@@ -14,7 +14,7 @@ FROM pr_files CROSS JOIN UNNEST(md_extract_code_blocks(content)) WITH ORDINALITY
 -- duckstack-review's own BAD examples are deliberate.
 WHERE ends_with(file_path, '.md') AND block.code_block.language = 'sql' AND NOT starts_with(file_path, 'skills/duckstack-review/');
 CREATE OR REPLACE VIEW tc_src AS
-SELECT pr_number || ':' || file_path AS call_id, 'pr' AS session, now() AS ts, false AS subagent, 'Write' AS tool_name,
+SELECT concat_ws(':', pr_number, file_path) AS call_id, 'pr' AS session, now() AS ts, false AS subagent, 'Write' AS tool_name,
        json_object('file_path', file_path, 'content', content)::VARCHAR AS input, NULL::BOOLEAN AS next_prompt_corrects
 FROM pr_sql;
 -- No Bash calls come from a PR, but the parse-bash views read src and n, so both exist and are empty.

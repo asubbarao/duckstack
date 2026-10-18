@@ -43,21 +43,37 @@ SELECT b.call_id, 'embedded', e.idx, e.prog.program
 FROM bash_src b CROSS JOIN UNNEST(b.embedded_programs) WITH ORDINALITY AS e(prog, idx)
 WHERE e.prog.interpreter = 'duckdb'
 UNION ALL
-SELECT i.call_id, 'file', 0, coalesce(i.write_content, i.edit_new_string)
+-- CLI dot commands (.read, .output) are not SQL, and one of them fails the parse of the whole file.
+SELECT i.call_id, 'file', 0,
+       list_aggregate(list_filter(string_split(coalesce(i.write_content, i.edit_new_string), E'\n'), l -> NOT starts_with(ltrim(l), '.')), 'string_agg', E'\n')
 FROM tc_input i JOIN tc_paths p ON p.call_id = i.call_id
 WHERE i.tool_name IN ('Write', 'Edit') AND p.file_ext = '.sql';
 
 -- One row per statement: DuckDB's own statement split and canonical text.
 CREATE OR REPLACE VIEW sql_statements AS
-WITH nodes AS (
-  SELECT call_id, sql_source, program_index, unnest(parse_ast_list(sql_text, 'duckdb')) AS n
-  FROM sql_texts WHERE sql_text IS NOT NULL)
+WITH pieces AS (
+  -- One statement DuckDB's parser rejects (quackapi's CREATE ROUTE) fails the whole text, so such a text is split
+  -- at ';' line ends and each statement is read on its own.
+  SELECT call_id, sql_source, program_index, split.piece, split.piece_no
+  FROM sql_texts
+  CROSS JOIN UNNEST(CASE WHEN is_parsable(sql_text) THEN [sql_text] ELSE [concat(p, ';') FOR p IN string_split(sql_text, E';\n')] END)
+       WITH ORDINALITY AS split(piece, piece_no)
+  WHERE sql_text IS NOT NULL
+), nodes AS (
+  -- A statement the parser still rejects is read from its query, the text after its first ' AS '
+  -- (CREATE ROUTE / CREATE MIDDLEWARE ... AS SELECT).
+  SELECT call_id, sql_source, program_index, piece_no,
+         unnest(parse_ast_list(CASE WHEN is_parsable(piece) THEN piece ELSE substr(piece, instr(upper(piece), ' AS ') + 4) END, 'duckdb')) AS n
+  FROM pieces)
 SELECT call_id, sql_source, program_index, n.type AS statement_kind, n.peek AS statement_sql,
        [upper(w) FOR w IN string_split(trim(n.peek), ' ') IF w <> ''][1:5] AS head_words,
        len(string_split(n.peek, E'\n')) AS statement_lines,
-       CASE WHEN n.type = 'select_statement'
-            THEN json_serialize_sql(n.peek, skip_null := true, skip_empty := true, skip_default := true) -> 'statements' -> 0 END AS ast,
-       row_number() OVER (PARTITION BY call_id, sql_source, program_index ORDER BY n.node_id) AS statement_no
+       -- json_serialize_sql takes only a SELECT; a view's query is the text after its first ' AS '.
+       CASE n.type WHEN 'select_statement'
+            THEN json_serialize_sql(n.peek, skip_null := true, skip_empty := true, skip_default := true) -> 'statements' -> 0
+            WHEN 'create_view'
+            THEN json_serialize_sql(substr(n.peek, instr(upper(n.peek), ' AS ') + 4), skip_null := true, skip_empty := true, skip_default := true) -> 'statements' -> 0 END AS ast,
+       row_number() OVER (PARTITION BY call_id, sql_source, program_index ORDER BY piece_no, n.node_id) AS statement_no
 FROM nodes WHERE n.depth = 1;
 
 -- AST object nodes with the classification wave 1 used.
@@ -67,7 +83,9 @@ SELECT s.call_id, s.sql_source, s.program_index, s.statement_no, t.id AS node_id
        CASE WHEN (t.value ->> 'class') IN ('FUNCTION', 'WINDOW') AND t.key IS DISTINCT FROM 'function' THEN t.value ->> 'function_name' END AS fn,
        CASE WHEN (t.value ->> 'type') = 'TABLE_FUNCTION' THEN t.value -> 'function' ->> 'function_name' END AS tfn,
        CASE WHEN (t.value ->> 'type') = 'JOIN' AND (t.value ->> 'class') IS NULL THEN
-            CASE WHEN (t.value ->> 'ref_type') = 'CROSS' AND (t.value -> 'query_location') IS NULL THEN 'COMMA'
+            -- CROSS JOIN UNNEST(...) WITH ORDINALITY also comes without a query_location; it is a cross join.
+            CASE WHEN (t.value ->> 'ref_type') = 'CROSS' AND (t.value -> 'query_location') IS NULL
+                      AND (t.value -> 'right' -> 'function' ->> 'function_name') IS DISTINCT FROM 'unnest' THEN 'COMMA'
                  WHEN (t.value ->> 'ref_type') = 'REGULAR' THEN t.value ->> 'join_type'
                  ELSE t.value ->> 'ref_type' END END AS join_kind,
        t.value -> 'right' ->> 'type' AS join_right_type,

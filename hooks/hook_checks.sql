@@ -351,8 +351,8 @@ WITH primary_checks AS (SELECT unnest([
  'action': 'warn', 'hook_event': 'PreToolUse', 'hook_decision': 'context', 'replaces_hooks': []::VARCHAR[]},
 -- ── SQL: corrections from Alok's 2026-10-17 messages ───────────────────────────────────────────────
 {'check_id': 'sql_printf', 'rule_id': '01a14c82-594d-7793-a978-179b5198a744', 'tools': ['@sql'],
- 'predicate_sql': $p$list_has_any(sql_functions, ['printf', 'format'])$p$,
- 'message': 'No printf / format: declare the parts as columns in the first CTE and render with tera_render (10-17: a command built in one printf string is unreadable).',
+ 'predicate_sql': $p$len(list_filter(sql_function_calls, f -> f.name IN ('printf', 'format') AND list_has_any([contains(coalesce(f.literals[1], ''), '%s'), contains(coalesce(f.literals[1], ''), '{}')], [true]))) > 0$p$,
+ 'message': 'No text built with printf / format: declare the parts as columns in the first CTE and render with tera_render (10-17: a command built in one printf string is unreadable). Number formatting (%.4f, %,d) is fine.',
  'action': 'block', 'hook_event': 'PreToolUse', 'hook_decision': 'deny', 'replaces_hooks': []::VARCHAR[]},
 {'check_id': 'sql_base64', 'rule_id': '01a14840-e49f-7c41-afbf-5663d410da30', 'tools': ['@sql'],
  'predicate_sql': $p$list_has_any(sql_functions, ['to_base64', 'from_base64', 'base64'])$p$,
