@@ -58,6 +58,37 @@ cmd or sql, else the whole input). The raw store below is for fields neither car
 - **agent_data:** `read_conversations` is only for one file the store doesn't hold yet, with
   `path := '<that file>'`. Never point it at `~/.claude` or `~/.codex`.
 
+## Now: what every session is doing
+
+Start here when asked about "the chat", "a session" or anything happening right now. Concurrent sessions
+include other terminals and Claude Desktop. `agent.messages` is one row per message block, with `session_id`,
+`timestamp`, `message_role`, `block_type`, `is_prompt`, `is_agent` (a subagent row), `head`/`tail` (cut text)
+and `file_path`.
+
+The last hour comes first and round-robin: each live session's newest row, then each one's next row back. After
+the hour, rows run back through the day one session at a time, newest session first. Never
+`ORDER BY session, ts`: that walks one session's whole history before showing any other.
+
+```sql
+WITH day AS (
+  SELECT session_id, timestamp AS ts, message_role AS role, head,
+         max(timestamp) OVER (PARTITION BY session_id) AS last_ts,
+         row_number() OVER (PARTITION BY session_id ORDER BY timestamp DESC) AS back
+  FROM agent.messages
+  WHERE timestamp > now() - INTERVAL 24 HOUR AND block_type = 'text' AND NOT is_agent
+    AND CASE message_role WHEN 'user' THEN is_prompt ELSE true END
+), ordered AS (
+  SELECT CASE WHEN ts > now() - INTERVAL 1 HOUR THEN 1 ELSE 2 END AS tier, *
+  FROM day
+)
+SELECT tier, back, session_id, ts, role, head
+FROM ordered
+ORDER BY tier, CASE WHEN tier = 1 THEN back END, last_ts DESC, ts DESC
+LIMIT 20;
+```
+
+`head` is cut. For a message's full text, read `message.content` from `read_ndjson(file_path)` at that timestamp.
+
 ## Turns: each prompt and the reply that closed it
 
 Each prompt pairs with the last assistant text before the next prompt. `reply IS NULL` means no reply yet.
