@@ -245,7 +245,7 @@ SELECT receipt.* FROM dispatched CROSS JOIN UNNEST(receipts) AS t(receipt);
 -- ## Verification: both sides of a DuckDB-vs-Python claim, joined on the input (Opus 5.5, 2026-10-17)
 -- when: reading back an agent-log `type=verification` row whose query was <duckdb side> UNION ALL BY NAME <python side> (agent-dispatch section 3).
 -- uses: read_parquet (core).
--- returns: one row per input: raw, duckdb_type, duckdb_iso, python_type, python_iso, python_error VARCHAR, missing_duckdb, missing_python, type_differs BOOLEAN; a missing_* row is an input only one side produced.
+-- returns: one row per input: raw, duckdb_row and python_row (each side's whole logged row as a STRUCT, query_was_ran and markdown_notes included), missing_duckdb, missing_python, differs BOOLEAN; a missing_* row is an input only one side produced. <compared column> is the output both sides print (value_type in the example).
 -- tested: T4 fromisoformat proposal vs the INF-1535 classifier, 19 inputs, 3 disagreements (all Python errors).
 WITH logged AS (
   SELECT * FROM read_parquet('<agent_log_dir>/type=verification/**/*.parquet', hive_partitioning := true, union_by_name := true)
@@ -255,8 +255,8 @@ WITH logged AS (
 ), python_side AS (
   SELECT * FROM logged WHERE side = 'python'
 )
-SELECT raw, d.value_type AS duckdb_type, d.iso AS duckdb_iso, p.value_type AS python_type, p.iso AS python_iso, p.error AS python_error,
+SELECT raw, d AS duckdb_row, p AS python_row,
        d.side IS NULL AS missing_duckdb, p.side IS NULL AS missing_python,
-       d.value_type IS DISTINCT FROM p.value_type AS type_differs
+       d.<compared column> IS DISTINCT FROM p.<compared column> AS differs
 FROM duckdb_side d FULL JOIN python_side p USING (raw)
-ORDER BY type_differs DESC, raw;
+ORDER BY differs DESC, raw;

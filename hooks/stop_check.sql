@@ -6,6 +6,10 @@
 LOAD shellfs;
 LOAD tera;
 .output /dev/null
+-- The phrases that mark a reply as weighing DuckDB against Python; extend by adding a row.
+CREATE OR REPLACE VIEW claim_terms AS
+SELECT unnest(['stdlib', 'standard library', 'fromisoformat', 'plain python', 'lines of python', 'python instead',
+               'replace duckdb', 'drop duckdb', 'remove duckdb', 'instead of duckdb', 'without duckdb', 'new dependency']) AS term;
 CREATE OR REPLACE VIEW transcript AS
 SELECT idx, json ->> 'type' AS line_type, json -> 'message' -> 'content' AS content
 FROM read_json_objects('cat "$STOP_TRANSCRIPT" |', format := 'newline_delimited') WITH ORDINALITY AS t(json, idx);
@@ -20,20 +24,20 @@ CREATE OR REPLACE VIEW last_prompt AS
 SELECT max(idx) AS idx FROM block_fields
 WHERE line_type = 'user' AND block_type = 'text' AND NOT starts_with(ltrim(text), '<');
 CREATE OR REPLACE VIEW final_turn_blocks AS
-SELECT b.idx, b.text, contains(b.text, 'duckdb') AS names_duckdb,
-       list_filter(['stdlib', 'standard library', 'fromisoformat', 'plain python', 'lines of python', 'python instead',
-                    'replace duckdb', 'drop duckdb', 'remove duckdb', 'instead of duckdb', 'without duckdb', 'new dependency'],
-                   term -> contains(b.text, term)) AS terms
+SELECT b.idx, b.text, contains(b.text, 'duckdb') AS names_duckdb
 FROM block_fields b JOIN last_prompt p ON b.idx > p.idx
 WHERE b.line_type = 'assistant' AND b.block_type = 'text';
+CREATE OR REPLACE VIEW term_hits AS
+SELECT f.idx, t.term FROM final_turn_blocks f JOIN claim_terms t ON contains(f.text, t.term);
 CREATE OR REPLACE VIEW verification_calls AS
 SELECT idx FROM block_fields WHERE block_type = 'tool_use' AND contains(input, $v$'verification' AS type$v$);
 CREATE OR REPLACE VIEW claim AS
-SELECT list_distinct(flatten(list(terms))) AS terms FROM final_turn_blocks HAVING bool_or(names_duckdb);
+SELECT array_agg(DISTINCT term ORDER BY term) AS terms FROM term_hits;
 .output stdout
 .mode list
 .headers off
 SELECT json_object('decision', 'block', 'reason', tera_render(
        $t$stop_check: this reply weighs DuckDB against Python/stdlib ({{ terms | join(sep=", ") }}) and this session has no agent-log row with type 'verification'. Run both in one agent-log COPY, the DuckDB side as SQL UNION ALL BY NAME the Python side as a shellfs uv run python reader, with type 'verification' (agent-dispatch section 3), or drop the claim and say it was not run.$t$,
        json_object('terms', terms), autoescape := false)) AS hook_output
-FROM claim WHERE len(terms) > 0 AND NOT EXISTS (FROM verification_calls);
+FROM claim
+WHERE len(terms) > 0 AND EXISTS (FROM final_turn_blocks WHERE names_duckdb) AND NOT EXISTS (FROM verification_calls);

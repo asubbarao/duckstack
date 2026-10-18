@@ -152,13 +152,27 @@ ran it, and the lead passed it on. When run, it mistyped week dates and `+HH:MM`
 crashed on year-1 offsets. The same claim had already been disproved on 10-15: the Python version
 needed a regex and grew to 74 lines.
 
-**The verification row is one agent-log COPY that runs both sides.** Its query is
-`<duckdb side> UNION ALL BY NAME <python side>`:
-- **DuckDB side:** native SQL over the inputs, tagged `'duckdb' AS side`.
-- **Python side:** one shellfs reader, `read_json($cmd$/opt/homebrew/bin/uv run --quiet --no-project
-  python - <<'PY' … PY |$cmd$, format := 'newline_delimited')`. The reader infers the columns. The
-  script prints one JSON line per input with the same column names as the DuckDB side and puts an
-  exception's type in an `error` column. It is tagged `'python' AS side`.
+**The verification row is one agent-log COPY that runs both sides.** The inputs are written once:
+```sql
+WITH python_side AS (       -- first CTE: holds the inputs and runs the proposal on them
+    SELECT 'python' AS side, * FROM read_json($cmd$/opt/homebrew/bin/uv run --quiet --no-project python - <<'PY'
+import json
+for raw in [<inputs>]:
+    try:
+        print(json.dumps(dict(raw=raw, <compared column>=<proposal>(raw), error=None)))
+    except Exception as e:
+        print(json.dumps(dict(raw=raw, <compared column>=None, error=type(e).__name__)))
+PY
+|$cmd$, format := 'newline_delimited')
+), duckdb_side AS (         -- the same inputs, read from the Python side's own rows
+    SELECT 'duckdb' AS side, raw, <duckdb expression over raw> AS <compared column> FROM python_side
+)
+SELECT * FROM duckdb_side UNION ALL BY NAME SELECT * FROM python_side
+```
+The reader infers the columns. An input the proposal crashes on is still a row, with its
+exception type in `error`. A self-dispatched Python side does not fit here: `selfdispatch` returns
+receipts (`status`, `body`), not the script's columns, so the two sides would not line up by name.
+Verified 2026-10-18 on dev.
 
 The same `$query$` token is stored as `query_was_ran` and executed, and `markdown_notes` carries
 the worker's reading. Every row is a result one engine actually produced. A worker who wants to
