@@ -61,8 +61,17 @@ TO '/Users/aloksubbarao/.duck/agent_log/signed'
   only; never mix the two depths in one directory — `read_parquet('**/*.parquet',
   hive_partitioning := true)` fails with "Hive partition mismatch … key agent_signature not found".
 
-No `dev` MCP attached? A local `duckdb :memory:` client already has `selfdispatch` (from `~/.duckdbrc`), so
-post the same statement through it: `SELECT selfdispatch($s$<the COPY statement>$s$)`. Never curl dev.
+No `dev` MCP attached? A local `duckdb :memory:` client already has `selfdispatch`: `~/.duckdbrc` reads
+dev's own `server/macros.sql`. Post the same statement through it, never curl dev:
+
+```sql
+WITH intent AS (
+    SELECT $s$<the COPY statement>$s$ AS sql
+), dispatched AS (
+    SELECT array_agg(selfdispatch(sql)) AS receipts FROM intent
+)
+SELECT receipt.* FROM dispatched CROSS JOIN UNNEST(receipts) AS t(receipt);
+```
 
 Read it back with the same tool:
 
@@ -170,7 +179,7 @@ WHERE receipt.body <> '[]'   -- a row here is an agent whose logged result is no
 ## Dispatching subagents
 
 Give the worker its full `<AGENT>` label (system-model-version-thinking), its session id and a `type`, and tell it to run the COPY above
-through the `dev` MCP `execute` tool (or the local JSON POST, with `<DIR>`, for programs) — nothing else. It writes its own rows; you do
+through the `dev` MCP `execute` tool (or `selfdispatch` from a local client, as above) — nothing else. It writes its own rows; you do
 not collect them, and a worker that fails writes a row saying so. Then read the directory.
 
 ## Signed notes, decisions, and artifacts

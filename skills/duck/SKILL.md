@@ -118,7 +118,8 @@ What each path can and cannot do. The `dev.` rows need an ATTACH and so are unav
 | `quack_query(…, $$SET …$$)` | "configuration has been locked" |
 | after a launchd restart | nothing to re-establish — `quack_query` holds no session |
 
-Macros defined on dev do not resolve client-side; call them inside the body.
+Macros created on dev at runtime do not resolve client-side; call them inside the body. The ones in
+`server/macros.sql` (`selfdispatch` among them) do, because `~/.duckdbrc` reads that same file.
 
 ## 4. The reference repos — what the pattern actually is
 
@@ -141,7 +142,7 @@ terminal / to_retry (two `WHERE`s). Retry is an unrolled ladder gated by CTE car
 
 **Self-dispatch** — *the database writes the statement it cannot bind, then runs it.* Table
 functions bind literals; a scalar takes columns; so build the statement per row and hand it to
-a scalar that runs SQL. That scalar is `selfdispatch(sql)` (server/macros.sql), which posts the statement to dev's
+a scalar that runs SQL. That scalar is `selfdispatch(sql)` (server/macros.sql, which `~/.duckdbrc` also reads), which posts the statement to dev's
 own `/sql`: `array_agg(selfdispatch(sql))`, then `CROSS JOIN UNNEST` of the receipts. The post always goes to dev
 itself; whatever varies by row (a URL, a command, a file) goes inside the statement. No hand-written
 `quackapi_post`/`http_post`, no URL per row, no `url_build` (it segfaults on per-row arguments). See

@@ -149,7 +149,8 @@ WITH intent AS (                          -- what is being done, as data
 SELECT r.* FROM dispatched CROSS JOIN UNNEST(receipts) AS t(r);
 ```
 
-The owner's own examples (2026-10-17). The first CTE declares everything; tera only substitutes; the
+The owner's own examples (2026-10-17); he wrote the post out as `quackapi_post(...)`, written here as
+`selfdispatch(sql)`, the same call since PR #50. The first CTE declares everything; tera only substitutes; the
 reader is `SELECT *` and brings its own columns; the result is `receipt.*`:
 
 ```sql
