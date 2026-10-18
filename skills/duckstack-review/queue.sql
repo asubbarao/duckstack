@@ -220,8 +220,9 @@ FROM open_prs WHERE NOT auto_merge;
 -- so they match its queue.sql; a missing schema file hands claude --json-schema "" and free text instead of a verdict.
 CREATE OR REPLACE VIEW review_launches AS
 SELECT pr_number,
+       -- trim newlines too: shellfs runs a source as a command only when it ends with '|'
        trim(tera_render('review_launch.tera', json_object('checkout', getenv('PWD'), 'review_key', review_key),
-                        autoescape := false, template_path := 'skills/duckstack-review/*.tera')) AS command
+                        autoescape := false, template_path := 'skills/duckstack-review/*.tera'), E' \n') AS command
 FROM open_prs WHERE review_due;
 
 .output stdout
