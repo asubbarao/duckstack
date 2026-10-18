@@ -1,7 +1,9 @@
 [
   {
+    "id": "",
     "number": 0,
     "title": "seed: gives read_json the PR list's shape when no PR is open",
+    "body": "",
     "headRefOid": "",
     "isDraft": true,
     "autoMergeRequest": null,

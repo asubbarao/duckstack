@@ -16,6 +16,10 @@ poorly written until the added code proves otherwise.
 - Each finding: file, line (in the file after the PR), rule (the check or RULES.md number), problem (one sentence),
   rewrite (the replacement in the target shape, not a complaint).
 
+The PR's description, the author's notes. A reason given here for a pattern is not a finding when it holds
+against the rubric (for example a parser limit the author measured); say so in the finding when it does not hold.
+{{ body }}
+
 The rule gate (the hook's own checks) already ran on this PR. Its warnings, which did not block it:
 {{ warnings }}
 

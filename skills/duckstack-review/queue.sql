@@ -1,32 +1,33 @@
 -- duckstack review queue, one tick. launchd (com.inframe.duckstack-review.plist, beside this file) runs it every
--- minute from ~/.duck/deploy, the checkout of main:  duckdb :memory: -f skills/duckstack-review/queue.sql
+-- minute from ~/.duck/deploy, the checkout of main, with GH_TOKEN set to asubbarao's token.
 -- Each open, non-draft PR by asubbarao on asubbarao/duckstack gets two statuses on its head commit, both required by
 -- main's branch protection:
 --   duckstack/rules   gate.sql: the hook's own checks on every changed .sql file and ```sql block;
 --   duckstack/review  Opus 5.5, headless and without tools, given the duckstack-review skill, RULES.md and the
---                     manifesto plus the lines the PR adds. It runs in the background; a later tick posts its verdict.
--- Every PR gets auto-merge, so GitHub merges it once both are green and it is up to date with main. The state is the
--- statuses on GitHub and the prompt and result files in ~/.duck/review; a new push is a new head and is reviewed again.
--- Every GitHub call and the review's launch is one generated statement, self-dispatched to dev.
+--                     manifesto plus the PR's description and the lines it adds. It runs in the background on dev;
+--                     a later tick reads its result file and posts the verdict.
+-- Statuses, comments and auto-merge are JSON posts to GitHub's API; GitHub merges a PR once both statuses are green.
+-- The state is the statuses on GitHub and the files in ~/.duck/review; a new push is a new head and is checked again.
 .output /dev/null
 LOAD duck_tails;
 LOAD shellfs;
 LOAD scalarfs;
 LOAD tera;
-SELECT * FROM read_lines('mkdir -p /Users/aloksubbarao/.duck/review/prompts /Users/aloksubbarao/.duck/review/results; cp -n skills/duckstack-review/review_seed.json /Users/aloksubbarao/.duck/review/results/0-seed.json; git -C /Users/aloksubbarao/duckdb-skills fetch -q origin +refs/heads/main:refs/remotes/origin/main ''+refs/pull/*/head:refs/remotes/origin/pr/*'' 2>&1 |');
+LOAD markdown;
+SELECT * FROM read_lines($cmd$mkdir -p /Users/aloksubbarao/.duck/review/prompts /Users/aloksubbarao/.duck/review/results; git -C /Users/aloksubbarao/duckdb-skills fetch -q origin +refs/heads/main:refs/remotes/origin/main '+refs/pull/*/head:refs/remotes/origin/pr/*' 2>&1 |$cmd$);
 
--- The PR list is read once into a ScalarFS variable: every view below refers to it, and a reader in a view runs
--- again at each reference. The seed is one draft row, so read_json has the list's shape when no PR is open.
+-- The PR list is read once into a ScalarFS variable: every view below refers to it, and a reader inside a view runs
+-- again at each reference. The seed is one draft row, so read_json still has the list's shape when no PR is open.
 COPY (SELECT * FROM read_json(['skills/duckstack-review/queue_seed.json',
-                               'GH_TOKEN=$(/opt/homebrew/bin/gh auth token --user asubbarao) /opt/homebrew/bin/gh pr list --repo asubbarao/duckstack --state open --author asubbarao --json number,title,headRefOid,isDraft,autoMergeRequest,statusCheckRollup |'],
+                               '/opt/homebrew/bin/gh pr list --repo asubbarao/duckstack --state open --author asubbarao --json id,number,title,body,headRefOid,isDraft,autoMergeRequest,statusCheckRollup |'],
                               union_by_name := true))
 TO 'variable:open_prs.json' (FORMAT json);
 CREATE OR REPLACE VIEW open_prs AS
-SELECT number AS pr_number, title, headRefOid AS head_sha, concat_ws('-', number, left(headRefOid, 12)) AS review_key,
+SELECT id AS pr_id, number AS pr_number, title, body, headRefOid AS head_sha, concat_ws('-', number, left(headRefOid, 12)) AS review_key,
        autoMergeRequest IS NOT NULL AS auto_merge,
        upper(list_filter(statusCheckRollup, s -> s.context = 'duckstack/rules')[1].state) AS rules_state,
        upper(list_filter(statusCheckRollup, s -> s.context = 'duckstack/review')[1].state) AS review_state,
-       'GH_TOKEN=$(/opt/homebrew/bin/gh auth token --user asubbarao) /opt/homebrew/bin/gh' AS gh
+       '/Users/aloksubbarao/duckdb-skills' AS repo
 FROM read_json('variable:open_prs.json')
 WHERE NOT isDraft;
 
@@ -35,40 +36,40 @@ CREATE OR REPLACE VIEW pr_changes AS
 WITH main_history AS (
     SELECT commit_hash FROM git_log('/Users/aloksubbarao/duckdb-skills', 'origin/main')
 ), pr_history AS (
-    SELECT open_prs.pr_number, open_prs.head_sha, pr_log.commit_hash, pr_log.commit_date
-    FROM open_prs CROSS JOIN LATERAL git_log_each('/Users/aloksubbarao/duckdb-skills', open_prs.head_sha) AS pr_log
+    SELECT open_prs.pr_number, open_prs.repo, open_prs.head_sha, pr_log.commit_hash, pr_log.commit_date
+    FROM open_prs CROSS JOIN LATERAL git_log_each(open_prs.repo, open_prs.head_sha) AS pr_log
 ), pr_bases AS (
-    SELECT pr_number, head_sha, arg_max(commit_hash, commit_date) AS base_sha
-    FROM pr_history SEMI JOIN main_history USING (commit_hash) GROUP BY pr_number, head_sha
+    SELECT pr_number, repo, head_sha, arg_max(commit_hash, commit_date) AS base_sha
+    FROM pr_history SEMI JOIN main_history USING (commit_hash) GROUP BY pr_number, repo, head_sha
 )
-SELECT pr_bases.pr_number, pr_bases.head_sha, pr_bases.base_sha, changed.file_path, changed.status
-FROM pr_bases CROSS JOIN LATERAL git_diff_tree_each('/Users/aloksubbarao/duckdb-skills', pr_bases.base_sha, pr_bases.head_sha) AS changed;
+SELECT pr_bases.pr_number, pr_bases.repo, pr_bases.head_sha, pr_bases.base_sha, changed.file_path, changed.status
+FROM pr_bases CROSS JOIN LATERAL git_diff_tree_each(pr_bases.repo, pr_bases.base_sha, pr_bases.head_sha) AS changed;
 
 CREATE OR REPLACE VIEW pr_files AS
 SELECT pr_changes.pr_number, pr_changes.file_path, pr_changes.status, blob.text AS content
-FROM pr_changes CROSS JOIN LATERAL git_read_each(git_uri('/Users/aloksubbarao/duckdb-skills', pr_changes.file_path, pr_changes.head_sha)) AS blob
+FROM pr_changes CROSS JOIN LATERAL git_read_each(git_uri(pr_changes.repo, pr_changes.file_path, pr_changes.head_sha)) AS blob
 WHERE pr_changes.status <> 'deleted' AND blob.is_text;
 
 .read skills/duckstack-review/gate.sql
 
--- The lines a PR adds: a line counts as added when the new file holds more copies of it than the old one.
+-- The lines a PR adds: of a line's numbers in the new file, those past the old file's copies of it.
 CREATE OR REPLACE VIEW pr_added_lines AS
 WITH new_lines AS (
-    SELECT pr_number, file_path, split.line_number, split.line,
-           row_number() OVER (PARTITION BY pr_number, file_path, split.line ORDER BY split.line_number) AS copy_number
+    SELECT pr_number, file_path, split.line, list(split.line_number ORDER BY split.line_number) AS line_numbers
     FROM pr_files CROSS JOIN UNNEST(string_split(content, E'\n')) WITH ORDINALITY AS split(line, line_number)
+    GROUP BY ALL
 ), old_lines AS (
     SELECT pr_changes.pr_number, pr_changes.file_path, old.line, count(old.line) AS copies
-    FROM pr_changes CROSS JOIN LATERAL git_read_each(git_uri('/Users/aloksubbarao/duckdb-skills', pr_changes.file_path, pr_changes.base_sha)) AS blob
+    FROM pr_changes CROSS JOIN LATERAL git_read_each(git_uri(pr_changes.repo, pr_changes.file_path, pr_changes.base_sha)) AS blob
     CROSS JOIN UNNEST(string_split(blob.text, E'\n')) AS old(line)
     WHERE pr_changes.status = 'modified' AND blob.is_text
     GROUP BY ALL
 )
-SELECT new_lines.pr_number, new_lines.file_path, new_lines.line_number, new_lines.line
+SELECT new_lines.pr_number, new_lines.file_path, added.line_number, new_lines.line
 FROM new_lines LEFT JOIN old_lines USING (pr_number, file_path, line)
-WHERE new_lines.copy_number > coalesce(old_lines.copies, 0);
+CROSS JOIN UNNEST(new_lines.line_numbers[coalesce(old_lines.copies, 0) + 1:]) AS added(line_number);
 
--- One prompt per PR that passed the rules and has no review yet; the launch command puts the rubric in front of it.
+-- One prompt per PR that passed the rules and has no review yet; the launch puts the rubric files in front of it.
 CREATE OR REPLACE VIEW review_prompts AS
 WITH added_by_file AS (
     SELECT pr_number, file_path, string_agg(concat_ws(': ', line_number, line), E'\n' ORDER BY line_number) AS added
@@ -85,115 +86,148 @@ The whole file after the PR
 $t$, json_object('file_path', pr_files.file_path, 'status', pr_files.status, 'added', added_by_file.added, 'content', pr_files.content),
                        autoescape := false) AS section
     FROM pr_files JOIN added_by_file USING (pr_number, file_path)
+    WHERE pr_files.file_path <> 'hooks/check_hits.sql'   -- generated from hook_checks.sql by render_hits.sql
 ), warnings AS (
     SELECT pr_number, string_agg(concat_ws(' ', file_path, check_id, message), E'\n') AS warnings
     FROM pr_rule_hits WHERE action = 'warn' GROUP BY pr_number
 )
 SELECT open_prs.review_key,
        tera_render('review_prompt.tera',
-                   json_object('number', open_prs.pr_number, 'title', open_prs.title, 'warnings', coalesce(warnings.warnings, 'none'),
+                   json_object('number', open_prs.pr_number, 'title', open_prs.title, 'body', open_prs.body,
+                               'warnings', coalesce(warnings.warnings, 'none'),
                                'files', string_agg(file_sections.section, E'\n' ORDER BY file_sections.file_path)),
                    autoescape := false, template_path := 'skills/duckstack-review/*.tera') AS prompt
 FROM open_prs JOIN file_sections USING (pr_number) LEFT JOIN warnings USING (pr_number)
 WHERE open_prs.rules_state = 'SUCCESS' AND open_prs.review_state IS NULL
-GROUP BY open_prs.review_key, open_prs.pr_number, open_prs.title, warnings.warnings;
+GROUP BY open_prs.review_key, open_prs.pr_number, open_prs.title, open_prs.body, warnings.warnings;
 
 -- One prompt file per PR, prompts/review_key=<pr>-<sha>/data_0.csv, written raw (no quoting, no header).
 COPY (SELECT review_key, prompt FROM review_prompts)
 TO '/Users/aloksubbarao/.duck/review/prompts'
 (FORMAT csv, HEADER false, QUOTE '', ESCAPE '', DELIMITER E'\x1f', PARTITION_BY (review_key), OVERWRITE_OR_IGNORE true);
 
--- Finished reviews, keyed by file name. The seed is there so the glob always matches.
+-- Finished reviews of pending PRs: one read per result file, self-dispatched. The answer is the JSON in claude's
+-- result, bare or in a ```json block; a result that is not JSON leaves review NULL, which posts 'error'.
 CREATE OR REPLACE VIEW review_results AS
-SELECT parse_filename(filename, true) AS review_key, is_error,
-       structured_output.verdict AS verdict, structured_output.findings AS findings
-FROM read_json('/Users/aloksubbarao/.duck/review/results/*.json', filename := true, union_by_name := true, ignore_errors := true);
-
--- Every call this tick makes: one row per PR and command.
-CREATE OR REPLACE VIEW queue_commands AS
-WITH rules_lines AS (
-    SELECT pr_number, bool_or(action = 'block') AS blocked,
-           string_agg(concat_ws(' ', '-', concat('**', action, '**'), concat('`', check_id, '`'), 'in', file_path, '-', message), E'\n'
-                      ORDER BY action, file_path) AS lines
-    FROM pr_rule_hits GROUP BY pr_number
-), rules_due AS (
-    SELECT open_prs.pr_number, open_prs.head_sha, open_prs.gh, coalesce(rules_lines.blocked, false) AS blocked, rules_lines.lines
-    FROM open_prs LEFT JOIN rules_lines USING (pr_number)
-    WHERE open_prs.rules_state IS NULL
-), review_due AS (
-    SELECT pr_number, head_sha, gh, review_key FROM open_prs WHERE rules_state = 'SUCCESS' AND review_state IS NULL
-), finding_lines AS (
-    SELECT review_key, string_agg(concat_ws(' ', '-', concat('`', finding.file, ':', finding.line, '`'), concat('**', finding.rule, '**'),
-                                            finding.problem, E'\n  Rewrite:', finding.rewrite), E'\n') AS lines
-    FROM review_results CROSS JOIN UNNEST(findings) AS each_finding(finding)
-    WHERE finding.file <> '' GROUP BY review_key
-), review_done AS (
-    SELECT open_prs.pr_number, open_prs.head_sha, open_prs.gh,
-           CASE review_results.verdict WHEN 'clean' THEN 'success' WHEN 'changes' THEN 'failure' ELSE 'error' END AS state,
-           finding_lines.lines
-    FROM open_prs JOIN review_results USING (review_key) LEFT JOIN finding_lines USING (review_key)
+WITH result_files AS (
+    SELECT open_prs.review_key, result_file.file AS path
+    FROM open_prs JOIN glob('/Users/aloksubbarao/.duck/review/results/*.json') AS result_file
+      ON parse_filename(result_file.file, true) = open_prs.review_key
     WHERE open_prs.review_state = 'PENDING'
+), rendered AS (
+    SELECT review_key, tera_render($t$SELECT is_error, result FROM read_json('{{ path }}')$t$, f::JSON, autoescape := false) AS sql
+    FROM result_files AS f
+), dispatched AS (
+    SELECT array_agg({review_key: review_key, receipt: selfdispatch(sql)}) AS receipts FROM rendered
+), result_rows AS (
+    SELECT sent.review_key, result_row
+    FROM dispatched CROSS JOIN UNNEST(receipts) AS each_receipt(sent)
+    CROSS JOIN UNNEST(TRY_CAST(sent.receipt.body AS JSON[])) AS each_row(result_row)
+)
+SELECT review_key,
+       TRY_CAST(coalesce(md_extract_code_blocks(result_row ->> 'result')[1].code, result_row ->> 'result') AS JSON) AS review
+FROM result_rows;
+
+-- Every GitHub post this tick makes: statuses (descriptions as rows), comments, and auto-merge.
+CREATE OR REPLACE VIEW github_posts AS
+WITH status_text AS (
+    SELECT unnest([
+        {'context': 'duckstack/rules',  'state': 'failure', 'description': 'Blocking rule hits; see the PR comment'},
+        {'context': 'duckstack/rules',  'state': 'success', 'description': 'No blocking rule hits'},
+        {'context': 'duckstack/review', 'state': 'pending', 'description': 'Opus 5.5 is reviewing'},
+        {'context': 'duckstack/review', 'state': 'success', 'description': 'Opus 5.5: clean'},
+        {'context': 'duckstack/review', 'state': 'failure', 'description': 'Opus 5.5: changes needed; see the PR comment'},
+        {'context': 'duckstack/review', 'state': 'error',   'description': 'The review gave no verdict; push again to rerun'}
+    ], recursive := true)
+), rules_verdicts AS (
+    SELECT open_prs.pr_number, open_prs.head_sha,
+           CASE WHEN coalesce(bool_or(pr_rule_hits.action = 'block'), false) THEN 'failure' ELSE 'success' END AS state
+    FROM open_prs LEFT JOIN pr_rule_hits USING (pr_number)
+    WHERE open_prs.rules_state IS NULL GROUP BY open_prs.pr_number, open_prs.head_sha
+), review_verdicts AS (
+    SELECT open_prs.pr_number, open_prs.head_sha, open_prs.review_key,
+           CASE review_results.review ->> 'verdict' WHEN 'clean' THEN 'success' WHEN 'changes' THEN 'failure' ELSE 'error' END AS state
+    FROM open_prs JOIN review_results USING (review_key)
+), due_statuses AS (
+    SELECT pr_number, head_sha, 'duckstack/rules' AS context, state FROM rules_verdicts
+    UNION ALL
+    SELECT pr_number, head_sha, 'duckstack/review', 'pending' FROM open_prs WHERE rules_state = 'SUCCESS' AND review_state IS NULL
+    UNION ALL
+    SELECT pr_number, head_sha, 'duckstack/review', state FROM review_verdicts
+), hit_lines AS (
+    SELECT hit.pr_number, hit.action, hit.file_path,
+           tera_render($t$- **{{ action }}** `{{ check_id }}` in {{ file_path }}: {{ message }}$t$, hit::JSON, autoescape := false) AS line
+    FROM pr_rule_hits AS hit
+), finding_lines AS (
+    SELECT review_key, tera_render($t$- `{{ file }}:{{ line }}` **{{ rule }}**: {{ problem }}
+  Rewrite: {{ rewrite }}$t$, finding, autoescape := false) AS line
+    FROM review_results CROSS JOIN UNNEST(TRY_CAST(review -> 'findings' AS JSON[])) AS each_finding(finding)
 ), comments AS (
-    SELECT pr_number, gh, tera_render($t$**duckstack/rules: {{ verdict }}**
+    SELECT rules_verdicts.pr_number,
+           tera_render($t$**duckstack/rules: {{ state }}**
 
 {{ lines }}
 
 _duckstack review queue, rule gate (hooks/hook_checks.sql)_$t$,
-           json_object('verdict', CASE WHEN blocked THEN 'blocked' ELSE 'passed with warnings' END, 'lines', lines), autoescape := false) AS body
-    FROM rules_due WHERE lines IS NOT NULL
+                       json_object('state', rules_verdicts.state, 'lines', string_agg(hit_lines.line, E'\n' ORDER BY hit_lines.action, hit_lines.file_path)),
+                       autoescape := false) AS body
+    FROM rules_verdicts JOIN hit_lines USING (pr_number)
+    GROUP BY rules_verdicts.pr_number, rules_verdicts.state
     UNION ALL
-    SELECT pr_number, gh, tera_render($t$**duckstack/review: {{ state }}**
+    SELECT review_verdicts.pr_number,
+           tera_render($t$**duckstack/review: {{ state }}**
 
 {{ lines }}
 
 _Opus 5.5, duckstack review queue (duckstack-review skill)_$t$,
-           json_object('state', state, 'lines', coalesce(lines, 'No findings.')), autoescape := false) AS body
-    FROM review_done
+                       json_object('state', review_verdicts.state, 'lines', coalesce(string_agg(finding_lines.line, E'\n'), 'No findings.')),
+                       autoescape := false) AS body
+    FROM review_verdicts LEFT JOIN finding_lines USING (review_key)
+    GROUP BY review_verdicts.pr_number, review_verdicts.state
 )
-SELECT pr_number, concat_ws(' ', gh, 'api', concat('repos/asubbarao/duckstack/statuses/', head_sha), '-f context=duckstack/rules',
-                            CASE WHEN blocked THEN '-f state=failure -f description="Blocking rule hits; see the PR comment"'
-                                 ELSE '-f state=success -f description="No blocking rule hits"' END) AS command
-FROM rules_due
+SELECT pr_number, concat('https://api.github.com/repos/asubbarao/duckstack/statuses/', head_sha) AS url,
+       json_object('context', context, 'state', state, 'description', status_text.description) AS payload
+FROM due_statuses JOIN status_text USING (context, state)
 UNION ALL
-SELECT pr_number, concat_ws(' ', gh, 'pr comment', pr_number, '--repo asubbarao/duckstack --body',
-                            concat($q$'$q$, replace(body, $q$'$q$, $q$'"'"'$q$), $q$'$q$))
+SELECT pr_number, concat('https://api.github.com/repos/asubbarao/duckstack/issues/', pr_number, '/comments'), json_object('body', body)
 FROM comments
 UNION ALL
-SELECT pr_number, concat_ws(' ', gh, 'api', concat('repos/asubbarao/duckstack/statuses/', head_sha),
-                            '-f context=duckstack/review -f state=pending -f description="Opus 5.5 is reviewing"')
-FROM review_due
-UNION ALL
-SELECT pr_number, concat_ws(' ', '(cd /Users/aloksubbarao/.duck/review && cat',
-                            '/Users/aloksubbarao/.duck/deploy/skills/duckstack-review/SKILL.md',
-                            '/Users/aloksubbarao/.duck/deploy/skills/self-dispatch/RULES.md',
-                            '/Users/aloksubbarao/.duck/deploy/SQL-MANIFESTO.md',
-                            concat('prompts/review_key=', review_key, '/data_0.csv'),
-                            '| /Users/aloksubbarao/.local/bin/claude -p --model claude-opus-5-5 --tools "" --output-format json',
-                            '--no-session-persistence --strict-mcp-config --disable-slash-commands',
-                            $q$--settings '{"disableAllHooks": true}'$q$,
-                            '--json-schema "$(cat /Users/aloksubbarao/.duck/deploy/skills/duckstack-review/review_schema.json)"',
-                            concat('> results/', review_key, '.part 2>&1; mv results/', review_key, '.part results/', review_key, '.json)'),
-                            '> /dev/null 2>&1 & echo $!')
-FROM review_due
-UNION ALL
-SELECT pr_number, concat_ws(' ', gh, 'api', concat('repos/asubbarao/duckstack/statuses/', head_sha), '-f context=duckstack/review',
-                            concat('-f state=', state), CASE state WHEN 'success' THEN '-f description="Opus 5.5: clean"'
-                                                                   WHEN 'failure' THEN '-f description="Opus 5.5: changes needed; see the PR comment"'
-                                                                   ELSE '-f description="The review did not finish; push again to rerun"' END)
-FROM review_done
-UNION ALL
-SELECT pr_number, concat_ws(' ', gh, 'pr merge', pr_number, '--repo asubbarao/duckstack --auto --merge')
+SELECT pr_number, 'https://api.github.com/graphql',
+       json_object('query', 'mutation($id: ID!) { enablePullRequestAutoMerge(input: {pullRequestId: $id, mergeMethod: MERGE}) { clientMutationId } }',
+                   'variables', json_object('id', pr_id))
 FROM open_prs WHERE NOT auto_merge;
 
+-- The review's launch, run on dev in the background: the rubric files, then this PR's prompt, into claude.
+CREATE OR REPLACE VIEW review_launches AS
+SELECT pr_number, concat_ws(' ',
+       '(cd /Users/aloksubbarao/.duck/review && cat',
+       '/Users/aloksubbarao/.duck/deploy/skills/duckstack-review/SKILL.md',
+       '/Users/aloksubbarao/.duck/deploy/skills/self-dispatch/RULES.md',
+       '/Users/aloksubbarao/.duck/deploy/SQL-MANIFESTO.md',
+       concat('prompts/review_key=', review_key, '/data_0.csv'),
+       '| /Users/aloksubbarao/.local/bin/claude -p --model claude-opus-5-5 --tools "" --output-format json',
+       '--no-session-persistence --strict-mcp-config --disable-slash-commands', $q$--settings '{"disableAllHooks": true}'$q$,
+       '--json-schema "$(cat /Users/aloksubbarao/.duck/deploy/skills/duckstack-review/review_schema.json)"',
+       concat('> results/', review_key, '.part 2>&1; mv results/', review_key, '.part results/', review_key, '.json)'),
+       '> /dev/null 2>&1 & echo $!') AS command
+FROM open_prs WHERE rules_state = 'SUCCESS' AND review_state IS NULL;
+
 .output stdout
-WITH commands AS (
-    SELECT pr_number, 'read_text' AS reader, [concat(command, ' |')] AS sources, '' AS options FROM queue_commands
+WITH posted AS (
+    SELECT array_agg({pr_number: pr_number, url: url,
+                      receipt: quackapi_post(url, payload::VARCHAR, 'application/json',
+                                             MAP {'Authorization': concat('Bearer ', getenv('GH_TOKEN')),
+                                                  'Accept': 'application/vnd.github+json', 'User-Agent': 'duckstack-review-queue'})}) AS receipts
+    FROM github_posts
 ), rendered AS (
-    SELECT pr_number, tera_render('shell.tera', c::JSON, autoescape := false,
-                                  template_path := 'skills/self-dispatch/templates/*.tera') AS sql
-    FROM commands AS c
+    SELECT pr_number, tera_render('shell.tera', json_object('reader', 'read_text', 'sources', [concat(command, ' |')], 'options', ''),
+                                  autoescape := false, template_path := 'skills/self-dispatch/templates/*.tera') AS sql
+    FROM review_launches
 ), dispatched AS (
-    SELECT array_agg({pr_number: pr_number, receipt: selfdispatch(sql)}) AS receipts FROM rendered
+    SELECT array_agg({pr_number: pr_number, url: 'review launch', receipt: selfdispatch(sql)}) AS receipts FROM rendered
 )
-SELECT now() AS ticked_at, sent.pr_number, sent.receipt.status, left(sent.receipt.error, 200) AS error
+SELECT now() AS ticked_at, sent.pr_number, sent.url, sent.receipt.status, left(sent.receipt.body, 160) AS body
+FROM posted CROSS JOIN UNNEST(receipts) AS each_receipt(sent)
+UNION ALL
+SELECT now(), sent.pr_number, sent.url, sent.receipt.status, left(sent.receipt.body, 160)
 FROM dispatched CROSS JOIN UNNEST(receipts) AS each_receipt(sent);

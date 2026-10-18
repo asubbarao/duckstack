@@ -186,7 +186,7 @@ SELECT 'sql_pattern_functions' AS check_id, call_id, tool_name, coalesce(next_pr
 UNION ALL
 SELECT 'sql_pattern_functions__tooling' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((list_has_any(sql_functions, ['regexp_matches', 'regexp_full_match', 'regexp_replace', 'regexp_extract', 'regexp_extract_all', 'regexp_split_to_array', 'regexp_split_to_table', 'string_split_regex', 'str_split_regex', 'regexp_escape'])), false)
 UNION ALL
-SELECT 'sql_printf' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((len(list_filter(sql_function_calls, f -> f.name IN ('printf', 'format') AND list_has_any([contains(coalesce(f.literals[1], ''), '%s'), contains(coalesce(f.literals[1], ''), '{}')], [true]))) > 0), false)
+SELECT 'sql_printf' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((len(list_filter(sql_function_calls, f -> f.name IN ('printf', 'format') AND len(list_filter(['%s', '{}'], pattern -> contains(f.literals[1], pattern))) > 0)) > 0), false)
 UNION ALL
 SELECT 'sql_query_constant' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((len(list_filter(sql_table_function_calls, t -> t.name IN ('query', 'query_table') AND list_contains(t.args, 'constant'))) > 0), false)
 UNION ALL

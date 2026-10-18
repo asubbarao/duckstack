@@ -53,7 +53,8 @@ writing SQL on this machine.
     (`JOIN ON true`, comma joins), `json_extract` ladders and selector-taking extractors in committed code,
     regex on backend data, `generate_subscripts`, positional `split_part` surgery (09-22, 09-23, 10-10).
 14. **Descriptive names** for CTEs and aliases; "sd is not descriptive at all" (09-22).
-15. Spell out the `array_agg` column, name it, then `array_to_string` it in the same or next CTE (09-22).
+15. Spell out the `array_agg` column and name it; turn it into text with `tera_render` (a template that substitutes
+    the array) or `string_agg` over rows, never `array_to_string`, which the hook blocks (09-22, 10-17).
 
 ## Tera
 

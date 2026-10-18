@@ -6,11 +6,11 @@
 	<key>Label</key>
 	<string>com.inframe.duckstack-review</string>
 	<key>ProgramArguments</key>
+	<!-- GH_TOKEN comes from gh's keychain login at each tick, so no token is written to a file. -->
 	<array>
-		<string>/opt/homebrew/bin/duckdb</string>
-		<string>:memory:</string>
-		<string>-f</string>
-		<string>skills/duckstack-review/queue.sql</string>
+		<string>/bin/sh</string>
+		<string>-c</string>
+		<string>export GH_TOKEN="$(/opt/homebrew/bin/gh auth token --user asubbarao)" &amp;&amp; exec /opt/homebrew/bin/duckdb :memory: -f skills/duckstack-review/queue.sql</string>
 	</array>
 	<key>WorkingDirectory</key>
 	<string>/Users/aloksubbarao/.duck/deploy</string>
