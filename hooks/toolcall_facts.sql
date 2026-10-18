@@ -145,7 +145,7 @@ WITH node_facts AS (
          list_filter(list(CASE WHEN tfn IS NOT NULL THEN {'name': tfn, 'args': arg_kinds, 'literals': literal_args} END), x -> x IS NOT NULL) AS table_function_calls,
          -- one word list per shellfs command (a table-function literal ending in '|'), split on shell punctuation
          flatten(list_filter(list(CASE WHEN tfn IS NOT NULL THEN [string_split(translate(l, E'|;&\t\n()', '        '), ' ') FOR l IN literal_args IF ends_with(rtrim(l), '|')] END), x -> x IS NOT NULL)) AS shellfs_pipes,
-         flatten(list_filter(list(CASE WHEN fn = 'tera_render' THEN literal_args END), x -> x IS NOT NULL)) AS tera_literals,
+         bool_or(template.file IS NOT NULL) AS uses_canonical_template,
          bool_or(fn = 'count_star') AS has_count_star,
          bool_or((v -> 'filter') IS NOT NULL AND cls IN ('FUNCTION', 'WINDOW')) AS has_filter_clause,
          bool_or(typ = 'EXPRESSION_LIST') AS has_values_clause,
@@ -165,19 +165,17 @@ WITH node_facts AS (
          bool_or(typ = 'SELECT_NODE' AND list_contains([(c ->> 'class') = 'SUBQUERY' AND (c ->> 'subquery_type') = 'SCALAR' FOR c IN (v -> 'select_list')::JSON[]], true)) AS has_scalar_subquery_in_select,
          bool_or(typ = 'SELECT_NODE' AND (v -> 'qualify') IS NOT NULL) AS has_qualify,
          list_filter(list(CASE WHEN join_kind = 'CROSS' AND join_right_type = 'TABLE_FUNCTION' THEN join_right_fn END), x -> x IS NOT NULL) AS lateral_functions
-  FROM sql_nodes GROUP BY ALL),
--- statements whose tera_render names a template in the canonical templates folder
-canonical_template_statements AS (
-  SELECT DISTINCT f.call_id, f.sql_source, f.program_index, f.statement_no
-  FROM node_facts f CROSS JOIN UNNEST(f.tera_literals) AS u(template_name)
-  JOIN glob(concat(getenv('HOME'), '/.duck/deploy/skills/self-dispatch/templates/*.tera')) AS g ON parse_filename(g.file) = u.template_name)
+  FROM sql_nodes   -- a tera_render naming a file in the templates folder; one call names one template, so no fan-out
+  LEFT JOIN glob('~/.duck/deploy/skills/self-dispatch/templates/*.tera') AS template
+    ON fn = 'tera_render' AND list_contains(literal_args, parse_filename(template.file))
+  GROUP BY ALL)
 SELECT s.call_id, s.sql_source, s.program_index, s.statement_no, s.statement_kind, s.head_words, s.statement_lines,
        s.ast IS NOT NULL AS has_ast,
        coalesce(f.functions_called, []) AS functions_called,
        coalesce(f.function_calls, []) AS function_calls,
        coalesce(f.table_function_calls, []) AS table_function_calls,
        coalesce(f.shellfs_pipes, []) AS shellfs_pipes,
-       t.call_id IS NOT NULL AS uses_canonical_template,
+       coalesce(f.uses_canonical_template, false) AS uses_canonical_template,
        coalesce(f.cte_names, []) AS cte_names,
        coalesce(f.has_count_star, false) AS has_count_star,
        coalesce(f.has_filter_clause, false) AS has_filter_clause,
@@ -200,8 +198,7 @@ SELECT s.call_id, s.sql_source, s.program_index, s.statement_no, s.statement_kin
        coalesce(c.concat_chain_max, 0) AS concat_chain_max
 FROM sql_statements s
 LEFT JOIN node_facts f USING (call_id, sql_source, program_index, statement_no)
-LEFT JOIN sql_concat c USING (call_id, sql_source, program_index, statement_no)
-LEFT JOIN canonical_template_statements t USING (call_id, sql_source, program_index, statement_no);
+LEFT JOIN sql_concat c USING (call_id, sql_source, program_index, statement_no);
 
 -- Per call: the statements' facts folded into lists, counts and any-statement booleans.
 CREATE OR REPLACE VIEW sql_call_facts AS
