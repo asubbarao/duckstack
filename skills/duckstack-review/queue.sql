@@ -131,7 +131,7 @@ WITH result_files AS (
       ON parse_filename(result_file.file, true) = open_prs.review_key
     WHERE open_prs.review_state = 'PENDING'
 ), rendered AS (
-    SELECT review_key, tera_render($t$SELECT is_error, result FROM read_json('{{ path }}')$t$, f::JSON, autoescape := false) AS sql
+    SELECT review_key, tera_render($t$SELECT * FROM read_json('{{ path }}')$t$, f::JSON, autoescape := false) AS sql
     FROM result_files AS f
 ), dispatched AS (
     SELECT array_agg({review_key: review_key, receipt: selfdispatch(sql)}) AS receipts FROM rendered
@@ -140,8 +140,10 @@ WITH result_files AS (
     FROM dispatched CROSS JOIN UNNEST(receipts) AS each_receipt(sent)
     CROSS JOIN UNNEST(TRY_CAST(sent.receipt.body AS JSON[])) AS each_row(result_row)
 )
+-- The verdict is claude's structured_output (from --json-schema); text that parses as JSON is the fallback.
 SELECT review_key, result_row ->> 'result' AS result_text,
-       TRY_CAST(coalesce(md_extract_code_blocks(result_row ->> 'result')[1].code, result_row ->> 'result') AS JSON) AS review
+       coalesce(result_row -> 'structured_output',
+                TRY_CAST(coalesce(md_extract_code_blocks(result_row ->> 'result')[1].code, result_row ->> 'result') AS JSON)) AS review
 FROM result_rows;
 
 -- Every GitHub post this tick makes: statuses (descriptions as rows), comments, and auto-merge.
@@ -215,20 +217,22 @@ SELECT pr_number, 'https://api.github.com/graphql',
                    'variables', json_object('id', pr_id))
 FROM open_prs WHERE NOT auto_merge;
 
--- The review's launch, run on dev in the background: the rubric files, then this PR's prompt, into claude.
+-- The review's launch, run on dev in the background: the rubric files, then this PR's prompt, into claude. The
+-- rubric and the schema come from the checkout this tick runs in ($PWD), so they match its queue.sql; a missing
+-- schema file would hand claude --json-schema "" and free text instead of a verdict.
 CREATE OR REPLACE VIEW review_launches AS
 SELECT pr_number, concat_ws(' ',
        '(cd /Users/aloksubbarao/.duck/review && cat',
-       '/Users/aloksubbarao/.duck/deploy/skills/duckstack-review/SKILL.md',
-       '/Users/aloksubbarao/.duck/deploy/skills/self-dispatch/RULES.md',
-       '/Users/aloksubbarao/.duck/deploy/SQL-MANIFESTO.md',
+       concat(checkout, '/skills/duckstack-review/SKILL.md'),
+       concat(checkout, '/skills/self-dispatch/RULES.md'),
+       concat(checkout, '/SQL-MANIFESTO.md'),
        concat('prompts/review_key=', review_key, '/data_0.csv'),
        '| /Users/aloksubbarao/.local/bin/claude -p --model claude-opus-5-5 --tools "" --output-format json',
        '--no-session-persistence --strict-mcp-config --disable-slash-commands', $q$--settings '{"disableAllHooks": true}'$q$,
-       '--json-schema "$(cat /Users/aloksubbarao/.duck/deploy/skills/duckstack-review/review_schema.json)"',
+       concat('--json-schema "$(cat ', checkout, '/skills/duckstack-review/review_schema.json)"'),
        concat('> results/', review_key, '.part 2>&1; mv results/', review_key, '.part results/', review_key, '.json)'),
        '> /dev/null 2>&1 & echo $!') AS command
-FROM open_prs WHERE review_due;
+FROM (SELECT getenv('PWD') AS checkout, * FROM open_prs WHERE review_due);
 
 .output stdout
 WITH posted AS (
