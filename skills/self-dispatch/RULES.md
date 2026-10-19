@@ -54,7 +54,8 @@ writing SQL on this machine.
     dispatch were both rejected; declare the parts as columns and render with Tera.
 13. **Banned:** `VALUES`, `COUNT(*)`, `LIMIT 1`, `OR` chains (use `IN`, `IS [NOT] DISTINCT FROM`, null
     checks), `WITH RECURSIVE`, scalar subqueries in SELECT lists, `any_value`, cross joins of singleton CTEs
-    (`JOIN ON true`, comma joins), `json_extract` ladders and selector-taking extractors in committed code,
+    (`JOIN ON true`, comma joins), `json_extract` ladders and selector-taking extractors in committed code (except the single `->>` per receipt
+    body field allowed by rule 5),
     regex on backend data, `generate_subscripts`, positional `split_part` surgery (09-22, 09-23, 10-10).
 14. **Descriptive names** for CTEs and aliases; "sd is not descriptive at all" (09-22).
 15. Spell out the `array_agg` column and name it; turn it into text with `tera_render` (a template that substitutes
