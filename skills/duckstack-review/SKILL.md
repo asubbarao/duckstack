@@ -33,6 +33,12 @@ The baseline: a query under ~50 lines that has no bash loop, no tera loop or con
 pile of new tables or views is assumed good. Self-dispatch is the usual shape, not a requirement.
 Spend the review on what breaks that baseline.
 
+Every review, passing or not, also hunts for the shorter version: fewer lines, more declarative,
+set-based and elegant. Look for repeated expressions a list or a relation can hold, steps a single
+set-based statement can replace, columns derived once instead of in every reader, and ladders,
+chains or branches that collapse into data. Give each rewrite with its line count before and after.
+A change that works but could be a third shorter is a finding.
+
 ### 1. Self-dispatch, or the lack of it (the main failure)
 
 Self-dispatch is `array_agg` of posts to self, then `CROSS JOIN UNNEST` of the receipts.
