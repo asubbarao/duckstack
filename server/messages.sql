@@ -2,6 +2,7 @@
 -- agent.messages: stream.blocks without the full text (head, tail), so a 290 KB paste never fills a reply.
 -- agent.sessions: one row per session to pick from, then read its blocks by session_id: activity, its block_keys, and
 -- its prompts in order (openings), dropping a prompt within rapidfuzz_ratio 90 of the one before.
+-- agent.prompts: one row per session, every typed prompt in full and in order (said); filter it with WHERE.
 WITH messages_step AS (
     SELECT array_agg(selfdispatch($m$
 CREATE OR REPLACE VIEW agent.messages AS
@@ -27,7 +28,19 @@ SELECT a.*, len(p.openings) AS prompts, p.openings[1] AS first_prompt, p.opening
 FROM activity a LEFT JOIN prompts p USING (session_id)
 $s$)) AS receipts
     FROM messages_step CROSS JOIN UNNEST(receipts) AS t(r) WHERE r.status = 200
+), prompts_step AS (
+    SELECT array_agg(selfdispatch($p$
+CREATE OR REPLACE VIEW agent.prompts AS
+WITH typed AS (
+    SELECT source, session_id, timestamp, message_content AS text FROM stream.blocks WHERE is_prompt AND NOT is_repeat
+)
+SELECT source, session_id, array_agg({'ts': timestamp, 'text': text} ORDER BY timestamp) AS said,
+       said[1].ts AS first_ts, said[-1].ts AS last_ts, len(said) AS prompts, sum(strlen(text)) AS chars
+FROM typed GROUP BY ALL
+$p$)) AS receipts
 )
 SELECT r.* FROM messages_step CROSS JOIN UNNEST(receipts) AS t(r)
 UNION ALL
-SELECT r.* FROM sessions_step CROSS JOIN UNNEST(receipts) AS t(r);
+SELECT r.* FROM sessions_step CROSS JOIN UNNEST(receipts) AS t(r)
+UNION ALL
+SELECT r.* FROM prompts_step CROSS JOIN UNNEST(receipts) AS t(r);
