@@ -75,23 +75,11 @@ $copy$, c::JSON, autoescape := false)).status::VARCHAR AS saved_status
     WHERE json_exists(t.value, '$.operator_name') AND (t.value ->> 'operator_type') <> 'EXPLAIN_ANALYZE'
 ), share AS (
     SELECT *, seconds / sum(seconds) OVER () AS part FROM node
-), operator AS (   -- each operator as the page prints it; a part the operator lacks is ''
-    SELECT *, {hot: CASE WHEN part >= 0.25 THEN ' hot' ELSE '' END, indent: depth * 18, name: name,
-               seconds: seconds::DECIMAL(18, 6)::VARCHAR, pct: (part * 100)::DECIMAL(18, 1)::VARCHAR,
-               card: printf('%,d', card), est: coalesce(est, '?'),
-               scanned: CASE WHEN scanned IS DISTINCT FROM 0 THEN tera_render(' · scanned {{ n }}', json_object('n', printf('%,d', scanned))) ELSE '' END,
-               extra: CASE WHEN len(extra) > 0 THEN tera_render('<details><summary>extra info</summary><div class="m">{{ lines | join(sep="") | safe }}</div></details>',
-                   json_object('lines', list_transform(extra, e -> tera_render('{{ e }}<br>', json_object('e', e))))) ELSE '' END} AS shown
-    FROM share
 ), phase AS (
     SELECT profile, path, saved_status, name, sum(seconds) AS seconds, sum(part) AS part, count(idx) AS nodes,
-           list({idx: idx, html: tera_render($node$
-<div class="op{{ hot }}" style="margin-left:{{ indent }}px;--share:{{ pct }}%"><span class="n">{{ name }}</span>
-<span class="m">{{ seconds }} s · {{ pct }}% · {{ card }} rows · est {{ est }}{{ scanned | safe }}</span>
-{{ extra | safe }}</div>$node$, shown::JSON)}) AS members
-    FROM operator GROUP BY ALL
-), shown_phase AS (
-    SELECT *, {name: name, nodes: nodes, seconds: seconds::DECIMAL(18, 6)::VARCHAR, pct: (part * 100)::DECIMAL(18, 1)::VARCHAR} AS shown FROM phase
+           list({idx: idx, name: name, indent: depth * 18, seconds: printf('%.6f', seconds), pct: printf('%.1f%%', part * 100),
+                 card: printf('%,d', card), est: coalesce(est, '?'), scanned: printf('%,d', scanned), extra: coalesce(extra, []), hot: part >= 0.25}) AS members
+    FROM share GROUP BY ALL
 )
 SELECT tera_render($t$<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Query profile</title><style>
@@ -113,29 +101,28 @@ th,td{padding:5px 8px;border-bottom:1px solid var(--line);text-align:right}th:fi
 .op.hot{border-left-color:var(--hot)}.op .n{font-weight:600}.m{font-size:12px;color:var(--mute)}
 details summary{cursor:pointer;color:var(--mute);font-size:12px}.hot-text{color:var(--hot);font-weight:600}
 </style></head><body><main>
-<h1>Query profile</h1>
-<p><span class="hot-text">{{ top.name }}</span> takes {{ top.pct }}% of operator CPU time ({{ top.seconds }} s of {{ cpu }} s, summed over threads, across {{ operators }} operators);
-the query ran {{ latency }} s end to end. {{ saved | safe }}</p>
-<section class="grid">{{ cards | join(sep="") | safe }}</section>
+{% set top = phases | first %}<h1>Query profile</h1>
+<p><span class="hot-text">{{ top.name }}</span> takes {{ top.pct }} of operator CPU time ({{ top.seconds }} s of {{ cpu }} s, summed over threads, across {{ nodes | length }} operators);
+the query ran {{ latency }} s end to end. {% if saved == "200" %}Profile saved to <code>{{ path }}</code>.{% else %}The profile was not saved (status {{ saved }}).{% endif %}</p>
+<section class="grid">{% for c in cards %}<div class="card"><b>{{ c.t }}</b><span>{{ c.v }}</span></div>{% endfor %}</section>
 <details><summary>SQL</summary><pre>{{ sql }}</pre></details>
 <h2>Time by operator</h2><table><tr><th>Operator</th><th>Nodes</th><th>Seconds</th><th>Share</th></tr>
-{{ phases | join(sep="") | safe }}</table>
-<h2>Operator tree</h2><div class="tree">{{ nodes | join(sep="") | safe }}
+{% for p in phases %}<tr><td>{{ p.name }}</td><td>{{ p.nodes }}</td><td>{{ p.seconds }}</td><td>{{ p.pct }}</td></tr>{% endfor %}</table>
+<h2>Operator tree</h2><div class="tree">{% for n in nodes %}
+<div class="op{% if n.hot %} hot{% endif %}" style="margin-left:{{ n.indent }}px;--share:{{ n.pct }}"><span class="n">{{ n.name }}</span>
+<span class="m">{{ n.seconds }} s · {{ n.pct }} · {{ n.card }} rows · est {{ n.est }}{% if n.scanned != "0" %} · scanned {{ n.scanned }}{% endif %}</span>
+{% if n.extra %}<details><summary>extra info</summary><div class="m">{% for e in n.extra %}{{ e }}<br>{% endfor %}</div></details>{% endif %}</div>{% endfor %}
 </div></main></body></html>$t$, json_object(
-    'sql', $sql, 'cpu', sum(seconds)::DECIMAL(18, 4)::VARCHAR, 'latency', (profile ->> 'latency')::DOUBLE::DECIMAL(18, 4)::VARCHAR,
-    'saved', CASE WHEN saved_status = '200' THEN tera_render('Profile saved to <code>{{ path }}</code>.', json_object('path', path))
-                  ELSE tera_render('The profile was not saved (status {{ saved }}).', json_object('saved', saved_status)) END,
-    'top', arg_max(shown, seconds), 'operators', len(flatten(list(members))),
-    'phases', list(tera_render('<tr><td>{{ name }}</td><td>{{ nodes }}</td><td>{{ seconds }}</td><td>{{ pct }}%</td></tr>', shown::JSON) ORDER BY seconds DESC),
-    'nodes', list_transform(list_sort(flatten(list(members))), m -> m.html),
-    'cards', list_transform(
-        [{t: 'Latency', v: (profile ->> 'latency')::DOUBLE::DECIMAL(18, 4)::VARCHAR, unit: ' s'},
-         {t: 'Operator CPU', v: sum(seconds)::DECIMAL(18, 4)::VARCHAR, unit: ' s'},
-         {t: 'Rows scanned', v: printf('%,d', (profile ->> 'cumulative_rows_scanned')::BIGINT), unit: ''},
-         {t: 'Read', v: format_bytes((profile ->> 'total_bytes_read')::BIGINT), unit: ''},
-         {t: 'Written', v: format_bytes((profile ->> 'total_bytes_written')::BIGINT), unit: ''},
-         {t: 'Peak buffer memory', v: format_bytes((profile ->> 'system_peak_buffer_memory')::BIGINT), unit: ''},
-         {t: 'Peak temp dir', v: format_bytes((profile ->> 'system_peak_temp_dir_size')::BIGINT), unit: ''},
-         {t: 'Memory allocated', v: format_bytes((profile ->> 'total_memory_allocated')::BIGINT), unit: ''}],
-        c -> tera_render('<div class="card"><b>{{ t }}</b><span>{{ v }}{{ unit }}</span></div>', c::JSON)))) AS html
-FROM shown_phase GROUP BY profile, path, saved_status;
+    'sql', $sql, 'path', path, 'saved', saved_status, 'cpu', printf('%.4f', sum(seconds)),
+    'latency', printf('%.4f', (profile ->> 'latency')::DOUBLE),
+    'phases', list({name: name, nodes: nodes, seconds: printf('%.6f', seconds), pct: printf('%.1f%%', part * 100)} ORDER BY seconds DESC),
+    'nodes', list_sort(flatten(list(members))),
+    'cards', [{t: 'Latency', v: printf('%.4f s', (profile ->> 'latency')::DOUBLE)},
+              {t: 'Operator CPU', v: printf('%.4f s', sum(seconds))},
+              {t: 'Rows scanned', v: printf('%,d', (profile ->> 'cumulative_rows_scanned')::BIGINT)},
+              {t: 'Read', v: format_bytes((profile ->> 'total_bytes_read')::BIGINT)},
+              {t: 'Written', v: format_bytes((profile ->> 'total_bytes_written')::BIGINT)},
+              {t: 'Peak buffer memory', v: format_bytes((profile ->> 'system_peak_buffer_memory')::BIGINT)},
+              {t: 'Peak temp dir', v: format_bytes((profile ->> 'system_peak_temp_dir_size')::BIGINT)},
+              {t: 'Memory allocated', v: format_bytes((profile ->> 'total_memory_allocated')::BIGINT)}])) AS html
+FROM phase GROUP BY profile, path, saved_status;
