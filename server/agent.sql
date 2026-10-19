@@ -21,9 +21,10 @@ SELECT f.path, parse_dirpath(f.path) AS parent, f.name, f.stem, f.ext, f.bytes, 
             ELSE f.path[:-(len(f.ext) + 1)] END AS session
 FROM fs.files f JOIN roots r ON starts_with(f.path[len(getenv('HOME')) + 1:], r.root)
 WHERE f.ext IN ('.jsonl', '.zst', '.parquet');
--- agent.titles: Codex thread names from ~/.codex/session_index.jsonl; id is the session id in the rollout file name.
+-- agent.titles: Codex thread names from ~/.codex/session_index.jsonl (id, thread_name, updated_at); id is the session id
+-- in the rollout file name. Read through cat so a machine with no Codex index gets an empty view, not a failed boot.
 CREATE OR REPLACE VIEW agent.titles AS
-SELECT id, thread_name AS title, updated_at::TIMESTAMPTZ AS updated_at FROM read_json(getenv('HOME') || '/.codex/session_index.jsonl', format := 'newline_delimited');
+SELECT * FROM read_json($cmd$cat "$HOME/.codex/session_index.jsonl" 2>/dev/null; true |$cmd$, format := 'newline_delimited');
 -- One refresh program, run once now and every five minutes. Each session with a file newer than its stored copy (or
 -- none stored) is copied whole, one post per session, run at the same time: an empty store takes 980 sessions (3.6 GB,
 -- ~45 s; failed posts are retried by the next run), a 5-minute run the few active ones (~13 MB, 0.5 s). agent.lines is

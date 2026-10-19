@@ -41,7 +41,8 @@ $n$)) WITH ORDINALITY AS l(line, line_number);
 -- One row per live claude process, written by Claude Code itself (~/.claude/sessions/<pid>.json), with every key the
 -- files hold as a column. Nothing names a key, so a key Claude Code stops writing is simply absent.
 CREATE OR REPLACE VIEW claude_sessions AS
-SELECT * FROM read_json('/Users/aloksubbarao/.claude/sessions/*.json', union_by_name := true, ignore_errors := true);
+SELECT * FROM read_json($cmd$cat "$HOME"/.claude/sessions/*.json 2>/dev/null; true |$cmd$, ignore_errors := true)
+UNION ALL BY NAME SELECT NULL::BIGINT AS pid WHERE false;   -- terminal_sessions joins on pid, even with no sessions
 
 -- Each Terminal tab, the claude process holding its tty, and that session. pgrep -t ignores the tty
 -- on macOS; lsof -t <tty> lists exactly the processes on it, one pid per line.
@@ -203,7 +204,7 @@ CREATE OR REPLACE VIEW host_jetsam AS
 WITH doc AS (
     SELECT file, decode(content) AS txt, substr(txt, position($n$
 $n$ IN txt) + 1)::JSON AS b
-    FROM host_diagnostic_files WHERE file LIKE 'JetsamEvent%.ips'
+    FROM host_diagnostic_files WHERE starts_with(file, 'JetsamEvent') AND ends_with(file, '.ips')
 )
 SELECT file, strptime(b ->> 'date', '%Y-%m-%d %H:%M:%S.%f %z') AS jetsam_at, b ->> 'largestProcess' AS largest_process,
        p ->> 'name' AS name, (p ->> 'pid')::BIGINT AS pid,
@@ -232,7 +233,7 @@ WITH kv AS (
     FROM host_diagnostic_files
     CROSS JOIN UNNEST(string_split(decode(content), $n$
 $n$)[1:45]) WITH ORDINALITY AS t(line, n)
-    WHERE file LIKE '%.diag' AND position(':' IN line) > 1 AND NOT starts_with(line, ' ')
+    WHERE ends_with(file, '.diag') AND position(':' IN line) > 1 AND NOT starts_with(line, ' ')
     GROUP BY ALL
 ), h AS (
     SELECT file, map_from_entries(list((k, v))) AS h FROM kv GROUP BY file
