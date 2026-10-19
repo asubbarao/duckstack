@@ -13,7 +13,7 @@ WITH targets AS (
     SELECT stamp, array_agg(selfdispatch(tera_render($d$
 COPY (SELECT * FROM host_processes WHERE kill_id IS NOT NULL) TO '~/.duck/logs/reaped-{{ stamp }}.json' (FORMAT json)
 $d$, json_object('stamp', stamp), autoescape := false))) AS receipts
-    FROM targets GROUP BY stamp
+    FROM targets GROUP BY stamp   -- listed reads stamp to find the file
 ), listed AS (
     SELECT array_agg(selfdispatch(tera_render($l$
 SELECT list(DISTINCT kill_id) AS ids FROM read_json('~/.duck/logs/reaped-{{ stamp }}.json')
@@ -22,8 +22,8 @@ $l$, json_object('stamp', stamp), autoescape := false))) AS receipts
 ), killed AS (
     SELECT array_agg(selfdispatch(tera_render($k$
 SELECT content FROM read_lines($c$kill -TERM -- {{ ids | join(sep=" ") }} 2>&1; sleep 5; kill -KILL -- {{ ids | join(sep=" ") }} 2>/dev/null; echo reaped |$c$)
-$k$, listing::JSON, autoescape := false))) AS receipts
-    FROM listed CROSS JOIN UNNEST(receipts) AS t(r) CROSS JOIN UNNEST(r.body::JSON::STRUCT(ids BIGINT[])[]) AS b(listing)
+$k$, listing, autoescape := false))) AS receipts
+    FROM listed CROSS JOIN UNNEST(receipts) AS t(r) CROSS JOIN UNNEST(r.body::JSON[]) AS b(listing)
     WHERE r.status = 200
 )
 SELECT 'dump' AS step, r.status, r.body FROM dumped CROSS JOIN UNNEST(receipts) AS t(r)
