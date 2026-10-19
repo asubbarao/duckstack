@@ -41,7 +41,8 @@ Answer every question for every query in the change. A "no" is a finding, fixed 
 5. **Is SQL text built readably?** No `||` chains, `chr(39)`, nested or tripled quotes; arrays of words joined once,
    dollar quotes. "PUT IT IN ARRAY SO ITS LEGIBLE INSTEAD OF INFINITE CONCATS" (09-22).
 6. **Does every reader bring its own schema?** `read_json` / `read_csv` with their `:=` options; no `from_json`
-   structure strings, `columns := {…}`, `->>` ladders. Unknown shape stays raw in `read_lines` (10-17).
+   structure strings, `columns := {…}`, `->>` ladders. Unknown shape stays raw in `read_lines` (10-17). Exception
+   until quackapi returns typed replies: a receipt body is JSON text, so unnest it once and read its fields.
 7. **Is it the shortest query for the same output?** Fewer keywords and commas for the same rows. "all the sql is too
    long and complex… the SAME output can be achieved with a better query" (10-18).
 8. **Is it general, not bespoke?** No table per question ("North Dakota revenue"), no parameter or macro where a
