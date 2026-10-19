@@ -55,7 +55,9 @@ Answer every question for every query in the change. A "no" is a finding, fixed 
 11. **Nothing banned:** VALUES, `COUNT(*)`, LIMIT 1, OR chains, FILTER, `any_value`, CROSS JOIN that isn't UNNEST,
     joins on constants, `coalesce((SELECT …))`, WITH RECURSIVE, `QUALIFY row_number()` picks, SET VARIABLE
     hand-offs, `split_part` / positional indexing, `generate_subscripts`, regex on structured data.
-12. **Was it run?** The PR shows the rows it returned, and a rewrite shows old vs new rows equal (EXCEPT ALL both ways).
+12. **Was it run?** The PR shows the rows it returned, and a rewrite shows old vs new equal in one call:
+    `FROM table_diff_summary($q$<old query>$q$, $q$<new query>$q$, pk := ['<key>'])` (`duck_diff`): `n_different`,
+    `n_left_only` and `n_right_only` are 0. `table_diff` with the same arguments lists the rows that differ.
 
 ## Checks, in order of how often agents fail them
 
@@ -306,7 +308,8 @@ By hand, the review fixes what it finds. A finding left as a comment is not done
    file:line:rule. New antipattern named by the owner = one more row in its `rules` CTE.
 1. Read SQL-MANIFESTO.md and RULES.md, then the code (`duck_tails`, or `gh pr diff` read through shellfs).
 2. For each finding, rewrite the query in the target shape, in place, on a branch from main.
-3. Run the old and the new query on dev on the same inputs and compare the rows (`EXCEPT ALL` both ways). Keep the
+3. Run the old and the new query on dev on the same inputs and compare them with `duck_diff`'s `table_diff_summary`
+   (checklist 12). Keep the
    rewrite only when they match, or when the old one was wrong and the difference is the fix. Server files: test in a
    `:memory:` client that `.read`s extensions.sql and macros.sql first, never by restarting dev.
 4. Delete before adding: a rule, example or file that teaches the antipattern goes, it is not reworded.
