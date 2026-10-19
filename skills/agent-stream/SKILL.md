@@ -61,32 +61,35 @@ cmd or sql, else the whole input). The raw store below is for fields neither car
 ## Now: what every session is doing
 
 Start here when asked about "the chat", "a session" or anything happening right now. Concurrent sessions
-include other terminals and Claude Desktop. `agent.messages` is one row per message block, with `session_id`,
-`timestamp`, `message_role`, `block_type`, `is_prompt`, `is_agent` (a subagent row), `head`/`tail` (cut text)
-and `file_path`.
-
-The last hour comes first and round-robin: each live session's newest row, then each one's next row back. After
-the hour, rows run back through the day one session at a time, newest session first. Never
-`ORDER BY session, ts`: that walks one session's whole history before showing any other.
+include other terminals and Claude Desktop. One row per session: its newest message (a prompt you typed or the
+reply), newest session first. Never `ORDER BY session, ts`: that walks one session's whole history before
+showing any other.
 
 ```sql
-WITH day AS (
-  SELECT session_id, timestamp AS ts, message_role AS role, head,
-         ts > now() - INTERVAL 1 HOUR AS live,
-         first_value(timestamp) OVER w AS last_ts,
-         row_number() OVER w AS back
-  FROM agent.messages
-  WHERE timestamp > now() - INTERVAL 24 HOUR AND block_type = 'text' AND NOT is_agent
-    AND CASE message_role WHEN 'user' THEN is_prompt ELSE true END
-  WINDOW w AS (PARTITION BY session_id ORDER BY timestamp DESC)
+WITH blocks AS (
+  SELECT coalesce(sessionId ->> '$', parse_filename(transcript, true)) AS session_id,
+         (timestamp ->> '$')::TIMESTAMPTZ AS ts, message ->> 'role' AS role,
+         unnest(CASE json_type(message -> 'content') WHEN 'ARRAY' THEN message -> '$.content[*]' ELSE [message -> 'content'] END) AS block
+  FROM agent.lines
+  WHERE type ->> '$' IN ('user', 'assistant') AND NOT contains(transcript, '/subagents/')
+    AND (timestamp ->> '$')::TIMESTAMPTZ > now() - INTERVAL 24 HOUR
+), texts AS (
+  SELECT session_id, ts, role, coalesce(block ->> 'text', block ->> '$') AS text
+  FROM blocks
+  WHERE coalesce(block ->> 'type', 'text') = 'text'
+    AND CASE role WHEN 'user' THEN NOT starts_with(ltrim(text), '<')                 -- harness tags, reminders
+                               AND NOT starts_with(text, '[Request interrupted')
+                               AND NOT starts_with(text, 'This session is being continued')
+                               AND NOT starts_with(text, 'Base directory for this skill')
+                               AND NOT starts_with(text, 'Another Claude session sent a message')
+                  ELSE true END
 )
-SELECT live, back, session_id, ts, role, head
-FROM day
-ORDER BY live DESC, CASE WHEN live THEN back END, last_ts DESC, ts DESC
-LIMIT 20;
+SELECT session_id, max(ts) AS last_ts, arg_max(role, ts) AS last_role, arg_max(text, ts) AS last_text,
+       strlen(last_text) AS last_text_bytes
+FROM texts GROUP BY session_id ORDER BY last_ts DESC LIMIT 20;
 ```
 
-`head` is cut. For a message's full text, read `message.content` from `read_ndjson(file_path)` at that timestamp.
+Claude sessions only: Codex text blocks are `input_text`/`output_text` under `payload`.
 
 ## Turns: each prompt and the reply that closed it
 
