@@ -116,9 +116,10 @@ or a template render, the rows are sent as `array_agg(selfdispatch(sql))` groupe
 `CROSS JOIN UNNEST` and `receipt.*`. The reference is `SKILL.md`. Because every dispatch takes that shape, the
 receipt problems below have one place to be checked.
 
-28. **Receipts are typed columns.** Read `receipt.status`, `receipt.error` and `receipt.body` as columns.
-    Never walk them with `->>` ladders. Never `from_json` / `::JSON[]` over a body; return typed rows instead
-    (10-09, 10-13, 10-14).
+28. **Receipts are columns.** Read `receipt.status`, `receipt.error` and `receipt.body` as columns. The body comes
+    back from /sql as JSON text, so one `->>` per field you use is accepted until quackapi returns typed replies.
+    Ladders (`->'a'->'b'->>'c'`) and hand-typed `from_json` structures are not (10-09, 10-13, 10-14; tested 10-18:
+    reading a body back through `read_json('data+varchar:…')` returns JSON text again).
 29. **Check every stage's receipts.** The next stage filters on `receipt.status` and keeps failed receipts as
     rows behind a flag. A timeout, an error status or an empty or unparsed body counts as a failure, not as
     an empty result (10-14, 10-16). Judge by `receipt.status`: a failed statement comes back as a 500 with the
