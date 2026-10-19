@@ -11,7 +11,7 @@ WITH intent AS (
     SELECT $v$
 CREATE OR REPLACE VIEW stream.main.parsed AS
 WITH line AS (
-    SELECT ['text', 'thinking', 'output', 'content'] AS content_keys, ['name', 'call_id'] AS name_keys,
+    SELECT ['text', 'thinking', 'output', 'content'] AS content_keys, ['name'] AS name_keys,
            ['id', 'tool_use_id', 'call_id'] AS id_keys, ['command', 'cmd', 'sql', '$'] AS command_keys,
            ['<', '[Request interrupted', 'This session is being continued', 'Base directory for this skill',
             'Another Claude session sent a message', '# AGENTS.md', '[Cross-session delivery notice]',

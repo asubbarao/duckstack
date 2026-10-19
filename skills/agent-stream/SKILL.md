@@ -129,7 +129,8 @@ ORDER BY timestamp;
 
 ## Search
 
-Pick sessions from `agent.sessions` (one row each: activity, prompt count, first and last prompt), then read their
+Pick sessions from `agent.sessions` (one row each, every column carried: activity, files, models, tools, cwd, branch,
+`prompts` as whole rows, `first_prompt`, `last_prompt`; select the columns you need, since `prompts` is big), then read their
 blocks by `session_id`. To find blocks by words, BM25 over `stream.blocks` (rebuilt every 15 minutes from transcripts
 changed in the last 30, on a store up to 5 minutes behind, so up to ~20 minutes behind live):
 
