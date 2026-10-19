@@ -32,5 +32,5 @@ INSTALL pdf FROM community; LOAD pdf;
 INSTALL gh FROM community; LOAD gh;
 INSTALL netquack FROM community; LOAD netquack;
 INSTALL fts; LOAD fts;
--- rapidfuzz_ratio() drops near-repeat prompts in agent.sessions (blocks.sql).
+-- rapidfuzz_ratio() drops near-repeat prompts in agent.sessions (messages.sql).
 INSTALL rapidfuzz FROM community; LOAD rapidfuzz;

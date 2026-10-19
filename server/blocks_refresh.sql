@@ -12,16 +12,18 @@ WITH transcript AS (
     SELECT path FROM transcript ANTI JOIN stream.main.blocks b ON b.file_path = transcript.path
 ), changed AS (
     SELECT list(quote_literal(path)) AS files FROM stale
-), window_step AS (
-    SELECT array_agg(selfdispatch(tera_render($w$
+), rendered AS (
+    SELECT tera_render($w$
 CREATE OR REPLACE TABLE stream.main.blocks AS
 SELECT * EXCLUDE (is_repeat),
        uuid IS NOT NULL AND file_path IS DISTINCT FROM arg_min(file_path, (timestamp, file_path)) OVER (PARTITION BY uuid) AS is_repeat
 FROM (SELECT * FROM stream.main.blocks WHERE file_path NOT IN ({{ files | join(sep=", ") }})
       UNION ALL BY NAME
       SELECT * FROM stream.main.parsed WHERE file_path IN ({{ files | join(sep=", ") }}))
-$w$, changed::JSON, autoescape := false))) AS receipts
+$w$, changed::JSON, autoescape := false) AS sql
     FROM changed WHERE len(files) > 0
+), window_step AS (
+    SELECT array_agg(selfdispatch(sql)) AS receipts FROM rendered
 ), index_step AS (
     SELECT array_agg(selfdispatch($p$PRAGMA create_fts_index('stream.main.blocks', 'block_key', 'message_content', overwrite = 1)$p$)) AS receipts
     FROM window_step CROSS JOIN UNNEST(receipts) AS t(r) WHERE r.status = 200
