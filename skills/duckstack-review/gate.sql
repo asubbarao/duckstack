@@ -35,11 +35,12 @@ CREATE OR REPLACE VIEW pr_rule_hits AS
 WITH file_hits AS (
     SELECT DISTINCT tc_src.side, tc_src.pr_number, tc_src.file_path, tc_src.bad_example, check_hits.check_id
     FROM check_hits JOIN tc_src USING (call_id)
+), base_hits AS (
+    SELECT pr_number, file_path, check_id, true AS on_main FROM file_hits WHERE side = 'base'
 )
-SELECT head.pr_number, head.file_path, hook_checks.check_id,
-       CASE WHEN head.bad_example THEN 'example' WHEN base.check_id IS NOT NULL THEN 'existing' ELSE hook_checks.action END AS action,
+SELECT pr_number, file_path, check_id,
+       CASE WHEN bad_example THEN 'example' WHEN on_main THEN 'existing' ELSE hook_checks.action END AS action,
        hook_checks.message
-FROM file_hits AS head JOIN hook_checks USING (check_id)
-LEFT JOIN file_hits AS base ON base.side = 'base' AND base.pr_number = head.pr_number AND base.file_path = head.file_path
-                           AND base.check_id = head.check_id
-WHERE head.side = 'head' AND hook_checks.action IN ('block', 'warn');
+FROM file_hits JOIN hook_checks USING (check_id)
+LEFT JOIN base_hits USING (pr_number, file_path, check_id)
+WHERE side = 'head' AND hook_checks.action IN ('block', 'warn');
