@@ -41,7 +41,7 @@ $n$)) WITH ORDINALITY AS l(line, line_number);
 -- One row per live claude process, written by Claude Code itself (~/.claude/sessions/<pid>.json), with every key the
 -- files hold as a column. Nothing names a key, so a key Claude Code stops writing is simply absent.
 CREATE OR REPLACE VIEW claude_sessions AS
-SELECT * FROM read_json('/Users/aloksubbarao/.claude/sessions/*.json', union_by_name := true, ignore_errors := true);
+SELECT * FROM read_json($cmd$cat "$HOME"/.claude/sessions/*.json 2>/dev/null; true |$cmd$, ignore_errors := true);
 
 -- Each Terminal tab, the claude process holding its tty, and that session. pgrep -t ignores the tty
 -- on macOS; lsof -t <tty> lists exactly the processes on it, one pid per line.
