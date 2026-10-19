@@ -142,6 +142,8 @@ SELECT 'sql_cross_join_not_unnest' AS check_id, call_id, tool_name, coalesce(nex
 UNION ALL
 SELECT 'sql_dispatch_direct_post' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((len(list_filter(sql_function_calls, f -> f.name = 'quackapi_post' AND len(list_filter(f.literals, l -> contains(l, ':9495/sql'))) > 0)) > 0), false)
 UNION ALL
+SELECT 'sql_dispatch_positional' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((list_contains(sql_functions, 'selfdispatch') AND len(list_filter(sql_function_calls, f -> f.name IN ('array_extract', 'list_extract') AND f.args = ['column_ref', 'column_ref'])) > 0), false)
+UNION ALL
 SELECT 'sql_dispatch_range_source' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((list_contains(sql_functions, 'selfdispatch') AND list_has_any(list_concat(sql_table_functions, sql_functions), ['range', 'generate_series'])), false)
 UNION ALL
 SELECT 'sql_dispatch_shape' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((list_contains(sql_functions, 'selfdispatch') AND NOT (list_has_any(sql_functions, ['array_agg', 'list']) AND sql_has_unnest_cross_join AND sql_uses_canonical_template)), false)
