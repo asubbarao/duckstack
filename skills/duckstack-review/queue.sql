@@ -58,15 +58,15 @@ WITH main_history AS (
 SELECT pr_bases.pr_number, pr_bases.repo, pr_bases.head_sha, pr_bases.base_sha, changed.file_path, changed.status
 FROM pr_bases CROSS JOIN LATERAL git_diff_tree_each(pr_bases.repo, pr_bases.base_sha, pr_bases.head_sha) AS changed;
 
+-- Each changed file after the PR (side 'head') and, when modified, as it is on main (side 'base'), each read once.
+CREATE OR REPLACE VIEW pr_versions AS
+SELECT pr_changes.*, version.side, blob.text AS content
+FROM pr_changes
+CROSS JOIN UNNEST([{'side': 'head', 'sha': pr_changes.head_sha}, {'side': 'base', 'sha': pr_changes.base_sha}]) AS v(version)
+CROSS JOIN LATERAL git_read_each(git_uri(pr_changes.repo, pr_changes.file_path, version.sha)) AS blob
+WHERE blob.is_text AND CASE version.side WHEN 'head' THEN pr_changes.status <> 'deleted' ELSE pr_changes.status = 'modified' END;
 CREATE OR REPLACE VIEW pr_files AS
-SELECT pr_changes.pr_number, pr_changes.file_path, pr_changes.status, blob.text AS content
-FROM pr_changes CROSS JOIN LATERAL git_read_each(git_uri(pr_changes.repo, pr_changes.file_path, pr_changes.head_sha)) AS blob
-WHERE pr_changes.status <> 'deleted' AND blob.is_text;
--- The same files as they are on main, so the gate can tell a hit the PR adds from one already there.
-CREATE OR REPLACE VIEW pr_base_files AS
-SELECT pr_changes.pr_number, pr_changes.file_path, blob.text AS content
-FROM pr_changes CROSS JOIN LATERAL git_read_each(git_uri(pr_changes.repo, pr_changes.file_path, pr_changes.base_sha)) AS blob
-WHERE pr_changes.status = 'modified' AND blob.is_text;
+SELECT * EXCLUDE (side) FROM pr_versions WHERE side = 'head';
 
 .read skills/duckstack-review/gate.sql
 
@@ -77,11 +77,9 @@ WITH new_lines AS (
     FROM pr_files CROSS JOIN UNNEST(string_split(content, E'\n')) WITH ORDINALITY AS split(line, line_number)
     GROUP BY ALL
 ), old_lines AS (
-    SELECT pr_changes.pr_number, pr_changes.file_path, old.line, count(old.line) AS copies
-    FROM pr_changes CROSS JOIN LATERAL git_read_each(git_uri(pr_changes.repo, pr_changes.file_path, pr_changes.base_sha)) AS blob
-    CROSS JOIN UNNEST(string_split(blob.text, E'\n')) AS old(line)
-    WHERE pr_changes.status = 'modified' AND blob.is_text
-    GROUP BY ALL
+    SELECT pr_number, file_path, old.line, count(old.line) AS copies
+    FROM pr_versions CROSS JOIN UNNEST(string_split(content, E'\n')) AS old(line)
+    WHERE side = 'base' GROUP BY ALL
 )
 SELECT new_lines.pr_number, new_lines.file_path, added.line_number, new_lines.line
 FROM new_lines LEFT JOIN old_lines USING (pr_number, file_path, line)

@@ -1,16 +1,12 @@
 -- The review queue's rule check. Every .sql file a PR changes, and every ```sql block in a .md it changes, goes
 -- through the hook's own facts and checks (toolcall_facts, hook_checks) as if an agent had just written it, so a
--- PR is held to the same rules as a tool call. The caller defines pr_files(pr_number, file_path, content), the files
--- after the PR, and pr_base_files (same columns), the modified ones as they are on main, and runs from a checkout
--- root (the queue runs in ~/.duck/deploy, the checkout of main, so the rules are the merged ones).
+-- PR is held to the same rules as a tool call. The caller defines pr_versions(pr_number, file_path, side, content):
+-- side 'head' is the file after the PR, 'base' the modified file as it is on main. It runs from a checkout root (the
+-- queue runs in ~/.duck/deploy, the checkout of main, so the rules are the merged ones).
 LOAD scalarfs;
 LOAD shellfs;
 LOAD sitting_duck;
 LOAD markdown;
-CREATE OR REPLACE VIEW pr_versions AS
-SELECT pr_number, file_path, content, 'head' AS side FROM pr_files
-UNION ALL
-SELECT pr_number, file_path, content, 'base' AS side FROM pr_base_files;
 -- A ```sql block whose first line is '-- BAD' is a deliberate counter-example: its hits are reported as 'example'.
 CREATE OR REPLACE VIEW pr_sql AS
 SELECT pr_number, file_path, side, content, false AS bad_example FROM pr_versions WHERE ends_with(file_path, '.sql')
