@@ -1,6 +1,6 @@
 -- fs.files: every file under ~ (~975k), with its folder, size and times from hostfs. A question about files is a WHERE
 -- on fs.files; fs.read adds each file's contents for the rows a WHERE keeps. The rest of this file keeps fs.files current.
---   fs.rules     what is left out: a name at the top of ~ (scope top) or anywhere (scope any). ~/Library/LaunchAgents stays.
+--   fs.rules     what is left out: a name at the top of ~ (scope top) or anywhere (scope any).
 --   fs.dirs      every kept folder (and each topmost excluded one) with the modified time it had when last listed.
 --   fs.filelist  every file in a kept folder.
 --   fs.folders   fs.dirs with depth and the rule that excludes it.
@@ -29,10 +29,8 @@ WITH d AS (
 ), segments AS (
   SELECT d.path, d.rel, s.seg, s.idx FROM d CROSS JOIN UNNEST(d.rel) WITH ORDINALITY AS s(seg, idx)
 ), hits AS (
-  SELECT s.path, s.idx FROM segments s JOIN fs.rules r ON r.name = s.seg AND r.scope = 'any'
-  UNION ALL
-  SELECT s.path, s.idx FROM segments s JOIN fs.rules r ON r.name = s.seg AND r.scope = 'top'
-  WHERE s.idx = 1 AND s.rel[1:2] IS DISTINCT FROM ['Library', 'LaunchAgents']
+  SELECT s.path, s.idx FROM segments s
+  JOIN fs.rules r ON r.name = s.seg AND s.idx = CASE r.scope WHEN 'top' THEN 1 ELSE s.idx END
 ), cut AS (
   SELECT path, min(idx) AS cut FROM hits GROUP BY path
 )
@@ -55,28 +53,26 @@ FROM fs.files f;
 
 WITH program AS (
     SELECT $refresh$
-WITH roots AS (
-  SELECT unnest([getenv('HOME'), getenv('HOME') || '/Library/LaunchAgents']) AS path
-), worklist AS (
+WITH worklist AS (
   SELECT path, f.modified, 'any' AS scope,
          CASE WHEN f.depth IS NULL THEN 'list'
               WHEN NOT path_exists(path) THEN 'gone'
               WHEN f.excluded THEN NULL
-              WHEN f.modified = '-infinity'::TIMESTAMP THEN 'walk'
+              WHEN f.modified IS NULL THEN 'walk'
               WHEN file_last_modified(path) > f.modified THEN 'list' END AS action
-  FROM fs.folders f FULL OUTER JOIN roots r USING (path)
+  FROM fs.folders f FULL OUTER JOIN (SELECT getenv('HOME') AS path) USING (path)
 ), pruned AS (   -- a walk prunes the names excluded at any depth
   SELECT scope, list(name) AS names FROM fs.rules GROUP BY scope
 ), work AS (
-  SELECT w.path, w.action, file_last_modified(w.path) AS now_modified, p.names
+  SELECT w.path, w.action, p.names
   FROM worklist w JOIN pruned p USING (scope)
   WHERE w.action IS NOT NULL
 ), statements AS (
   SELECT action, tera_render(CASE action
     WHEN 'gone' THEN $t$DELETE FROM fs.dirs WHERE starts_with(path || '/', $p${{ path }}/$p$);
 DELETE FROM fs.filelist WHERE starts_with(path, $p${{ path }}/$p$);$t$
-    WHEN 'list' THEN $t$INSERT OR REPLACE INTO fs.dirs SELECT $p${{ path }}$p$ AS path, '{{ now_modified }}'::TIMESTAMP AS modified;
-INSERT OR IGNORE INTO fs.dirs SELECT path, '-infinity'::TIMESTAMP AS modified FROM ls($p${{ path }}$p$) WHERE is_dir(path);
+    WHEN 'list' THEN $t$INSERT OR REPLACE INTO fs.dirs SELECT $p${{ path }}$p$ AS path, file_last_modified(path) AS modified;
+INSERT OR IGNORE INTO fs.dirs SELECT path, NULL AS modified FROM ls($p${{ path }}$p$) WHERE is_dir(path);
 DELETE FROM fs.filelist WHERE folder = $p${{ path }}$p$;
 INSERT OR IGNORE INTO fs.filelist SELECT path, $p${{ path }}$p$ AS folder FROM ls($p${{ path }}$p$) WHERE is_file(path);$t$
     WHEN 'walk' THEN $t$INSERT OR REPLACE INTO fs.dirs SELECT path, file_last_modified(path) AS modified
