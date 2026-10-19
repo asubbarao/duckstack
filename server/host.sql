@@ -204,7 +204,7 @@ CREATE OR REPLACE VIEW host_jetsam AS
 WITH doc AS (
     SELECT file, decode(content) AS txt, substr(txt, position($n$
 $n$ IN txt) + 1)::JSON AS b
-    FROM host_diagnostic_files WHERE file LIKE 'JetsamEvent%.ips'
+    FROM host_diagnostic_files WHERE starts_with(file, 'JetsamEvent') AND ends_with(file, '.ips')
 )
 SELECT file, strptime(b ->> 'date', '%Y-%m-%d %H:%M:%S.%f %z') AS jetsam_at, b ->> 'largestProcess' AS largest_process,
        p ->> 'name' AS name, (p ->> 'pid')::BIGINT AS pid,
@@ -233,7 +233,7 @@ WITH kv AS (
     FROM host_diagnostic_files
     CROSS JOIN UNNEST(string_split(decode(content), $n$
 $n$)[1:45]) WITH ORDINALITY AS t(line, n)
-    WHERE file LIKE '%.diag' AND position(':' IN line) > 1 AND NOT starts_with(line, ' ')
+    WHERE ends_with(file, '.diag') AND position(':' IN line) > 1 AND NOT starts_with(line, ' ')
     GROUP BY ALL
 ), h AS (
     SELECT file, map_from_entries(list((k, v))) AS h FROM kv GROUP BY file
