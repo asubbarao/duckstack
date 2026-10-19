@@ -62,6 +62,11 @@ CREATE OR REPLACE VIEW pr_files AS
 SELECT pr_changes.pr_number, pr_changes.file_path, pr_changes.status, blob.text AS content
 FROM pr_changes CROSS JOIN LATERAL git_read_each(git_uri(pr_changes.repo, pr_changes.file_path, pr_changes.head_sha)) AS blob
 WHERE pr_changes.status <> 'deleted' AND blob.is_text;
+-- The same files as they are on main, so the gate can tell a hit the PR adds from one already there.
+CREATE OR REPLACE VIEW pr_base_files AS
+SELECT pr_changes.pr_number, pr_changes.file_path, blob.text AS content
+FROM pr_changes CROSS JOIN LATERAL git_read_each(git_uri(pr_changes.repo, pr_changes.file_path, pr_changes.base_sha)) AS blob
+WHERE pr_changes.status = 'modified' AND blob.is_text;
 
 .read skills/duckstack-review/gate.sql
 
