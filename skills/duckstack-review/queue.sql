@@ -62,9 +62,10 @@ FROM pr_bases CROSS JOIN LATERAL git_diff_tree_each(pr_bases.repo, pr_bases.base
 CREATE OR REPLACE VIEW pr_versions AS
 SELECT pr_changes.*, version.side, blob.text AS content
 FROM pr_changes
-CROSS JOIN UNNEST([{'side': 'head', 'sha': pr_changes.head_sha}, {'side': 'base', 'sha': pr_changes.base_sha}]) AS v(version)
+CROSS JOIN UNNEST([{'side': 'head', 'sha': pr_changes.head_sha, 'wanted': pr_changes.status <> 'deleted'},
+                   {'side': 'base', 'sha': pr_changes.base_sha, 'wanted': pr_changes.status = 'modified'}]) AS v(version)
 CROSS JOIN LATERAL git_read_each(git_uri(pr_changes.repo, pr_changes.file_path, version.sha)) AS blob
-WHERE blob.is_text AND CASE version.side WHEN 'head' THEN pr_changes.status <> 'deleted' ELSE pr_changes.status = 'modified' END;
+WHERE version.wanted AND blob.is_text;
 CREATE OR REPLACE VIEW pr_files AS
 SELECT * EXCLUDE (side) FROM pr_versions WHERE side = 'head';
 
