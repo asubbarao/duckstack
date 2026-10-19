@@ -137,6 +137,9 @@ SELECT 'demo-lens', 'Google Chrome', 'work', 'https://broker.demo.inframerisk.ne
 SELECT 'prod-lens', 'Google Chrome', 'work', 'https://broker.app.inframerisk.com/' UNION ALL
 SELECT 'aws-signin', 'Google Chrome', 'work', 'https://us-west-2.signin.aws.amazon.com/' UNION ALL
 SELECT 'aws-callback', 'Google Chrome', 'work', 'http://127.0.0.1:' UNION ALL
+SELECT 'rippling', 'Google Chrome', 'work', 'https://app.rippling.com/' UNION ALL
+-- Rippling's course player. Its SCORM content is a cross-origin frame that eval cannot reach, and opened alone it never starts.
+SELECT 'go1-player', 'Google Chrome', 'work', 'https://69cd86e0bd11ec4a8e4514ca.mygo1.com/' UNION ALL
 SELECT 'incognito-local-broker', 'Google Chrome', 'incognito', 'http://localhost:' UNION ALL
 SELECT 'safari-local-portal', 'Safari', 'safari', 'http://local-portal:';
 
@@ -181,6 +184,8 @@ SELECT 'Google Chrome', 'go', 'tab', $osa$tell application "Google Chrome"
   end repeat
   return URL of t
 end tell$osa$ UNION ALL
+-- show makes the tab its window's active tab (Chrome stays behind other apps), so pages that render only when visible draw.
+SELECT 'Google Chrome', 'show', 'tab', $osa$tell application "Google Chrome" to set active tab index of window id {{ window_id }} to {{ tab_index }}$osa$ UNION ALL
 SELECT 'Google Chrome', 'close', 'tab', $osa$tell application "Google Chrome" to close tab id {{ tab_id }} of window id {{ window_id }}$osa$ UNION ALL
 SELECT 'Safari', 'eval', 'tab', $osa$tell application "Safari" to do JavaScript "{{ js }}" in tab {{ tab_index }} of window id {{ window_id }}$osa$ UNION ALL
 SELECT 'Safari', 'go', 'tab', $osa$tell application "Safari" to set URL of tab {{ tab_index }} of window id {{ window_id }} to "{{ url }}"$osa$ UNION ALL
