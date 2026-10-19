@@ -6,7 +6,6 @@
 -- stream catalog resolves names inside stream, so it names dev.agent.lines.
 -- Boot posts the view, then the empty table from that receipt (a post binds alone), and returns every receipt.
 -- blocks_refresh.sql fills it (at boot every transcript is new to it) and builds the index.
--- fts names its tables without a catalog, so a search sets search_path = 'dev.main,stream.main' first.
 ATTACH IF NOT EXISTS ':memory:' AS stream;
 WITH intent AS (
     SELECT $v$
