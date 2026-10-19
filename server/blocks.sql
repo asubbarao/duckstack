@@ -43,13 +43,12 @@ SELECT * EXCLUDE (harness_prefixes, command_keys),
        message_role = 'user' AND block_type IN ('text', 'input_text') AND NOT is_agent
        AND NOT list_bool_or([starts_with(ltrim(message_content), p) FOR p IN harness_prefixes]) AS is_prompt
 FROM parsed
-$v$ AS parsed_sql,
-           $c$CREATE TABLE IF NOT EXISTS stream.main.blocks AS SELECT *, false AS is_repeat FROM stream.main.parsed LIMIT 0$c$ AS create_sql
+$v$ AS parsed_sql
 ), parsed_step AS (
-    SELECT create_sql, array_agg(selfdispatch(parsed_sql)) AS receipts FROM intent GROUP BY create_sql
+    SELECT array_agg(selfdispatch(parsed_sql)) AS receipts FROM intent
 ), create_step AS (
-    SELECT array_agg(selfdispatch(create_sql)) AS receipts
-    FROM parsed_step CROSS JOIN UNNEST(receipts) AS t(r) WHERE r.status = 200 GROUP BY create_sql
+    SELECT array_agg(selfdispatch($c$CREATE TABLE IF NOT EXISTS stream.main.blocks AS SELECT *, false AS is_repeat FROM stream.main.parsed LIMIT 0$c$)) AS receipts
+    FROM parsed_step CROSS JOIN UNNEST(receipts) AS t(r) WHERE r.status = 200
 )
 SELECT r.* FROM parsed_step CROSS JOIN UNNEST(receipts) AS t(r)
 UNION ALL SELECT r.* FROM create_step CROSS JOIN UNNEST(receipts) AS t(r);

@@ -11,17 +11,17 @@ WITH transcript AS (
     UNION
     SELECT path FROM transcript ANTI JOIN stream.main.blocks b ON b.file_path = transcript.path
 ), changed AS (
-    SELECT list(quote_literal(path)) AS files FROM stale
+    SELECT string_agg(quote_literal(path), ', ') AS files FROM stale
 ), rendered AS (
     SELECT tera_render($w$
 CREATE OR REPLACE TABLE stream.main.blocks AS
 SELECT * EXCLUDE (is_repeat),
        uuid IS NOT NULL AND file_path IS DISTINCT FROM arg_min(file_path, (timestamp, file_path)) OVER (PARTITION BY uuid) AS is_repeat
-FROM (SELECT * FROM stream.main.blocks WHERE file_path NOT IN ({{ files | join(sep=", ") }})
+FROM (SELECT * FROM stream.main.blocks WHERE file_path NOT IN ({{ files }})
       UNION ALL BY NAME
-      SELECT * FROM stream.main.parsed WHERE file_path IN ({{ files | join(sep=", ") }}))
+      SELECT * FROM stream.main.parsed WHERE file_path IN ({{ files }}))
 $w$, changed::JSON, autoescape := false) AS sql
-    FROM changed WHERE len(files) > 0
+    FROM changed WHERE files IS NOT NULL
 ), window_step AS (
     SELECT array_agg(selfdispatch(sql)) AS receipts FROM rendered
 ), index_step AS (
