@@ -44,7 +44,7 @@ SELECT * EXCLUDE (harness_prefixes, command_keys),
        AND NOT list_bool_or([starts_with(ltrim(message_content), p) FOR p IN harness_prefixes]) AS is_prompt
 FROM parsed
 $v$ AS parsed_sql,
-           $c$CREATE TABLE IF NOT EXISTS stream.main.blocks AS SELECT *, NULL::BOOLEAN AS is_repeat FROM stream.main.parsed LIMIT 0$c$ AS create_sql
+           $c$CREATE TABLE IF NOT EXISTS stream.main.blocks AS SELECT *, false AS is_repeat FROM stream.main.parsed LIMIT 0$c$ AS create_sql
 ), parsed_step AS (
     SELECT create_sql, array_agg(selfdispatch(parsed_sql)) AS receipts FROM intent GROUP BY create_sql
 ), create_step AS (

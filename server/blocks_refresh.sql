@@ -6,11 +6,12 @@ WITH program AS (
     SELECT $refresh$
 WITH transcript AS (
     SELECT path, modified FROM dev.agent.entries WHERE reader = 'read_json'
+), stale AS (
+    SELECT path FROM transcript WHERE modified >= now()::TIMESTAMP - INTERVAL 30 MINUTE   -- twice the cron period
+    UNION
+    SELECT path FROM transcript ANTI JOIN stream.main.blocks b ON b.file_path = transcript.path
 ), changed AS (
-    SELECT list(quote_literal(path)) AS files FROM (
-        SELECT path FROM transcript WHERE modified >= now()::TIMESTAMP - INTERVAL 30 MINUTE   -- twice the cron period
-        UNION
-        SELECT path FROM transcript ANTI JOIN stream.main.blocks b ON b.file_path = transcript.path)
+    SELECT list(quote_literal(path)) AS files FROM stale
 ), window_step AS (
     SELECT array_agg(selfdispatch(tera_render($w$
 CREATE OR REPLACE TABLE stream.main.blocks AS
