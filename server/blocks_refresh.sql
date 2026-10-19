@@ -3,9 +3,11 @@
 -- then rebuilds the BM25 index from that step's receipt. No transcript changed, no post.
 WITH program AS (
     SELECT $refresh$
-WITH changed AS (
-    SELECT list(quote_literal(path)) AS files FROM dev.agent.entries
-    WHERE reader = 'read_json' AND modified >= now()::TIMESTAMP - INTERVAL 30 MINUTE
+WITH intent AS (   -- twice the cron period, so a run that fails or overlaps loses nothing
+    SELECT INTERVAL 30 MINUTE AS lookback
+), changed AS (
+    SELECT list(quote_literal(path)) AS files FROM dev.agent.entries SEMI JOIN intent ON modified >= now()::TIMESTAMP - intent.lookback
+    WHERE reader = 'read_json'
 ), window_step AS (
     SELECT array_agg(selfdispatch(tera_render($w$
 CREATE OR REPLACE TABLE stream.main.blocks AS
