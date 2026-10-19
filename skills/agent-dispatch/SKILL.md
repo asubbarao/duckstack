@@ -152,9 +152,12 @@ ran it, and the lead passed it on. When run, it mistyped week dates and `+HH:MM`
 crashed on year-1 offsets. The same claim had already been disproved on 10-15: the Python version
 needed a regex and grew to 74 lines.
 
-**The verification is one self-dispatched query, and its rows are the answer.** The inputs are rows
-in the first CTE. Each one gets its DuckDB answer and renders a one-input Python statement, which is
-self-dispatched beside it; the receipts come back as columns, one row per input:
+**The verification is one self-dispatched query that runs both sides.** The inputs are declared
+once, as rows in the first CTE. Each input gets its DuckDB answer and renders the proposal as a
+one-input Python statement, dispatched beside it, so both sides come back in the receipts, nothing
+written to read back. Each receipt stays whole (`receipt.*`, body included), each row it returned is
+one `result_row`, and a failed dispatch stays as one row with a NULL `result_row`. The last SELECT
+names the compared field with one `->>` (RULES.md 5).
 ```sql
 WITH intent AS (           -- the inputs, declared once as rows
     SELECT unnest(['2026-10-18', '2026-02-30', $v$O'Brien$v$]) AS raw
@@ -166,22 +169,24 @@ print(json.dumps(dict(python_answer=datetime.date.fromisoformat($py$, to_json(ra
 PY
 |$cmd$, format := 'newline_delimited')$py$) AS sql
     FROM intent
-), dispatched AS (         -- each input keeps its receipt
+), dispatched AS (         -- run them, each receipt beside its input
     SELECT raw, duckdb_answer, array_agg(selfdispatch(sql)) AS receipts FROM rendered GROUP BY ALL
+), result_rows AS (        -- every receipt, and each row it returned
+    SELECT * EXCLUDE (receipts, receipt), receipt.*
+    FROM dispatched
+    CROSS JOIN UNNEST(receipts) AS t(receipt)
+    CROSS JOIN UNNEST(coalesce(try_cast(receipt.body AS JSON[]), [NULL::JSON])) AS r(result_row)
 )
-SELECT raw, duckdb_answer, receipt.body::JSON ->> '$[*].python_answer' AS python_answers,
-       [duckdb_answer] IS DISTINCT FROM python_answers AS differs, receipt.status, receipt.body
-FROM dispatched CROSS JOIN UNNEST(receipts) AS t(receipt)
+SELECT raw, duckdb_answer, result_row ->> 'python_answer' AS python_answer, status, body,
+       row(duckdb_answer, 200) IS DISTINCT FROM row(python_answer, status) AS differs
+FROM result_rows
 ORDER BY differs DESC, raw
 ```
 Swap in the real inputs, the DuckDB expression and the proposal (`fromisoformat` here). There is no
 loop and no `try`: an input the proposal raises on comes back as its own failed receipt (`status`
-500, the error in `body`, `python_answers` empty) and counts as `differs`. Verified on dev
-2026-10-19: three rows; `2026-10-18` agrees, `2026-02-30` and `O'Brien` differ (Python raised).
-To keep a record, wrap the whole query in
-`COPY (…) TO '<agent_log_dir>' (FORMAT parquet, PARTITION_BY (type, agent_signature), OVERWRITE_OR_IGNORE true, FILENAME_PATTERN '{uuid}')`;
-nothing reads it back to get the answer. A worker testing ponytail's or Thermos's proposal writes
-it as the Python (or bash) statement.
+500, the error in `body`) and counts as `differs`. A worker testing ponytail's or Thermos's proposal
+writes it as the Python (or bash) statement. Verified on dev 2026-10-19: three rows; `2026-10-18`
+agrees, `2026-02-30` and `O'Brien` differ (Python raised).
 
 ## 4. Evidence is false-first
 
