@@ -14,8 +14,8 @@ Run [collect.sql](collect.sql) on dev through `mcp__dev__query`. It returns one 
 already parses every transcript. The window is the one `INTERVAL` in it. Verified 2026-10-19: 14 days gave 303
 sessions and about 4,300 messages.
 
-Save the rows for the readers: wrap the query in `COPY (…) TO '<scratch>/said.parquet'`. That is a result handed to
-other agents, not a round trip.
+Nothing is stored: each reader in step 2 runs collect.sql itself with `AND session_id IN (<its group>)` added to
+the `typed` CTE.
 
 ## 2. Analyse (one Opus 5.5 reader per group of sessions)
 
