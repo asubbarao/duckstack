@@ -243,7 +243,7 @@ WITH primary_checks AS (SELECT unnest([
  'action': 'block', 'hook_event': 'PreToolUse', 'hook_decision': 'deny', 'replaces_hooks': ['H2', 'H3']},
 {'check_id': 'sql_char_code_quotes', 'rule_id': '01a14840-dca3-7c83-ae60-3457549687bd', 'tools': ['@sql'],
  'predicate_sql': $p$len(list_filter(sql_function_calls, f -> f.name IN ('chr', 'char') AND list_has_any(f.literals, ['39', '34']))) > 0$p$,
- 'message': 'Supply the variable part once with tera_render or quote_literal; no quote characters from character codes.',
+ 'message': 'Supply the variable part once with tera_render or quote_literal, inside a dollar-quoted body ($v$ ... $v$); no quote characters from character codes.',
  'action': 'block', 'hook_event': 'PreToolUse', 'hook_decision': 'deny', 'replaces_hooks': ['H7']},
 {'check_id': 'sql_char_code_newline', 'rule_id': '01a14840-dca3-7c83-ae60-3457549687bd', 'tools': ['@sql'],
  'predicate_sql': $p$len(list_filter(sql_function_calls, f -> f.name IN ('chr', 'char') AND list_contains(f.literals, '10'))) > 0$p$,
