@@ -107,8 +107,8 @@ reader chosen per file type by data.
 ### 6. SQL built from strings
 
 Flag quote-building from character codes, printf-style plumbing, nested quotes, doubled quotes
-and escapes. Statements come from word arrays and `quote_literal`, or a generic tera template
-that only substitutes. Templates with loops, conditionals or business logic are findings: logic
+and escapes. Statements come from word arrays and `quote_literal`, a generic tera template that
+only substitutes, or one `concat` of at most two holes (RULES.md 12). Templates with loops, conditionals or business logic are findings: logic
 lives in SQL. Tera constructs a statement and nothing else. A new template file is a finding
 unless the statement's shape is new: call an existing one with `template_path :=`.
 
