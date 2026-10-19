@@ -17,7 +17,7 @@ Nothing is stored: each reader in step 2 runs collect.sql with `AND session_id I
 
 ## 2. Analyse (one Opus 5.5 reader per group of sessions)
 
-Split the sessions into groups of about 200 KB of `chars`, keeping each session whole, and run one `Agent`
+Split the sessions into groups of about 200 KB of prompt text (`list_sum([strlen(p.message_content) FOR p IN prompts])`), keeping each session whole, and run one `Agent`
 (`model: "opus"`) per group in parallel. Each reader reads its sessions in order, since a correction makes sense next
 to the messages before it, and returns:
 
