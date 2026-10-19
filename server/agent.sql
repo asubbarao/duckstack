@@ -55,7 +55,7 @@ WITH c AS (
 ), statements AS (
     SELECT tera_render($view$
 CREATE OR REPLACE VIEW agent.lines AS
-SELECT * FROM read_parquet([{{ files | join(sep=", ") }}], union_by_name := true)
+SELECT * FROM read_parquet([{{ files | join(sep=", ") }}], union_by_name := true, file_row_number := true)
 SEMI JOIN agent.entries e ON e.path = transcript;
 $view$, c::JSON, autoescape := false) AS sql FROM c WHERE len(files) > 0
 ), posted AS (
