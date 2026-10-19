@@ -152,34 +152,36 @@ ran it, and the lead passed it on. When run, it mistyped week dates and `+HH:MM`
 crashed on year-1 offsets. The same claim had already been disproved on 10-15: the Python version
 needed a regex and grew to 74 lines.
 
-**The verification is one query, and its rows are the answer.** It runs the proposal and the DuckDB
-version on the same inputs and returns one row per input with both answers side by side:
+**The verification is one self-dispatched query, and its rows are the answer.** The inputs are rows
+in the first CTE. Each one gets its DuckDB answer and renders a one-input Python statement, which is
+self-dispatched beside it; the receipts come back as columns, one row per input:
 ```sql
-WITH python_side AS (      -- the inputs live here once; the proposal runs on them
-    SELECT * FROM read_json($cmd$/opt/homebrew/bin/uv run --quiet --no-project python - <<'PY'
-import json
-for raw in [<inputs>]:
-    try:
-        print(json.dumps(dict(raw=raw, <compared column>=<proposal>(raw), error=None)))
-    except Exception as e:
-        print(json.dumps(dict(raw=raw, <compared column>=None, error=type(e).__name__)))
+WITH intent AS (           -- the inputs, declared once as rows
+    SELECT unnest(['2026-10-18', '2026-02-30', $v$O'Brien$v$]) AS raw
+), rendered AS (           -- per input: the DuckDB answer, and the proposal as a one-input statement
+    SELECT raw, try_strptime(raw, '%Y-%m-%d')::DATE::VARCHAR AS duckdb_answer,
+           concat($py$SELECT * FROM read_json($cmd$/opt/homebrew/bin/uv run --quiet --no-project python - <<'PY'
+import json, datetime
+print(json.dumps(dict(python_answer=datetime.date.fromisoformat($py$, to_json(raw), $py$).isoformat())))
 PY
-|$cmd$, format := 'newline_delimited')
+|$cmd$, format := 'newline_delimited')$py$) AS sql
+    FROM intent
+), dispatched AS (         -- each input keeps its receipt
+    SELECT raw, duckdb_answer, array_agg(selfdispatch(sql)) AS receipts FROM rendered GROUP BY ALL
 )
-SELECT raw, <duckdb expression over raw> AS duckdb_answer, <compared column> AS python_answer,
-       error AS python_error, duckdb_answer IS DISTINCT FROM python_answer AS differs
-FROM python_side
+SELECT raw, duckdb_answer, receipt.body::JSON ->> '$[*].python_answer' AS python_answers,
+       [duckdb_answer] IS DISTINCT FROM python_answers AS differs, receipt.status, receipt.body
+FROM dispatched CROSS JOIN UNNEST(receipts) AS t(receipt)
 ORDER BY differs DESC, raw
 ```
-The DuckDB answer is computed on the same row as the Python answer, so there is no second side to
-join. An input the proposal raises on still prints its row, with the exception type in `error`.
-The inputs stay in the script: a self-dispatched Python side returns receipts (`status`, `body`
-as text), not the script's columns. To keep
-the run as a signed record, wrap this same query in the agent-log COPY (`$query$…$query$` stored
-and executed); nothing reads that record back to get the answer, the query already returned it.
-A worker testing ponytail's or Thermos's proposal writes it as the Python (or bash) side. Verified
-on dev 2026-10-18 (T4 proposal: the `+05:00` midnight, the year-1 `OverflowError` and an input
-containing `'` all show as `differs`).
+Swap in the real inputs, the DuckDB expression and the proposal (`fromisoformat` here). There is no
+loop and no `try`: an input the proposal raises on comes back as its own failed receipt (`status`
+500, the error in `body`, `python_answers` empty) and counts as `differs`. Verified on dev
+2026-10-19: three rows; `2026-10-18` agrees, `2026-02-30` and `O'Brien` differ (Python raised).
+To keep a record, wrap the whole query in
+`COPY (…) TO '<agent_log_dir>' (FORMAT parquet, PARTITION_BY (type, agent_signature), OVERWRITE_OR_IGNORE true, FILENAME_PATTERN '{uuid}')`;
+nothing reads it back to get the answer. A worker testing ponytail's or Thermos's proposal writes
+it as the Python (or bash) statement.
 
 ## 4. Evidence is false-first
 
