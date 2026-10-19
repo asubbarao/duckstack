@@ -72,18 +72,17 @@ the hour, rows run back through the day one session at a time, newest session fi
 ```sql
 WITH day AS (
   SELECT session_id, timestamp AS ts, message_role AS role, head,
-         max(timestamp) OVER (PARTITION BY session_id) AS last_ts,
-         row_number() OVER (PARTITION BY session_id ORDER BY timestamp DESC) AS back
+         ts > now() - INTERVAL 1 HOUR AS live,
+         first_value(timestamp) OVER w AS last_ts,
+         row_number() OVER w AS back
   FROM agent.messages
   WHERE timestamp > now() - INTERVAL 24 HOUR AND block_type = 'text' AND NOT is_agent
     AND CASE message_role WHEN 'user' THEN is_prompt ELSE true END
-), ordered AS (
-  SELECT CASE WHEN ts > now() - INTERVAL 1 HOUR THEN 1 ELSE 2 END AS tier, *
-  FROM day
+  WINDOW w AS (PARTITION BY session_id ORDER BY timestamp DESC)
 )
-SELECT tier, back, session_id, ts, role, head
-FROM ordered
-ORDER BY tier, CASE WHEN tier = 1 THEN back END, last_ts DESC, ts DESC
+SELECT live, back, session_id, ts, role, head
+FROM day
+ORDER BY live DESC, CASE WHEN live THEN back END, last_ts DESC, ts DESC
 LIMIT 20;
 ```
 
