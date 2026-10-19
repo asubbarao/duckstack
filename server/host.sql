@@ -222,7 +222,7 @@ WITH ps_words AS (
            CASE WHEN g.pgid <= 1 THEN NULL
                 WHEN l.pid IS NULL THEN 'orphan'
                 WHEN contains(l.args, '/.claude/shell-snapshots/') THEN 'claude'
-                WHEN p.args SIMILAR TO '.*/codex( .*)?' AND NOT starts_with(g.args, '/Applications/ChatGPT.app/')
+                WHEN ends_with(split_part(p.args, ' ', 1), '/codex') AND NOT starts_with(g.args, '/Applications/ChatGPT.app/')
                      AND NOT starts_with(g.args, '/Users/aloksubbarao/.codex/')
                      AND NOT starts_with(g.args, '/Users/aloksubbarao/.local/bin/') THEN 'codex'
            END AS spawned_by
@@ -231,12 +231,10 @@ WITH ps_words AS (
     SELECT *, arg_max(spawned_by, age_s) OVER (PARTITION BY pgid) AS group_spawned_by,
            arg_max(args, age_s) OVER (PARTITION BY pgid) AS group_root_args, max(age_s) OVER (PARTITION BY pgid) AS group_age_s,
            file_name(split_part(args, ' ', 1)) = 'duckdb' AND contains(args, '/.duck/db/dev.duckdb') AS is_dev_server,
-           arg_max(CASE WHEN is_dev_server THEN pid END, CASE WHEN is_dev_server THEN age_s END) OVER () AS dev_pid,
-           arg_max(CASE WHEN is_dev_server THEN pgid END, CASE WHEN is_dev_server THEN age_s END) OVER () AS dev_pgid,
-           max(CASE WHEN is_dev_server THEN age_s END) OVER () AS dev_age_s
+           arg_max(CASE WHEN is_dev_server THEN {pid: pid, pgid: pgid, age_s: age_s} END, CASE WHEN is_dev_server THEN age_s END) OVER () AS dev
     FROM owned
 )
-SELECT * EXCLUDE (is_dev_server),
+SELECT * EXCLUDE (is_dev_server, dev), dev.pid AS dev_pid, dev.pgid AS dev_pgid, dev.age_s AS dev_age_s,
        coalesce(group_spawned_by IS NOT NULL AND group_age_s >= 600
                 AND NOT (group_spawned_by = 'orphan'
                          AND len(list_filter(['%.app/Contents/%', '/System/%', '/usr/%', '/Library/%', '/opt/homebrew/Cellar/podman/%'],
