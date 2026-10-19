@@ -20,22 +20,22 @@ CREATE OR REPLACE VIEW host_processes AS
 WITH ps_words AS (
     SELECT content, list_filter(string_split(content, ' '), w -> w <> '') AS words
     FROM read_lines($cmd$ps -axww -o pid=,ppid=,pgid=,etime=,args= |$cmd$, "trim" := true)
-), ps AS (   -- args is the rest of the line after etime; etime always holds a ':', so pid digits never match it.
-             -- ps and top pad columns with runs of spaces, which read_csv can't split; follow-up: a reader with ppid/pgid/args.
+), ps_rows AS (   -- args is the rest of the line after etime; etime always holds a ':', so pid digits never match it.
+                 -- ps and top pad columns with runs of spaces, which read_csv can't split; follow-up: a reader with ppid/pgid/args.
     SELECT words[1]::BIGINT AS pid, words[2]::BIGINT AS ppid, words[3]::BIGINT AS pgid, words[4] AS etime, words[5] AS exe,
            left(trim(substr(content, strpos(content, words[4]) + len(words[4]))), 2000) AS args
     FROM ps_words
 ), top_words AS (
     SELECT list_filter(string_split(content, ' '), w -> w <> '') AS words
     FROM read_lines($cmd$top -l 1 -stats pid,mem |$cmd$, "trim" := true)
-), top AS (   -- top's process rows are a pid and its MEM; no header line starts with a number
+), top_footprint AS (   -- top's process rows are a pid and its MEM (footprint; sazgar_processes() has only RSS)
     SELECT TRY_CAST(words[1] AS BIGINT) AS pid, words[2] AS mem FROM top_words WHERE len(words) = 2
-), procs AS (
-    SELECT ps.*, string_split(etime, '-') AS day_split, list_reverse(string_split(day_split[-1], ':')) AS smh,
+), processes_aged AS (
+    SELECT ps_rows.*, string_split(etime, '-') AS day_split, list_reverse(string_split(day_split[-1], ':')) AS smh,
            CASE len(day_split) WHEN 2 THEN day_split[1]::BIGINT ELSE 0 END * 86400
              + coalesce(smh[3]::BIGINT, 0) * 3600 + smh[2]::BIGINT * 60 + smh[1]::BIGINT AS age_s,
            MAP {'G': 1024, 'M': 1, 'K': 1/1024}[right(rtrim(mem, '+-'), 1)] * TRY_CAST(rtrim(rtrim(mem, '+-'), 'BKMG') AS DOUBLE) AS footprint_mb
-    FROM ps LEFT JOIN top USING (pid)
+    FROM ps_rows LEFT JOIN top_footprint USING (pid)
 ), owned AS (
     SELECT process.* EXCLUDE (day_split, smh), now() AS observed_at, leader.args AS leader_args, parent.args AS parent_args,
            CASE WHEN process.pgid <= 1 THEN NULL
@@ -43,9 +43,9 @@ WITH ps_words AS (
                 WHEN contains(leader.args, '/.claude/shell-snapshots/') THEN 'claude'
                 WHEN file_name(parent.exe) = 'codex' AND codex_own.prefix IS NULL THEN 'codex'
            END AS spawned_by
-    FROM procs AS process
-    LEFT JOIN procs AS leader ON leader.pid = process.pgid
-    LEFT JOIN procs AS parent ON parent.pid = process.ppid
+    FROM processes_aged AS process
+    LEFT JOIN processes_aged AS leader ON leader.pid = process.pgid
+    LEFT JOIN processes_aged AS parent ON parent.pid = process.ppid
     LEFT JOIN codex_own_prefixes AS codex_own ON starts_with(process.args, codex_own.prefix)
 ), grouped AS (
     SELECT *, arg_max(spawned_by, age_s) OVER (PARTITION BY pgid) AS group_spawned_by,
@@ -68,5 +68,5 @@ WITH ps_words AS (
     LEFT JOIN exempt_groups AS exempt ON exempt.pgid = process.pgid
     LEFT JOIN dev_server AS dev ON dev.pgid = process.pgid
 )
-SELECT *, CASE WHEN reap THEN -pgid WHEN greatest(reap_dev_job, reap_client_job) THEN pid END AS kill_id
+SELECT *, CASE WHEN reap THEN -pgid WHEN true IN (reap_dev_job, reap_client_job) THEN pid END AS kill_id
 FROM marked;
