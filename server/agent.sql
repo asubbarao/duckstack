@@ -21,12 +21,6 @@ SELECT f.path, parse_dirpath(f.path) AS parent, f.name, f.stem, f.ext, f.bytes, 
             ELSE f.path[:-(len(f.ext) + 1)] END AS session
 FROM fs.files f JOIN roots r ON starts_with(f.path[len(getenv('HOME')) + 1:], r.root)
 WHERE f.ext IN ('.jsonl', '.zst', '.parquet');
--- agent.docs: every memory, plan and instruction file Claude and Codex keep, one row per file, read live.
-CREATE OR REPLACE VIEW agent.docs AS
-SELECT filename AS path, file_name(filename) AS name, size, last_modified, content
-FROM read_text(['/Users/aloksubbarao/.claude/projects/*/memory/*.md', '/Users/aloksubbarao/.claude/plans/*.md',
-    '/Users/aloksubbarao/.codex/memories/*.md', '/Users/aloksubbarao/.codex/memories/*/*/*/*.md',
-    '/Users/aloksubbarao/.claude/CLAUDE.md', '/Users/aloksubbarao/AGENTS.md', '/Users/aloksubbarao/.codex/AGENTS.md']);
 -- agent.titles: Codex thread names from ~/.codex/session_index.jsonl; id is the session id in the rollout file name.
 CREATE OR REPLACE VIEW agent.titles AS
 SELECT id, thread_name AS title, updated_at::TIMESTAMPTZ AS updated_at FROM read_json(getenv('HOME') || '/.codex/session_index.jsonl', format := 'newline_delimited');
@@ -75,9 +69,11 @@ $refresh$ AS sql
 )
 SELECT cron(sql, '0 */5 * * * *') AS job, r.*
 FROM posted CROSS JOIN UNNEST(receipts) AS t(r);
--- agent.message_blocks: one row per message block, agent_data's column names, with the full text (message_content) and
--- tool input. is_prompt is a person's typed message. Read it for a block you already picked from agent.messages.
-CREATE OR REPLACE VIEW agent.message_blocks AS
+-- agent.messages: one row per message block, agent_data's column names. The full text stays in the next-to-last
+-- step: the view returns content_bytes and the first and last 100 characters (head, tail), so a 290 KB paste never
+-- fills a reply; a picked row's full text is agent.lines.message where uuid matches. is_prompt is a person's typed
+-- message. Columns are read with ->> '$' because agent.lines keeps every top-level field as JSON (see above).
+CREATE OR REPLACE VIEW agent.messages AS
 WITH line AS (
     SELECT transcript AS file_path, CASE WHEN contains(transcript, '/.codex/') THEN 'codex' ELSE 'claude' END AS source,
            contains(transcript, '/subagents/') AS is_agent, coalesce(sessionId ->> '$', parse_filename(transcript, true)) AS session_id,
@@ -96,15 +92,14 @@ WITH line AS (
            coalesce(b ->> 'name', b ->> 'call_id') AS tool_name, coalesce(b ->> 'id', b ->> 'tool_use_id', b ->> 'call_id') AS tool_use_id,
            coalesce(b -> 'input', try_cast(b ->> 'arguments' AS JSON)) AS tool_input, strlen(b::VARCHAR) AS content_bytes
     FROM block
-)
-SELECT *, message_role = 'user' AND block_type IN ('text', 'input_text') AND NOT is_agent
+), prompts AS (
+    SELECT *, message_role = 'user' AND block_type IN ('text', 'input_text') AND NOT is_agent
           AND NOT starts_with(ltrim(message_content), '<') AND NOT starts_with(message_content, '[Request interrupted')
           AND NOT starts_with(message_content, 'This session is being continued')
-          AND NOT starts_with(message_content, 'Base directory for this skill') AS is_prompt
-FROM parsed;
--- agent.messages: the same rows without the full text, so a 290 KB paste never fills a reply: content_bytes, and the
--- first and last 100 characters as head and tail. Search and list here; fetch full text from agent.message_blocks.
-CREATE OR REPLACE VIEW agent.messages AS
+          AND NOT starts_with(message_content, 'Base directory for this skill')
+          AND NOT starts_with(message_content, 'Another Claude session sent a message') AS is_prompt
+    FROM parsed
+)
 SELECT * EXCLUDE (message_content, tool_input), left(message_content, 100) AS head, right(message_content, 100) AS tail,
        left(tool_input::VARCHAR, 100) AS tool_input_head
-FROM agent.message_blocks;
+FROM prompts;

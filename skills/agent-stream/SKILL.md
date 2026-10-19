@@ -9,8 +9,8 @@ allowed-tools: mcp__dev__query
 Start from `agent.messages`: one row per message block, agent_data's column names (`source, session_id, file_path,
 is_agent, timestamp, message_role, block_type, tool_name, tool_use_id, uuid, model, cwd, git_branch, entrypoint`),
 plus `is_prompt` (a person's typed message), `content_bytes`, and `head`/`tail` (first and last 100 characters) in
-place of the full text, so a 290 KB paste never fills a reply. Search and list there; fetch the full text of the rows
-you picked from `agent.message_blocks` (`message_content`, `tool_input`), joined on `uuid`. Never unpack
+place of the full text, so a 290 KB paste never fills a reply. Search and list there; the full text of a row you
+picked is `agent.lines.message` (or `payload` for Codex) on the same `uuid`. Never unpack
 `agent.lines` JSON by hand, never `read_conversations`, and never read `lake.agent.stream` (stale since 2026-10-12).
 
 ```sql

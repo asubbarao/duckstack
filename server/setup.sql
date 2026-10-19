@@ -70,6 +70,7 @@ CALL enable_logging(['QueryLog', 'HTTP', 'Quack', 'Metrics'], storage := 'file',
 .read server/lake.sql
 .read server/fs.sql
 .read server/agent.sql
+.read server/docs.sql
 .read server/ext_catalog.sql
 .read server/host.sql
 .read server/reaper.sql

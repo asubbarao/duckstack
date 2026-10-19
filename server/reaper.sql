@@ -5,9 +5,8 @@
 WITH program AS (
     SELECT $reap$
 WITH targets AS (   -- a group is killed as -pgid, a duck command by its pid
-    SELECT list_filter(list_distinct(list(CASE WHEN reap THEN '-' || pgid END))
-                       || list(CASE WHEN contains(parent_args, '/server/client.sql') AND age_s >= 180 THEN pid::VARCHAR END),
-                       k -> k IS NOT NULL) AS ids
+    SELECT list_distinct(list(CASE WHEN reap THEN '-' || pgid
+                                   WHEN contains(parent_args, '/server/client.sql') AND age_s >= 180 THEN pid::VARCHAR END)) AS ids
     FROM host_processes
 ), rendered AS (
     SELECT tera_render($t$SELECT content FROM read_lines($k$kill -TERM -- {{ ids | join(sep=" ") }} 2>&1; sleep 5; kill -KILL -- {{ ids | join(sep=" ") }} 2>/dev/null; echo reaped |$k$)$t$,
