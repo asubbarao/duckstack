@@ -173,7 +173,8 @@ SELECT s.call_id, s.sql_source, s.program_index, s.statement_no, s.statement_kin
        coalesce(f.functions_called, []) AS functions_called,
        coalesce(f.function_calls, []) AS function_calls,
        coalesce(f.table_function_calls, []) AS table_function_calls,
-       coalesce(f.shellfs_pipes, []) AS shellfs_pipes,       coalesce(f.cte_names, []) AS cte_names,
+       coalesce(f.shellfs_pipes, []) AS shellfs_pipes,
+       coalesce(f.cte_names, []) AS cte_names,
        coalesce(f.has_count_star, false) AS has_count_star,
        coalesce(f.has_filter_clause, false) AS has_filter_clause,
        coalesce(f.has_values_clause, false) AS has_values_clause,
@@ -215,7 +216,8 @@ stmts AS (
          flatten(list(table_function_calls)) AS sql_table_function_calls,
          list_sort(list_distinct(flatten(list([t.name FOR t IN table_function_calls])))) AS sql_table_functions,
          flatten(list(shellfs_pipes)) AS sql_shellfs_pipes,
-         list_distinct(flatten([p.commands FOR p IN flatten(list(shellfs_pipes))])) AS sql_shellfs_commands,         list_distinct(flatten(list(cte_names))) AS sql_cte_names,
+         list_distinct(flatten([p.commands FOR p IN flatten(list(shellfs_pipes))])) AS sql_shellfs_commands,
+         list_distinct(flatten(list(cte_names))) AS sql_cte_names,
          bool_or(has_count_star) AS sql_has_count_star,
          bool_or(has_filter_clause) AS sql_has_filter_clause,
          bool_or(has_values_clause) AS sql_has_values_clause,
@@ -231,7 +233,8 @@ stmts AS (
          bool_or(has_left_join_lateral) AS sql_has_left_join_lateral,
          bool_or(has_join_on_constant) AS sql_has_join_on_constant,
          bool_or(has_scalar_subquery_in_select) AS sql_has_scalar_subquery_in_select,
-         bool_or(has_qualify) AS sql_has_qualify,         list_distinct(flatten(list(lateral_functions))) AS sql_lateral_functions,
+         bool_or(has_qualify) AS sql_has_qualify,
+         list_distinct(flatten(list(lateral_functions))) AS sql_lateral_functions,
          max(concat_chain_max) AS sql_concat_chain_max
   FROM sql_statement_facts GROUP BY ALL)
 SELECT t.call_id, t.sql_sources, t.sql_parse_ok, s.* EXCLUDE (call_id)

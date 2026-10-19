@@ -146,7 +146,7 @@ SELECT 'sql_dispatch_positional' AS check_id, call_id, tool_name, coalesce(next_
 UNION ALL
 SELECT 'sql_dispatch_range_source' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((list_contains(sql_functions, 'selfdispatch') AND list_has_any(list_concat(sql_table_functions, sql_functions), ['range', 'generate_series'])), false)
 UNION ALL
-SELECT 'sql_dispatch_shape' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((list_contains(sql_functions, 'selfdispatch') AND NOT (list_has_any(sql_functions, ['array_agg', 'list']) AND sql_has_unnest_cross_join)), false)
+SELECT 'sql_dispatch_shape' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((list_contains(sql_functions, 'selfdispatch') AND NOT (len(list_filter(sql_function_calls, f -> f.name IN ('array_agg', 'list') AND list_contains(f.args, 'selfdispatch'))) > 0 AND sql_has_unnest_cross_join)), false)
 UNION ALL
 SELECT 'sql_drop_table' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((list_contains([h[1:2] FOR h IN sql_heads], ['DROP', 'TABLE'])), false)
 UNION ALL
@@ -178,7 +178,7 @@ SELECT 'sql_left_join_lateral' AS check_id, call_id, tool_name, coalesce(next_pr
 UNION ALL
 SELECT 'sql_limit_one' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((sql_has_limit_1), false)
 UNION ALL
-SELECT 'sql_list_transform_range' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((len(list_filter(sql_function_calls, f -> f.name IN ('list_transform', 'list_apply', 'apply') AND f.args[1] IN ('range', 'generate_series'))) > 0), false)
+SELECT 'sql_list_transform_range' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((len(list_filter(sql_function_calls, f -> f.name IN ('list_transform', 'list_apply', 'apply') AND list_has_any(f.args, ['range', 'generate_series']))) > 0), false)
 UNION ALL
 SELECT 'sql_lossy_case_pivot' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((len(list_filter(sql_function_calls, f -> f.name IN ('max', 'min', 'first', 'last') AND list_contains(f.args, 'case'))) > 0), false)
 UNION ALL

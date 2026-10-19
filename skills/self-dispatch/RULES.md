@@ -137,7 +137,7 @@ receipt problems below have one place to be checked.
     argument (10-13).
 34a. **The row keeps its columns.** `SELECT pr_number, array_agg(selfdispatch(sql)) AS receipts … GROUP BY ALL`,
     then `CROSS JOIN UNNEST(receipts)`: each receipt sits beside its row's `pr_number`. The statement itself is just a
-    concat (`'SELECT * FROM read_csv(' || quote_literal(path) || ')'`); a template is for when the holes get many.
+    concat (`concat('SELECT * FROM read_csv(', quote_literal(path), ')')`); a template is for when the holes get many.
     Never two parallel arrays matched by position (`prs` plus `receipts[n]`) (hook, 10-18).
 34b. **Nested `tera_render` is allowed when it helps**, for example a statement that itself dispatches further: render the
     per-row statements, `array_agg` them, and send that whole array to another host's `:9495`, which self-dispatches

@@ -147,7 +147,7 @@ in that one place:
 
 1. **Rows first.** The first CTE declares real rows (catalog, hostfs, a table) with every value as a column.
    No `range()` / `generate_series` source, no literal list of what a relation already holds.
-2. **The statement is a concat or a template.** A plain concat (`'SELECT * FROM read_csv(' || quote_literal(path) || ')'`)
+2. **The statement is a concat or a template.** A plain concat (`concat('SELECT * FROM read_csv(', quote_literal(path), ')')`)
    is the default. A template from `templates/` is called by name once the holes get many, with no `row_to_json`.
    The bash loop template is a fallback and needs a reason.
 3. **The macro, with the row.** `SELECT pr_number, array_agg(selfdispatch(sql)) AS receipts … GROUP BY ALL`: the
@@ -189,10 +189,19 @@ SELECT table_name, receipt.*, receipt.status IS DISTINCT FROM 200 AS failed
 FROM dispatched CROSS JOIN UNNEST(receipts) AS t(receipt);
 ```
 
+Verified on dev 2026-10-18 (6 rows, first three; body cut):
+
+| table_name | status | body | failed |
+|---|---|---|---|
+| dirs | 200 | `[{"path":"…/Library/LaunchAgents","modified":"2026-10-19 00:10:10"}, …]` | false |
+| files | 200 | `[{"path":"…/Media/.DS_Store","folder":"…/Media","name":…}, …]` | false |
+| folders | 200 | `[{"path":"…/Public","parent":"…","name":"Public",…}, …]` | false |
+
 The first CTE declares everything, the template only substitutes, the reader is `SELECT *` and brings its own
 columns, and the result is each row's key next to `receipt.*`, with failures kept as flagged rows. `selfdispatch(sql)` is exactly `quackapi_post('http://127.0.0.1:9495/sql', json_object('sql', sql)::VARCHAR)`: the
 post always goes to dev itself, and whatever varies by row goes inside the statement. A query that hand-writes the
-post, takes a URL per row, or builds it with `url_build` is a finding.
+post to dev, takes dev's URL per row, or builds it with `url_build` is a finding; a request to another host is
+`network.tera`.
 
 ```sql
 -- a template file
@@ -229,6 +238,9 @@ WITH sessions AS (
 )
 SELECT session_id, receipt.*, receipt.status IS DISTINCT FROM 200 AS failed FROM dispatched CROSS JOIN UNNEST(receipts) AS t(receipt);
 ```
+
+Verified on dev 2026-10-18: three sessions, each `200`, body `[{"type":"custom-title","customTitle":"INF-1583",…}, …]`,
+`failed` false. Each body is the whole transcript (4–26 MB).
 
 **printf building a path, the reader's schema declared, arrows digging into the result** (checks 6, 7):
 ```sql

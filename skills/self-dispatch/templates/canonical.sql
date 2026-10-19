@@ -45,11 +45,11 @@ WITH tables AS (
 )
 SELECT receipt.* FROM dispatched CROSS JOIN UNNEST(receipts) AS t(receipt);
 
--- 4. network: one request per row to another host. The url here is dev's own /sql so the example runs anywhere;
---    put another machine's host:9495 in its place. The row's own columns ride with
---    its receipt: group by them next to array_agg(selfdispatch(sql)), then read target next to receipt.*.
+-- 4. network: one request per row to another host (never dev itself: that is selfdispatch). Another DuckDB's
+--    host:9495/sql takes the same body. The row's columns ride with its receipt: target next to receipt.*.
+--    Verified 2026-10-18: httpbin | 200 | [{"response":{"status":200,"reason":"OK","body":"{ \"data\": ... }"}}]
 WITH requests AS (
-    SELECT 'dev' AS target, 'http://127.0.0.1:9495/sql' AS url, json_object('sql', 'SELECT 42 AS answer')::VARCHAR AS body
+    SELECT 'httpbin' AS target, 'https://httpbin.org/post' AS url, json_object('sql', 'SELECT 42 AS answer')::VARCHAR AS body
 ), rendered AS (
     SELECT target, tera_render('network.tera', c::JSON, autoescape := false,
                                template_path := concat_ws('/', getenv('HOME'), '.duck/deploy/skills/self-dispatch/templates/*.tera')) AS sql
