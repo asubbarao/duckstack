@@ -1,20 +1,18 @@
 -- Dev only (agents' clients do not read this file). Every 5 minutes, and once at boot: kill every process group
 -- host_processes marks reap and every process it marks reap_dev_job (alone: dev's own jobs share dev's group), in one
--- shell line: TERM, five seconds, KILL. First the marked rows, every column, go to ~/.duck/logs/reaped/<UTC time>.json,
--- the same rows the kill names. Nothing marked, no file and no command.
+-- shell line: TERM, five seconds, KILL. A group is its negative pgid, which kill reads as the whole group. First the
+-- marked rows, every column, go to ~/.duck/logs/reaped/<UTC time>.json. Nothing marked, no file and no command.
 WITH program AS (
     SELECT $reap$
-WITH marked AS (
-    SELECT * FROM host_processes WHERE greatest(reap, reap_dev_job)
-), targets AS (
-    SELECT list_filter(list(DISTINCT CASE WHEN reap THEN '-' || pgid END) || list(CASE WHEN reap_dev_job THEN pid::VARCHAR END),
-                       lambda id: id IS NOT NULL) AS ids,
-           to_json(list(marked))::VARCHAR AS rows, getenv('HOME') AS home, strftime(timezone('UTC', now()), '%Y%m%dT%H%M%SZ') AS stamp
-    FROM marked HAVING count(pid) > 0
+WITH targets AS (
+    SELECT getenv('HOME') AS home, strftime(timezone('UTC', now()), '%Y%m%dT%H%M%SZ') AS stamp,
+           list(pid) AS pids, list(DISTINCT CASE WHEN reap THEN -pgid ELSE pid END) AS ids
+    FROM host_processes WHERE true IN (reap, reap_dev_job)
+    GROUP BY home, stamp
 ), rendered AS (
     SELECT tera_render($t$
 SELECT content FROM read_lines('mkdir -p {{ home }}/.duck/logs/reaped |');
-COPY (SELECT unnest(($j${{ rows }}$j$::JSON)::JSON[]) AS process) TO '{{ home }}/.duck/logs/reaped/{{ stamp }}.json' (FORMAT json);
+COPY (SELECT * FROM host_processes WHERE pid IN ({{ pids | join(sep=", ") }})) TO '{{ home }}/.duck/logs/reaped/{{ stamp }}.json' (FORMAT json);
 SELECT content FROM read_lines($k$kill -TERM -- {{ ids | join(sep=" ") }} 2>&1; sleep 5; kill -KILL -- {{ ids | join(sep=" ") }} 2>/dev/null; echo reaped |$k$);
 $t$, targets::JSON, autoescape := false) AS sql
     FROM targets

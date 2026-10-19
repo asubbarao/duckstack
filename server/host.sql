@@ -197,12 +197,15 @@ SELECT 'Safari', 'close', 'tab', $osa$tell application "Safari" to close tab {{ 
 -- an agent, the group is 10 minutes old, and it is not an orphaned app or system helper. reap_dev_job marks a process
 -- dev's shell started (a shellfs command, a nohup job) that is an hour old: it shares dev's group, started after dev,
 -- so the wrapper and feeder started with dev never qualify. It is killed alone, never by group, which would kill dev.
+-- Orphaned groups whose oldest command matches one of these are apps and system helpers, never reaped.
+CREATE OR REPLACE VIEW reap_exempt_prefixes AS
+SELECT unnest(['%.app/Contents/%', '/System/%', '/usr/%', '/Library/%', '/opt/homebrew/Cellar/podman/%']) AS pattern;
 CREATE OR REPLACE VIEW host_processes AS
 WITH ps_words AS (
     SELECT content, list_filter(string_split(content, ' '), w -> w <> '') AS words
     FROM read_lines($cmd$ps -axww -o pid=,ppid=,pgid=,etime=,args= |$cmd$, "trim" := true)
 ), ps AS (   -- args is the rest of the line after etime, which alone of the first four holds a ':'
-    SELECT words[1]::BIGINT AS pid, words[2]::BIGINT AS ppid, words[3]::BIGINT AS pgid, words[4] AS etime,
+    SELECT words[1]::BIGINT AS pid, words[2]::BIGINT AS ppid, words[3]::BIGINT AS pgid, words[4] AS etime, words[5] AS exe,
            left(trim(substr(content, strpos(content, words[4]) + len(words[4]))), 2000) AS args
     FROM ps_words
 ), top_words AS (
@@ -222,7 +225,7 @@ WITH ps_words AS (
            CASE WHEN g.pgid <= 1 THEN NULL
                 WHEN l.pid IS NULL THEN 'orphan'
                 WHEN contains(l.args, '/.claude/shell-snapshots/') THEN 'claude'
-                WHEN ends_with(split_part(p.args, ' ', 1), '/codex') AND NOT starts_with(g.args, '/Applications/ChatGPT.app/')
+                WHEN file_name(p.exe) = 'codex' AND NOT starts_with(g.args, '/Applications/ChatGPT.app/')
                      AND NOT starts_with(g.args, '/Users/aloksubbarao/.codex/')
                      AND NOT starts_with(g.args, '/Users/aloksubbarao/.local/bin/') THEN 'codex'
            END AS spawned_by
@@ -230,17 +233,17 @@ WITH ps_words AS (
 ), grouped AS (
     SELECT *, arg_max(spawned_by, age_s) OVER (PARTITION BY pgid) AS group_spawned_by,
            arg_max(args, age_s) OVER (PARTITION BY pgid) AS group_root_args, max(age_s) OVER (PARTITION BY pgid) AS group_age_s,
-           file_name(split_part(args, ' ', 1)) = 'duckdb' AND contains(args, '/.duck/db/dev.duckdb') AS is_dev_server,
+           file_name(exe) = 'duckdb' AND contains(args, '/.duck/db/dev.duckdb') AS is_dev_server,
            arg_max(CASE WHEN is_dev_server THEN {pid: pid, pgid: pgid, age_s: age_s} END, CASE WHEN is_dev_server THEN age_s END) OVER () AS dev
     FROM owned
+), exempt_groups AS (
+    SELECT DISTINCT g.pgid FROM grouped g JOIN reap_exempt_prefixes e ON g.group_root_args LIKE e.pattern
+    WHERE g.group_spawned_by = 'orphan'
 )
-SELECT * EXCLUDE (is_dev_server, dev), dev.pid AS dev_pid, dev.pgid AS dev_pgid, dev.age_s AS dev_age_s,
-       coalesce(group_spawned_by IS NOT NULL AND group_age_s >= 600
-                AND NOT (group_spawned_by = 'orphan'
-                         AND len(list_filter(['%.app/Contents/%', '/System/%', '/usr/%', '/Library/%', '/opt/homebrew/Cellar/podman/%'],
-                                             k -> group_root_args LIKE k)) > 0), false) AS reap,
-       coalesce(pgid = dev_pgid AND pid <> dev_pid AND age_s < dev_age_s AND age_s >= 3600, false) AS reap_dev_job
-FROM grouped;
+SELECT g.* EXCLUDE (is_dev_server, dev), g.dev.pid AS dev_pid, g.dev.pgid AS dev_pgid, g.dev.age_s AS dev_age_s,
+       coalesce(g.group_spawned_by IS NOT NULL AND g.group_age_s >= 600 AND x.pgid IS NULL, false) AS reap,
+       coalesce(g.pgid = g.dev.pgid AND g.pid <> g.dev.pid AND g.age_s < g.dev.age_s AND g.age_s >= 3600, false) AS reap_dev_job
+FROM grouped g LEFT JOIN exempt_groups x ON x.pgid = g.pgid;
 
 -- Every file macOS keeps in DiagnosticReports: crash reports (.ips), out-of-memory kills (JetsamEvent*.ips), resource
 -- reports (.diag: disk writes, CPU, wakeups). The globs name whole folders, which always hold files: a glob matching
