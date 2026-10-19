@@ -134,10 +134,13 @@ property of the diff blesses every existing violation.
   (each its own statement), on dev or in the worker's own `:memory:` client, is always
   allowed — say so in the brief.
 - **Delete nothing outside your own worktree** — list it for the main agent.
-- **Test, then push.** Run the tests first. Push only a branch whose tests passed, then open a ready (never
-  draft) PR into the owner's repo with the before/after test evidence in the body. A commit that exists only on
-  this laptop is not done, and an untested push or PR is not allowed. Comments on other people's repos still
-  need his yes.
+- **Test, then push.** Run the tests locally first and push only a branch whose tests passed. Then
+  open a ready (never draft) PR into the owner's repo. For before/after evidence in the body, link
+  the CI runs and checks (`gh run view --json` read through shellfs) and give the false-first triple
+  from section 4: the mutant, its failing CI output and the restored passing output. Never paste a
+  local `pytest | tail`. The PR reaches main only through the review queue. A commit that exists
+  only on this laptop is not done, and an untested push or PR is not allowed. Comments on other
+  people's repos still need his yes.
 - Never `-init` against DuckDB; it replaces `~/.duckdbrc`. Never `SET` against dev, and
   never create tables, views or macros there (they shadow boot objects).
 - Crude-oil repos are material to read, never services to depend on.
