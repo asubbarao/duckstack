@@ -22,9 +22,8 @@ $l$, dumped.targets::JSON, autoescape := false))) AS receipts
 ), killed AS (
     SELECT array_agg(selfdispatch(tera_render($k$
 SELECT content FROM read_lines($c$kill -TERM -- {{ ids }} 2>&1; sleep 5; kill -KILL -- {{ ids }} 2>/dev/null; echo reaped |$c$)
-$k$, kill_list.listing, autoescape := false))) AS receipts
-    FROM listed CROSS JOIN UNNEST(receipts) AS list(receipt) CROSS JOIN UNNEST(list.receipt.body::JSON[]) AS kill_list(listing)
-    WHERE list.receipt.status = 200
+$k$, (list.receipt.body::JSON[])[1], autoescape := false))) AS receipts   -- the list step returns one row
+    FROM listed CROSS JOIN UNNEST(receipts) AS list(receipt) WHERE list.receipt.status = 200
 )
 SELECT 'dump' AS step, dump.receipt.status, dump.receipt.body FROM dumped CROSS JOIN UNNEST(receipts) AS dump(receipt)
 UNION ALL SELECT 'list' AS step, list.receipt.status, list.receipt.body FROM listed CROSS JOIN UNNEST(receipts) AS list(receipt)

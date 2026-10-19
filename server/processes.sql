@@ -67,5 +67,5 @@ WITH ps_words AS (
     LEFT JOIN exempt_groups AS exempt ON exempt.pgid = process.pgid
     LEFT JOIN dev_server AS dev ON dev.pgid = process.pgid
 )
-SELECT *, CASE WHEN reap THEN -pgid WHEN true IN (reap_dev_job, reap_client_job) THEN pid END AS kill_id
+SELECT *, CASE WHEN reap THEN -pgid WHEN greatest(reap_dev_job, reap_client_job) THEN pid END AS kill_id
 FROM marked;
