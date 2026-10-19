@@ -43,8 +43,9 @@ varies per row is a different string per row, written in SQL.
 
 - **Rows → posts → receipts:** the shape above is the common tail for every construction case.
 - **Keep source identity:** aggregate `{key: key, sql: sql, receipt: selfdispatch(sql)}`.
-- **Results are `receipt.*`:** never parse the body with a `from_json` structure string or `->>`.
-  Keep failed receipts as rows.
+- **Results are `receipt.*`:** never parse the body with a `from_json` structure string or a `->>`
+  ladder. Until quackapi returns typed replies, read a body field with one `->>`, once, in the CTE
+  right after the unnest (RULES.md 5). Keep failed receipts as rows.
 - **Dependent writes:** send one ordered multi-statement body. Aggregating posts does not
   establish execution order. Independent rows may dispatch independently.
 - **Boot plus cron:** define one complete SQL body and use it for the initial post and `cron`.

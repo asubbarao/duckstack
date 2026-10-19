@@ -36,19 +36,21 @@ Answer every question for every query in the change. A "no" is a finding, fixed 
    pull the row out and match it back by position.
 3. **Does the first CTE declare everything** (commands, arguments, paths, arrays) so a reader knows what the query
    does before reading the rest? (10-17)
-4. **Is Tera only a constructor?** A template file called with `template_path :=`, no `{% for %}` / `{% if %}`, a new
-   template only for a new shape. "tera is just to make code readable… a helper" (10-17).
+4. **Is Tera only a constructor?** One of the named templates via `template_path :=` when the statement has that
+   shape, an inline template otherwise; no `{% for %}` / `{% if %}`; a new template file only for a new shape. "tera is just to make code readable… a helper" (10-17).
 5. **Is SQL text built readably?** No `||` chains, `chr(39)`, nested or tripled quotes; arrays of words joined once,
    dollar quotes. "PUT IT IN ARRAY SO ITS LEGIBLE INSTEAD OF INFINITE CONCATS" (09-22).
 6. **Does every reader bring its own schema?** `read_json` / `read_csv` with their `:=` options; no `from_json`
-   structure strings, `columns := {…}`, `->>` ladders. Unknown shape stays raw in `read_lines` (10-17). Exception
-   until quackapi returns typed replies: a receipt body is JSON text, so unnest it once and read its fields.
+   structure strings, `columns := {…}`, `->>` ladders. Unknown shape stays raw in `read_lines` (10-17). Results are
+   `receipt.*`. Until quackapi returns typed replies, a receipt body field is read with one `->>`, once, in the CTE
+   right after the unnest, and the receipt itself is kept (RULES.md 5).
 7. **Is it the shortest query for the same output?** Fewer keywords and commas for the same rows. "all the sql is too
    long and complex… the SAME output can be achieved with a better query" (10-18).
 8. **Is it general, not bespoke?** No table per question ("North Dakota revenue"), no parameter or macro where a
    WHERE on a view works, raw data kept, nothing aggregated away (09-24, 10-15).
-9. **Objects as views, derived as tables, nothing written to read back?** No COPY to a file the next step reads; the
-   receipts carry the rows (10-18). New tables and macros only with his yes.
+9. **Views first, nothing written to read back?** Raw objects and derived state are views; a table only with his
+   yes (CTAS replacement when it earns one). No COPY to a file the next step reads; the receipts carry the rows
+   (10-18). New macros only with his yes.
 10. **Shell through shellfs, the right extension for each job?** `read_csv('cmd |')`, git via `duck_tails`, files via
     hostfs/`fs.files`, HTML via webbed, URLs via netquack/urlpattern, CI logs via `duck_hunt`. No `.sh`, no Python
     files, no sed/awk/grep in a pipe.

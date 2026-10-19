@@ -154,22 +154,31 @@ needed a regex and grew to 74 lines.
 
 **The verification is one self-dispatched query that runs both sides.** The inputs and the
 signature are declared once, in the first CTE. The dispatched statement is the program under test,
-so both sides come back as rows in the receipts. To keep a record, wrap the whole query in
+so both sides come back in the receipts, nothing written to read back. Each receipt stays whole
+(`receipt.*`, body included), each row it returned is one `result_row`, and a failed dispatch stays
+as one row with a NULL `result_row`. The CTE right after the unnest names the compared fields with
+one `->>` each (RULES.md 5). To keep a record, wrap the whole query in
 `COPY (…) TO '<agent_log_dir>' (FORMAT parquet, PARTITION_BY (type, agent_signature), OVERWRITE_OR_IGNORE true, FILENAME_PATTERN '{uuid}')`.
 ```sql
 WITH verification AS (     -- 1. plain values, declared once
     SELECT [<inputs>] AS raws, to_json(raws)::VARCHAR AS raws_json,
-           '<agent>' AS agent, '<session id>' AS session_id, '<skill>' AS skill, $n$<notes>$n$ AS notes
+           '<agent>' AS agent, '<session id>' AS session_id, concat_ws('-', agent, session_id) AS agent_signature,
+           '<skill>' AS skill, $n$<notes>$n$ AS notes
 ), sides AS (              -- 2. the program under test, rendered once as a column
     SELECT *, tera_render($tera$<duckdb side> UNION ALL BY NAME <python side>$tera$, v::JSON, autoescape := false) AS both_sides
     FROM verification AS v
-), dispatched AS (         -- 3. run it
-    SELECT agent, session_id, skill, notes, both_sides, array_agg(selfdispatch(both_sides)) AS receipts
+), dispatched AS (         -- 3. run it, each receipt beside its row
+    SELECT agent, session_id, agent_signature, skill, notes, both_sides, array_agg(selfdispatch(both_sides)) AS receipts
     FROM sides GROUP BY ALL
+), result_rows AS (        -- 4. every receipt, and each row it returned
+    SELECT * EXCLUDE (receipts, receipt), receipt.*
+    FROM dispatched
+    CROSS JOIN UNNEST(receipts) AS t(receipt)
+    CROSS JOIN UNNEST(coalesce(try_cast(receipt.body AS JSON[]), [NULL::JSON])) AS r(result_row)
 )
-SELECT uuidv7() AS row_id, 'verification' AS type, agent, session_id, concat_ws('-', agent, session_id) AS agent_signature,
-       skill, both_sides AS query_was_ran, receipt.status, result_row, notes AS markdown_notes, now() AS ts
-FROM dispatched CROSS JOIN UNNEST(receipts) AS t(receipt) CROSS JOIN UNNEST(receipt.body::JSON[]) AS r(result_row);
+SELECT uuidv7() AS row_id, 'verification' AS type, * RENAME (both_sides AS query_was_ran, notes AS markdown_notes),
+       result_row->>'side' AS side, result_row->>'raw' AS raw, result_row->>'<compared column>' AS <compared column>, now() AS ts
+FROM result_rows;
 ```
 `<both sides>` is `<duckdb side> UNION ALL BY NAME <python side>` over the same declared list:
 - **DuckDB side:** `SELECT 'duckdb' AS side, raw, <duckdb expression over raw> AS <compared column>
@@ -182,8 +191,11 @@ FROM dispatched CROSS JOIN UNNEST(receipts) AS t(receipt) CROSS JOIN UNNEST(rece
 The program is rendered once, so the stored `query_was_ran` is exactly what ran, and the signature
 is built from the declared agent and session id. Values sit inside dollar quotes (`$raws$`, `$n$`),
 so inputs and notes may contain a single quote. A worker testing ponytail's or
-Thermos's proposal writes it as the Python (or bash) side. Verified on dev 2026-10-18 with two
-dates, one invalid, and notes containing `'`: four rows, both sides, Python's `ValueError` kept as a row.
+Thermos's proposal writes it as the Python (or bash) side. Verified on dev 2026-10-19 with two
+dates, one invalid, and notes containing `'`: four rows, both sides, Python's `ValueError` kept in
+`result_row`; the same four rows as the earlier per-statement COPY version (`table_diff_summary`,
+pk side and raw: 4 identical, 0 different), 0.54 s against 0.55 s. A broken statement came back as
+one row, status 422, `result_row` NULL.
 Readback: `query/references/useful_queries.sql`, "Verification: both sides".
 
 ## 4. Evidence is false-first
