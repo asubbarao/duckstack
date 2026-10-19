@@ -11,7 +11,7 @@ WITH intent AS (
     SELECT $v$
 CREATE OR REPLACE VIEW stream.main.parsed AS
 WITH line AS (
-    SELECT ['text', 'thinking', 'output', 'content'] AS content_keys, ['name', 'call_id'] AS name_keys,
+    SELECT ['text', 'thinking', 'output', 'content'] AS content_keys,
            ['id', 'tool_use_id', 'call_id'] AS id_keys, ['command', 'cmd', 'sql', '$'] AS command_keys,
            ['<', '[Request interrupted', 'This session is being continued', 'Base directory for this skill',
             'Another Claude session sent a message', '# AGENTS.md', '[Cross-session delivery notice]',
@@ -31,9 +31,9 @@ WITH line AS (
         WITH ORDINALITY AS t(b, block_index)
     WHERE msg IS NOT NULL
 ), parsed AS (
-    SELECT * EXCLUDE (b, content_keys, name_keys, id_keys), coalesce(b ->> 'type', 'text') AS block_type,
+    SELECT * EXCLUDE (b, content_keys, id_keys), coalesce(b ->> 'type', 'text') AS block_type,
            coalesce(CASE WHEN json_type(b) = 'VARCHAR' THEN b ->> '$' END, [b ->> k FOR k IN content_keys IF b ->> k IS NOT NULL][1]) AS message_content,
-           [b ->> k FOR k IN name_keys IF b ->> k IS NOT NULL][1] AS tool_name,
+           b ->> 'name' AS tool_name,
            [b ->> k FOR k IN id_keys IF b ->> k IS NOT NULL][1] AS tool_use_id,
            coalesce(b -> 'input', try_cast(b ->> 'arguments' AS JSON)) AS tool_input, strlen(b::VARCHAR) AS content_bytes
     FROM block

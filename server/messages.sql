@@ -1,8 +1,9 @@
 -- The views over stream.blocks (blocks.sql), posted once at boot after the table exists.
 -- agent.messages: stream.blocks without the full text (head, tail), so a 290 KB paste never fills a reply.
--- agent.sessions: one row per session to pick from, then read its blocks by session_id: activity, its block_keys, and
--- its prompts in order (openings), dropping a prompt within rapidfuzz_ratio 90 of the one before.
--- agent.prompts: one row per session, every typed prompt in full and in order (said); filter it with WHERE.
+-- agent.sessions: one row per session, every column carried: activity, the session's files, models, tools, last cwd
+-- and branch, its block_keys, and prompts, every typed prompt as its whole stream.blocks row in order, each with
+-- is_near_repeat (within rapidfuzz_ratio 90 of the one before); prompt_count, first_prompt and last_prompt skip
+-- those. Select the columns a reply needs.
 WITH messages_step AS (
     SELECT array_agg(selfdispatch($m$
 CREATE OR REPLACE VIEW agent.messages AS
@@ -13,34 +14,30 @@ $m$)) AS receipts
 ), sessions_step AS (
     SELECT array_agg(selfdispatch($s$
 CREATE OR REPLACE VIEW agent.sessions AS
-WITH prompt AS (
-    SELECT session_id, timestamp, head AS opening, lag(head) OVER (PARTITION BY session_id ORDER BY timestamp) AS previous_opening
-    FROM agent.messages WHERE is_prompt AND NOT is_repeat
+WITH session_blocks AS (
+    SELECT * FROM stream.blocks WHERE NOT is_repeat
+), prompt AS (
+    SELECT *, coalesce(rapidfuzz_ratio(left(message_content, 100),
+               lag(left(message_content, 100)) OVER (PARTITION BY session_id ORDER BY timestamp)) >= 90, false) AS is_near_repeat
+    FROM session_blocks WHERE is_prompt
 ), prompts AS (
-    SELECT session_id, array_agg(opening ORDER BY timestamp) AS openings
-    FROM prompt WHERE NOT coalesce(rapidfuzz_ratio(opening, previous_opening) >= 90, false) GROUP BY session_id
+    SELECT session_id, array_agg(prompt ORDER BY timestamp) AS prompts,
+           [p FOR p IN prompts IF NOT p.is_near_repeat] AS distinct_prompts
+    FROM prompt GROUP BY session_id
 ), activity AS (
     SELECT session_id, source, min(timestamp) AS started, max(timestamp) AS last_active,
+           arg_max(cwd, timestamp) AS cwd, arg_max(git_branch, timestamp) AS git_branch, arg_max(entrypoint, timestamp) AS entrypoint,
+           list(DISTINCT model) AS models, list(DISTINCT tool_name) AS tools, list(DISTINCT file_path) AS files,
+           bool_or(is_agent) AS has_agents, sum(content_bytes) AS bytes,
            array_agg(block_key ORDER BY timestamp) AS block_keys, len(block_keys) AS blocks
-    FROM agent.messages WHERE NOT is_repeat GROUP BY session_id, source
+    FROM session_blocks GROUP BY session_id, source
 )
-SELECT a.*, len(p.openings) AS prompts, p.openings[1] AS first_prompt, p.openings[-1] AS last_prompt, p.openings
+SELECT a.*, p.prompts, len(p.distinct_prompts) AS prompt_count,
+       p.distinct_prompts[1].message_content AS first_prompt, p.distinct_prompts[-1].message_content AS last_prompt
 FROM activity a LEFT JOIN prompts p USING (session_id)
 $s$)) AS receipts
     FROM messages_step CROSS JOIN UNNEST(receipts) AS t(r) WHERE r.status = 200
-), prompts_step AS (
-    SELECT array_agg(selfdispatch($p$
-CREATE OR REPLACE VIEW agent.prompts AS
-WITH typed AS (
-    SELECT source, session_id, timestamp, message_content AS text FROM stream.blocks WHERE is_prompt AND NOT is_repeat
-)
-SELECT source, session_id, array_agg({'ts': timestamp, 'text': text} ORDER BY timestamp) AS said,
-       said[1].ts AS first_ts, said[-1].ts AS last_ts, len(said) AS prompts, sum(strlen(text)) AS chars
-FROM typed GROUP BY ALL
-$p$)) AS receipts
 )
 SELECT r.* FROM messages_step CROSS JOIN UNNEST(receipts) AS t(r)
 UNION ALL
-SELECT r.* FROM sessions_step CROSS JOIN UNNEST(receipts) AS t(r)
-UNION ALL
-SELECT r.* FROM prompts_step CROSS JOIN UNNEST(receipts) AS t(r);
+SELECT r.* FROM sessions_step CROSS JOIN UNNEST(receipts) AS t(r);
