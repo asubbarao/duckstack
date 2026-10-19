@@ -11,19 +11,27 @@ Concat each row's statement into a string, post it to yourself, and unnest. The 
 WITH folders AS (
     SELECT name AS folder_name, path FROM fs.folders WHERE parent = concat(getenv('HOME'), '/.duck')
 ), dispatched AS (
-    SELECT folder_name,
-           array_agg(selfdispatch(concat('SELECT * FROM read_csv(', quote_literal(concat('ls -la ', path, ' |')), ', header := false)'))) AS receipts
+    SELECT folder_name, array_agg(selfdispatch(concat('SELECT * FROM ls(', quote_literal(path), ')'))) AS receipts
     FROM folders GROUP BY ALL
 )
-SELECT folder_name, receipt.status, receipt.error, receipt.body
+SELECT folder_name, receipt.status, receipt.body
 FROM dispatched CROSS JOIN UNNEST(receipts) AS t(receipt);
 ```
 
-Verified on dev 2026-10-18: every folder's `ls -la` came back with status 200, each receipt beside its own `folder_name`.
+Verified on dev 2026-10-18 (first rows):
+
+| folder_name | status | body |
+|---|---|---|
+| agent_log | 200 | `[{"path":"…/.duck/agent_log/skill_trial_2026_10_17"},{"path":"…/.duck/agent_log/rows"}, …]` |
+| archive | 200 | `[{"path":"…/.duck/archive/fake-data-20260929"}]` |
+
+hostfs `ls()` takes only a literal path, so this is the case self-dispatch exists for. With `SELECT name, size …`
+in place of `*`, every row came back with status 500 and DuckDB's error in the body: a failure is a row, not a crash.
 
 That is the whole pattern:
-- **The statement is a concat.** A file reads as `read_csv(` + the path + `)`. A command reads as `read_csv(` + the
-  command + ` |` + `)`. A SQL statement is the text of that statement. `quote_literal` wraps a value in quotes.
+- **The statement is a concat.** A file reads as `read_csv(` + the quoted path + `)`. A command with no extension
+  for it reads as `read_csv(` + the quoted command ending in ` |` + `)`. A SQL statement is its text.
+  `quote_literal` wraps a value in quotes.
 - **The row keeps its columns.** Select the row's key columns next to `array_agg(selfdispatch(sql))`, add
   `GROUP BY ALL`, then `CROSS JOIN UNNEST(receipts)`. Every receipt comes back beside its row. Never two arrays
   matched by position (`receipts[n]`); the hook blocks that.

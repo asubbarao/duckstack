@@ -1,4 +1,4 @@
-{# 4. A request to another host: one POST per row, and its response comes back as the receipt's rows.
+{# 4. A request to another host: one POST per row; its response comes back as the receipt's row.
    Row: url (text), body (text, usually json_object(...)::VARCHAR).
    Another DuckDB's /sql is a host like any other: send it a statement that self-dispatches an array there. #}
-SELECT * FROM (SELECT quackapi_post('{{ url }}', $body${{ body }}$body$) AS response)
+SELECT quackapi_post($url${{ url }}$url$, $body${{ body }}$body$) AS response

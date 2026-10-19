@@ -146,9 +146,8 @@ WITH node_facts AS (
          -- each shellfs command (a table-function literal ending in '|') parsed as bash: the programs it runs
          -- (basenames, $(...) included) and its words, so checks match executables, not quoted arguments
          flatten(list_filter(list(CASE WHEN tfn IS NOT NULL THEN
-             [{'commands': [parse_filename(n.peek) FOR n IN parse_ast_list(rtrim(rtrim(l), '|'), 'bash') IF n.type = 'command_name'],
-               'words': [n.peek FOR n IN parse_ast_list(rtrim(rtrim(l), '|'), 'bash') IF n.type = 'word']}
-              FOR l IN literal_args IF ends_with(rtrim(l), '|')] END), x -> x IS NOT NULL)) AS shellfs_pipes,
+             [{'commands': [parse_filename(n.peek) FOR n IN ast IF n.type = 'command_name'], 'words': [n.peek FOR n IN ast IF n.type = 'word']}
+              FOR ast IN [parse_ast_list(rtrim(l, ' |'), 'bash') FOR l IN literal_args IF ends_with(rtrim(l), '|')]] END), x -> x IS NOT NULL)) AS shellfs_pipes,
          bool_or(fn = 'count_star') AS has_count_star,
          bool_or((v -> 'filter') IS NOT NULL AND cls IN ('FUNCTION', 'WINDOW')) AS has_filter_clause,
          bool_or(typ = 'EXPRESSION_LIST') AS has_values_clause,
