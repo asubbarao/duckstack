@@ -111,10 +111,9 @@ Mined from all 5,361 of Alok's prompts that mention SQL, dispatch, Tera or DuckD
 2026-09-14 → 10-18, read with the agent-stream skill's prompts query). Only rules not already above.
 Where two of his messages disagree, the newer wins. "(hook)" means `hooks/hook_checks.sql` now enforces it.
 
-**Dispatch shape.** The shape in rule 1 is a block (hook `sql_dispatch_shape`): the rows are declared, each
-statement is rendered by a canonical template called by name (`shell.tera`, `sql.tera`,
-`bash_loop_fallback_method.tera`), sent as `array_agg(selfdispatch(sql))`, then `CROSS JOIN UNNEST` and
-`receipt.*`. `templates/canonical.sql` is the reference. Because every dispatch takes that shape, the
+**Dispatch shape.** The shape in rule 1 is a block (hook `sql_dispatch_shape`). Each row's statement is a concat
+or a template render, the rows are sent as `array_agg(selfdispatch(sql))` grouped by the row's columns, then
+`CROSS JOIN UNNEST` and `receipt.*`. The reference is `SKILL.md`. Because every dispatch takes that shape, the
 receipt problems below have one place to be checked.
 
 28. **Receipts are typed columns.** Read `receipt.status`, `receipt.error` and `receipt.body` as columns.
@@ -135,10 +134,10 @@ receipt problems below have one place to be checked.
     not wrapped in a dispatch. Never paste a `$$` body inline; render it from a template (10-09, 10-12).
     Pass the row as `c::JSON`, not `row_to_json` (hook, 10-15). Never pass a subquery as a table-function
     argument (10-13).
-34a. **The row and its receipt are aggregated together.** The row already has its key columns, so collect them
-    with the receipt: `array_agg({'pr_number': pr_number, 'receipt': selfdispatch(sql)}) AS dispatched`, or
-    `array_agg(struct_insert(c, receipt := selfdispatch(sql)))`. Then `CROSS JOIN UNNEST(dispatched) AS t(d)` and read
-    `d.pr_number` and `d.receipt.*`. Never two parallel arrays matched by position (`prs` plus `receipts[n]`) (10-18).
+34a. **The row keeps its columns.** `SELECT pr_number, array_agg(selfdispatch(sql)) AS receipts … GROUP BY ALL`,
+    then `CROSS JOIN UNNEST(receipts)`: each receipt sits beside its row's `pr_number`. The statement itself is just a
+    concat (`'SELECT * FROM read_csv(' || quote_literal(path) || ')'`); a template is for when the holes get many.
+    Never two parallel arrays matched by position (`prs` plus `receipts[n]`) (hook, 10-18).
 34b. **Nested `tera_render` is allowed when it helps**, for example a statement that itself dispatches further: render the
     per-row statements, `array_agg` them, and send that whole array to another host's `:9495`, which self-dispatches
     it. Don't nest when one render plus a CTE does the same job (10-18).

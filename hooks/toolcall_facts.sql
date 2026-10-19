@@ -149,7 +149,6 @@ WITH node_facts AS (
              [{'commands': [parse_filename(n.peek) FOR n IN parse_ast_list(rtrim(rtrim(l), '|'), 'bash') IF n.type = 'command_name'],
                'words': [n.peek FOR n IN parse_ast_list(rtrim(rtrim(l), '|'), 'bash') IF n.type = 'word']}
               FOR l IN literal_args IF ends_with(rtrim(l), '|')] END), x -> x IS NOT NULL)) AS shellfs_pipes,
-         bool_or(template.file IS NOT NULL) AS uses_canonical_template,
          bool_or(fn = 'count_star') AS has_count_star,
          bool_or((v -> 'filter') IS NOT NULL AND cls IN ('FUNCTION', 'WINDOW')) AS has_filter_clause,
          bool_or(typ = 'EXPRESSION_LIST') AS has_values_clause,
@@ -169,17 +168,13 @@ WITH node_facts AS (
          bool_or(typ = 'SELECT_NODE' AND list_contains([(c ->> 'class') = 'SUBQUERY' AND (c ->> 'subquery_type') = 'SCALAR' FOR c IN (v -> 'select_list')::JSON[]], true)) AS has_scalar_subquery_in_select,
          bool_or(typ = 'SELECT_NODE' AND (v -> 'qualify') IS NOT NULL) AS has_qualify,
          list_filter(list(CASE WHEN join_kind = 'CROSS' AND join_right_type = 'TABLE_FUNCTION' THEN join_right_fn END), x -> x IS NOT NULL) AS lateral_functions
-  FROM sql_nodes   -- a tera_render naming a file in the templates folder; one call names one template, so no fan-out
-  LEFT JOIN glob('~/.duck/deploy/skills/self-dispatch/templates/*.tera') AS template
-    ON fn = 'tera_render' AND list_contains(literal_args, parse_filename(template.file))
-  GROUP BY ALL)
+  FROM sql_nodes GROUP BY ALL)
 SELECT s.call_id, s.sql_source, s.program_index, s.statement_no, s.statement_kind, s.head_words, s.statement_lines,
        s.ast IS NOT NULL AS has_ast,
        coalesce(f.functions_called, []) AS functions_called,
        coalesce(f.function_calls, []) AS function_calls,
        coalesce(f.table_function_calls, []) AS table_function_calls,
-       coalesce(f.shellfs_pipes, []) AS shellfs_pipes,
-       coalesce(f.uses_canonical_template, false) AS uses_canonical_template,       coalesce(f.cte_names, []) AS cte_names,
+       coalesce(f.shellfs_pipes, []) AS shellfs_pipes,       coalesce(f.cte_names, []) AS cte_names,
        coalesce(f.has_count_star, false) AS has_count_star,
        coalesce(f.has_filter_clause, false) AS has_filter_clause,
        coalesce(f.has_values_clause, false) AS has_values_clause,
@@ -221,9 +216,7 @@ stmts AS (
          flatten(list(table_function_calls)) AS sql_table_function_calls,
          list_sort(list_distinct(flatten(list([t.name FOR t IN table_function_calls])))) AS sql_table_functions,
          flatten(list(shellfs_pipes)) AS sql_shellfs_pipes,
-         list_distinct(flatten([p.commands FOR p IN flatten(list(shellfs_pipes))])) AS sql_shellfs_commands,
-         bool_or(uses_canonical_template) AS sql_uses_canonical_template,
-         list_distinct(flatten(list(cte_names))) AS sql_cte_names,
+         list_distinct(flatten([p.commands FOR p IN flatten(list(shellfs_pipes))])) AS sql_shellfs_commands,         list_distinct(flatten(list(cte_names))) AS sql_cte_names,
          bool_or(has_count_star) AS sql_has_count_star,
          bool_or(has_filter_clause) AS sql_has_filter_clause,
          bool_or(has_values_clause) AS sql_has_values_clause,

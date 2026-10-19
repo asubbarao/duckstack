@@ -142,19 +142,19 @@ view (fix the view), and inserts where a COPY would do.
 ## Self-dispatch checklist
 
 Every dispatch has one shape, and the hook blocks any other (`sql_dispatch_shape`). The reference is
-[../self-dispatch/templates/canonical.sql](../self-dispatch/templates/canonical.sql). Because the shape is fixed,
-the review checks these points in that one place:
+[../self-dispatch/SKILL.md](../self-dispatch/SKILL.md). Because the shape is fixed, the review checks these points
+in that one place:
 
 1. **Rows first.** The first CTE declares real rows (catalog, hostfs, a table) with every value as a column.
    No `range()` / `generate_series` source, no literal list of what a relation already holds.
-2. **A canonical template by name.** `tera_render('shell.tera' | 'sql.tera' | 'bash_loop_fallback_method.tera',
-   c::JSON, autoescape := false, template_path := …)`. No inline template, no new `.tera` without a new shape, no
-   `row_to_json`. The bash loop template is a fallback and needs a reason.
-3. **The macro, with the row.** `array_agg({'pr_number': pr_number, 'receipt': selfdispatch(sql)}) AS dispatched`:
-   the row's key columns ride with its receipt. Two arrays matched by position (`prs` plus `receipts[n]`) are a
-   finding, and the hook blocks them. Never a hand-written `quackapi_post` to /sql, a curl to /sql, a `quack_query`
-   back to dev, or a lone post.
-4. **One `CROSS JOIN UNNEST(dispatched)` per step**, never `unnest(...)` of receipts in a SELECT list, and nothing
+2. **The statement is a concat or a template.** A plain concat (`'SELECT * FROM read_csv(' || quote_literal(path) || ')'`)
+   is the default. A template from `templates/` is called by name once the holes get many, with no `row_to_json`.
+   The bash loop template is a fallback and needs a reason.
+3. **The macro, with the row.** `SELECT pr_number, array_agg(selfdispatch(sql)) AS receipts … GROUP BY ALL`: the
+   row keeps its columns. Two arrays matched by position (`prs` plus `receipts[n]`) are a finding, and the hook
+   blocks them. Never a hand-written `quackapi_post` to /sql, a curl to /sql, a `quack_query` back to dev, or a
+   lone post.
+4. **One `CROSS JOIN UNNEST(receipts)` per step**, never `unnest(...)` of receipts in a SELECT list, and nothing
    joined back to the source afterwards.
 5. **Receipts read as columns.** `receipt.*` gives status, body and error. No `->>` ladders and no `from_json` /
    `::JSON[]` over the body.
@@ -183,10 +183,10 @@ WITH tables AS (                          -- real rows, every value a column
                        template_path := concat_ws('/', getenv('HOME'), '.duck/deploy/skills/self-dispatch/templates/*.tera')) AS sql
     FROM tables AS c
 ), dispatched AS (                        -- visible self-dispatch; each row rides with its receipt
-    SELECT array_agg({'table_name': table_name, 'receipt': selfdispatch(sql)}) AS dispatched FROM rendered
+    SELECT table_name, array_agg(selfdispatch(sql)) AS receipts FROM rendered GROUP BY ALL
 )
-SELECT d.table_name, d.receipt.*, d.receipt.status IS DISTINCT FROM 200 AS failed
-FROM dispatched CROSS JOIN UNNEST(dispatched) AS t(d);
+SELECT table_name, receipt.*, receipt.status IS DISTINCT FROM 200 AS failed
+FROM dispatched CROSS JOIN UNNEST(receipts) AS t(receipt);
 ```
 
 The first CTE declares everything, the template only substitutes, the reader is `SELECT *` and brings its own
@@ -225,9 +225,9 @@ WITH sessions AS (
                        template_path := concat_ws('/', getenv('HOME'), '.duck/deploy/skills/self-dispatch/templates/*.tera')) AS sql
     FROM sessions AS c
 ), dispatched AS (
-    SELECT array_agg({'session_id': session_id, 'receipt': selfdispatch(sql)}) AS dispatched FROM rendered
+    SELECT session_id, array_agg(selfdispatch(sql)) AS receipts FROM rendered GROUP BY ALL
 )
-SELECT d.session_id, d.receipt.*, d.receipt.status IS DISTINCT FROM 200 AS failed FROM dispatched CROSS JOIN UNNEST(dispatched) AS t(d);
+SELECT session_id, receipt.*, receipt.status IS DISTINCT FROM 200 AS failed FROM dispatched CROSS JOIN UNNEST(receipts) AS t(receipt);
 ```
 
 **printf building a path, the reader's schema declared, arrows digging into the result** (checks 6, 7):
