@@ -11,10 +11,14 @@
 -- agent.messages: stream.blocks without the full text (head, tail), so a 290 KB paste never fills a reply.
 -- agent.sessions: one row per session to pick from, then read its blocks by session_id: activity, and the count and
 -- first and last of its prompts after near-repeats are dropped (rapidfuzz_ratio 90+ against the previous prompt).
--- Posted, so a machine with no agent.lines gets failed receipts, not a failed boot.
+-- The build runs as cron jobs, never posted: a post through quack_query binds every statement before the first runs,
+-- and each statement here needs the one before it (cron runs them in order). The index is its own job a minute later:
+-- DuckDB expands a PRAGMA when the batch is parsed, before the table above it exists. Meanwhile the old index still
+-- serves, keyed on block_key. first_build and first_index run 15 s and 75 s after boot (cron schedules are UTC); their
+-- schedules next match a year on, past any restart. A machine with no agent.lines gets a failed job, not a failed boot.
+ATTACH IF NOT EXISTS ':memory:' AS stream;
 WITH program AS (
     SELECT $build$
-ATTACH IF NOT EXISTS ':memory:' AS stream;
 CREATE OR REPLACE VIEW stream.main.parsed AS
 WITH line AS (
     SELECT ['text', 'thinking', 'output', 'content'] AS content_keys, ['name', 'call_id'] AS name_keys,
@@ -53,12 +57,11 @@ CREATE OR REPLACE TABLE stream.main.blocks AS
 SELECT * FROM stream.main.blocks WHERE (timestamp >= now() - INTERVAL 20 MINUTE) IS NOT TRUE
 UNION ALL BY NAME
 SELECT * FROM stream.main.parsed WHERE timestamp >= now() - INTERVAL 20 MINUTE;
-PRAGMA create_fts_index('stream.main.blocks', 'block_key', 'message_content', overwrite = 1);
-CREATE OR REPLACE VIEW agent.messages AS
+CREATE OR REPLACE VIEW dev.agent.messages AS
 SELECT * EXCLUDE (message_content, tool_input), left(message_content, 100) AS head,
        right(message_content, 100) AS tail, left(tool_input::VARCHAR, 100) AS tool_input_head
 FROM stream.blocks;
-CREATE OR REPLACE VIEW agent.sessions AS
+CREATE OR REPLACE VIEW dev.agent.sessions AS
 WITH prompt AS (
     SELECT session_id, timestamp, left(message_content, 200) AS opening,
            lag(opening) OVER (PARTITION BY session_id ORDER BY timestamp) AS previous_opening
@@ -73,10 +76,12 @@ WITH prompt AS (
 )
 SELECT a.*, p.prompts, p.first_prompt, p.last_prompt
 FROM activity a LEFT JOIN prompts p USING (session_id);
-$build$ AS sql
-), posted AS (
-    SELECT sql, array_agg(selfdispatch(sql)) AS receipts
-    FROM program GROUP BY sql
+$build$ AS build,
+           $index$PRAGMA create_fts_index('stream.main.blocks', 'block_key', 'message_content', overwrite = 1)$index$ AS rebuild_index,
+           timezone('UTC', now()) AS booted
 )
-SELECT cron(sql, '30 */15 * * * *') AS job, r.*
-FROM posted CROSS JOIN UNNEST(receipts) AS t(r);
+SELECT cron(build, '30 */15 * * * *') AS build_job,
+       cron(rebuild_index, '30 1-59/15 * * * *') AS index_job,
+       cron(build, strftime(booted + INTERVAL 15 SECOND, '%S %M %H %d %m *')) AS first_build,
+       cron(rebuild_index, strftime(booted + INTERVAL 75 SECOND, '%S %M %H %d %m *')) AS first_index
+FROM program;
