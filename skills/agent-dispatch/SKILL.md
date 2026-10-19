@@ -152,48 +152,34 @@ ran it, and the lead passed it on. When run, it mistyped week dates and `+HH:MM`
 crashed on year-1 offsets. The same claim had already been disproved on 10-15: the Python version
 needed a regex and grew to 74 lines.
 
-**The verification is one self-dispatched agent-log COPY that runs both sides.** The inputs and
-the signature are declared once, in the first CTE. The dispatched statement is the agent-log COPY,
-so both sides run as typed columns inside it and land as signed rows. The receipt says only
-whether the write happened, and the readback reads the rows as columns (compendium: "each
-statement writes them and the next stage reads the files").
+**The verification is one query, and its rows are the answer.** It runs the proposal and the DuckDB
+version on the same inputs and returns one row per input with both answers side by side:
 ```sql
-WITH verification AS (     -- 1. plain values, declared once
-    SELECT [<inputs>] AS raws, to_json(raws)::VARCHAR AS raws_json,
-           '<agent>' AS agent, '<session id>' AS session_id, '<skill>' AS skill,
-           $n$<notes>$n$ AS notes, '<agent_log_dir>' AS log_dir
-), sides AS (              -- 2. the program under test, rendered once as a column
-    SELECT *, tera_render($tera$<duckdb side> UNION ALL BY NAME <python side>$tera$, v::JSON, autoescape := false) AS both_sides
-    FROM verification AS v
-), rendered AS (           -- 3. the agent-log COPY: both_sides stored as text and run as a subquery
-    SELECT tera_render($tera$COPY (SELECT uuidv7() AS row_id, 'verification' AS type, $v${{ agent }}$v$ AS agent,
-               $v${{ session_id }}$v$ AS session_id, $v${{ agent }}-{{ session_id }}$v$ AS agent_signature,
-               $v${{ skill }}$v$ AS skill, $query${{ both_sides }}$query$ AS query_was_ran, r.*,
-               $n${{ notes }}$n$ AS markdown_notes, now() AS ts
-        FROM ({{ both_sides }}) AS r)
-    TO $v${{ log_dir }}$v$ (FORMAT parquet, PARTITION_BY (type, agent_signature), OVERWRITE_OR_IGNORE true, FILENAME_PATTERN '{uuid}')$tera$,
-        s::JSON, autoescape := false) AS sql
-    FROM sides AS s
-), dispatched AS (         -- 4. post it
-    SELECT array_agg(selfdispatch(sql)) AS receipts FROM rendered
+WITH python_side AS (      -- the inputs live here once; the proposal runs on them
+    SELECT * FROM read_json($cmd$/opt/homebrew/bin/uv run --quiet --no-project python - <<'PY'
+import json
+for raw in [<inputs>]:
+    try:
+        print(json.dumps(dict(raw=raw, <compared column>=<proposal>(raw), error=None)))
+    except Exception as e:
+        print(json.dumps(dict(raw=raw, <compared column>=None, error=type(e).__name__)))
+PY
+|$cmd$, format := 'newline_delimited')
+), duckdb_side AS (        -- the same inputs, taken from the Python rows
+    SELECT raw, <duckdb expression over raw> AS <compared column> FROM python_side
 )
-SELECT receipt.* FROM dispatched CROSS JOIN UNNEST(receipts) AS t(receipt);
+SELECT raw, duckdb_row.<compared column> AS duckdb_answer, python_row.<compared column> AS python_answer,
+       python_row.error AS python_error,
+       duckdb_row.<compared column> IS DISTINCT FROM python_row.<compared column> AS differs
+FROM duckdb_side AS duckdb_row JOIN python_side AS python_row USING (raw)
+ORDER BY differs DESC, raw
 ```
-`<both sides>` is `<duckdb side> UNION ALL BY NAME <python side>` over the same declared list:
-- **DuckDB side:** `SELECT 'duckdb' AS side, raw, <duckdb expression over raw> AS <compared column>
-  FROM (SELECT unnest($raws${{ raws_json }}$raws$::JSON::VARCHAR[]) AS raw)`.
-- **Python side:** `SELECT 'python' AS side, * FROM read_json($cmd$/opt/homebrew/bin/uv run --quiet
-  --no-project python - <<'PY' … for raw in {{ raws_json }}: … PY |$cmd$, format := 'newline_delimited')`.
-  The script prints one JSON line per input, and for an input that raises it prints the exception
-  type in `error`, so every input is a row on both sides. The reader infers the columns.
-
-The program is rendered once, so the stored `query_was_ran` is exactly what ran, and the signature
-is built from the declared agent and session id. Values render inside dollar quotes (`$v$`,
-`$raws$`, `$n$`), so inputs and notes may contain a single quote. A worker testing ponytail's or
-Thermos's proposal writes it as the Python (or bash) side. Worked example (verified on dev
-2026-10-18, an input and the notes containing `'`): `skill = 'T4-check-dispatched-v3'` under
-`~/.duck/agent_log/skill_trial_2026_10_17/type=verification`.
-Readback: `query/references/useful_queries.sql`, "Verification: both sides".
+An input the proposal raises on still prints its row, with the exception type in `error`. To keep
+the run as a signed record, wrap this same query in the agent-log COPY (`$query$…$query$` stored
+and executed); nothing reads that record back to get the answer, the query already returned it.
+A worker testing ponytail's or Thermos's proposal writes it as the Python (or bash) side. Verified
+on dev 2026-10-18 (T4 proposal: the `+05:00` midnight, the year-1 `OverflowError` and an input
+containing `'` all show as `differs`).
 
 ## 4. Evidence is false-first
 
