@@ -1,5 +1,5 @@
--- agent.docs: every memory, plan and instruction file Claude and Codex keep, one row per file, read live. Read by
--- setup.sql (dev) and client.sql (each session's own DuckDB). Posted, so a home missing one of the folders gets a failed
+-- agent.docs: every memory, plan and instruction file Claude and Codex keep, one row per file, read live, on dev.
+-- Posted, so a home missing one of the folders gets a failed
 -- receipt instead of a failed boot (read_text fails to bind on a glob that matches nothing).
 CREATE SCHEMA IF NOT EXISTS agent;
 WITH intent AS (

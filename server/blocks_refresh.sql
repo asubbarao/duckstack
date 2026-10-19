@@ -1,0 +1,27 @@
+-- Keeps stream.blocks (blocks.sql) current: now and every 15 minutes, 30 s after the copies, it replaces the rows of each
+-- transcript agent.entries shows changed in the last 30 minutes (a literal list, so the scan reads only those files),
+-- then rebuilds the BM25 index from that step's receipt. No transcript changed, no post.
+WITH program AS (
+    SELECT $refresh$
+WITH changed AS (
+    SELECT list(quote_literal(path)) AS files FROM dev.agent.entries
+    WHERE reader = 'read_json' AND modified >= now()::TIMESTAMP - INTERVAL 30 MINUTE
+), window_step AS (
+    SELECT array_agg(selfdispatch(tera_render($w$
+CREATE OR REPLACE TABLE stream.main.blocks AS
+SELECT * FROM stream.main.blocks WHERE file_path NOT IN ({{ files | join(sep=", ") }})
+UNION ALL BY NAME
+SELECT * FROM stream.main.parsed WHERE file_path IN ({{ files | join(sep=", ") }})
+$w$, changed::JSON, autoescape := false))) AS receipts
+    FROM changed WHERE len(files) > 0
+), index_step AS (
+    SELECT array_agg(selfdispatch($p$PRAGMA create_fts_index('stream.main.blocks', 'block_key', 'message_content', overwrite = 1)$p$)) AS receipts
+    FROM window_step CROSS JOIN UNNEST(receipts) AS t(r) WHERE r.status = 200
+)
+SELECT r.* FROM window_step CROSS JOIN UNNEST(receipts) AS t(r)
+UNION ALL SELECT r.* FROM index_step CROSS JOIN UNNEST(receipts) AS t(r);
+$refresh$ AS sql
+), posted AS (
+    SELECT sql, array_agg(selfdispatch(sql)) AS receipts FROM program GROUP BY sql
+)
+SELECT cron(sql, '30 */15 * * * *') AS job, r.* FROM posted CROSS JOIN UNNEST(receipts) AS t(r);

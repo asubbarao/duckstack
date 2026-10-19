@@ -16,7 +16,6 @@ CREATE OR REPLACE VIEW agent.lines AS
 SELECT filename, json FROM read_json_objects(['/Users/aloksubbarao/.claude/projects/*/*.jsonl',
     '/Users/aloksubbarao/.claude/projects/*/*/subagents/*.jsonl', '/Users/aloksubbarao/.codex/sessions/*/*/*/*.jsonl'],
     format := 'newline_delimited', filename := true, ignore_errors := true, maximum_object_size := 268435456);
-.read /Users/aloksubbarao/.duck/deploy/server/docs.sql
 -- Dev's two tools, query {sql} and execute {statement}, and no others.
 -- query is our own tool, not the built-in one: the built-in refuses any SQL that names read_text, read_json,
 -- read_csv, read_parquet or glob. query() is DuckDB's table function that runs one SELECT given as text.

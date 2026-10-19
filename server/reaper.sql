@@ -1,17 +1,13 @@
--- Dev only (agents' clients do not read this file). Every 5 minutes, and once at boot, in one shell line: TERM, five
--- seconds, KILL. Kills every process group host_processes marks reap, and every command a session's own DuckDB
--- (server/client.sql) has run for over 3 minutes: one stuck shellfs command blocks every later call to that session's
--- duck, and the command shares duck's group, so it is killed by pid. Nothing to kill, no command.
+-- Dev only (agents' clients do not read this file). Every 5 minutes, and once at boot: kill every process group
+-- host_processes marks reap, in one shell line: TERM, five seconds, KILL. No groups to reap, no command.
 WITH program AS (
     SELECT $reap$
-WITH targets AS (   -- a group is killed as -pgid, a duck command by its pid
-    SELECT list_distinct(list(CASE WHEN reap THEN '-' || pgid
-                                   WHEN contains(parent_args, '/server/client.sql') AND age_s >= 180 THEN pid::VARCHAR END)) AS ids
-    FROM host_processes
+WITH targets AS (
+    SELECT list(DISTINCT pgid) AS groups FROM host_processes WHERE reap
 ), rendered AS (
-    SELECT tera_render($t$SELECT content FROM read_lines($k$kill -TERM -- {{ ids | join(sep=" ") }} 2>&1; sleep 5; kill -KILL -- {{ ids | join(sep=" ") }} 2>/dev/null; echo reaped |$k$)$t$,
+    SELECT tera_render($t$SELECT content FROM read_lines($k$kill -TERM -- -{{ groups | join(sep=" -") }} 2>&1; sleep 5; kill -KILL -- -{{ groups | join(sep=" -") }} 2>/dev/null; echo reaped |$k$)$t$,
                        targets::JSON, autoescape := false) AS sql
-    FROM targets WHERE len(ids) > 0
+    FROM targets WHERE len(groups) > 0
 ), dispatched AS (
     SELECT array_agg(selfdispatch(sql)) AS receipts FROM rendered
 )
