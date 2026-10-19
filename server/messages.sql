@@ -16,12 +16,10 @@ $m$)) AS receipts
 CREATE OR REPLACE VIEW agent.sessions AS
 WITH session_blocks AS (
     SELECT * FROM stream.blocks WHERE NOT is_repeat
-), prompt_openings AS (
-    SELECT *, lag(left(message_content, 100)) OVER (PARTITION BY session_id ORDER BY timestamp) AS previous_opening
-    FROM session_blocks WHERE is_prompt
 ), prompt AS (
-    SELECT *, coalesce(rapidfuzz_ratio(left(message_content, 100), previous_opening) >= 90, false) AS is_near_repeat
-    FROM prompt_openings
+    SELECT *, coalesce(rapidfuzz_ratio(left(message_content, 100),
+               lag(left(message_content, 100)) OVER (PARTITION BY session_id ORDER BY timestamp)) >= 90, false) AS is_near_repeat
+    FROM session_blocks WHERE is_prompt
 ), prompts AS (
     SELECT session_id, array_agg(prompt ORDER BY timestamp) AS prompts,
            [p FOR p IN prompts IF NOT p.is_near_repeat] AS distinct_prompts
