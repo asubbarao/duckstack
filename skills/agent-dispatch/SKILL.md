@@ -165,16 +165,16 @@ for raw in [<inputs>]:
         print(json.dumps(dict(raw=raw, <compared column>=None, error=type(e).__name__)))
 PY
 |$cmd$, format := 'newline_delimited')
-), duckdb_side AS (        -- the same inputs, taken from the Python rows
-    SELECT raw, <duckdb expression over raw> AS <compared column> FROM python_side
 )
-SELECT raw, duckdb_row.<compared column> AS duckdb_answer, python_row.<compared column> AS python_answer,
-       python_row.error AS python_error,
-       duckdb_row.<compared column> IS DISTINCT FROM python_row.<compared column> AS differs
-FROM duckdb_side AS duckdb_row JOIN python_side AS python_row USING (raw)
+SELECT raw, <duckdb expression over raw> AS duckdb_answer, <compared column> AS python_answer,
+       error AS python_error, duckdb_answer IS DISTINCT FROM python_answer AS differs
+FROM python_side
 ORDER BY differs DESC, raw
 ```
-An input the proposal raises on still prints its row, with the exception type in `error`. To keep
+The DuckDB answer is computed on the same row as the Python answer, so there is no second side to
+join. An input the proposal raises on still prints its row, with the exception type in `error`.
+The inputs stay in the script: a self-dispatched Python side returns receipts (`status`, `body`
+as text), not the script's columns. To keep
 the run as a signed record, wrap this same query in the agent-log COPY (`$query$…$query$` stored
 and executed); nothing reads that record back to get the answer, the query already returned it.
 A worker testing ponytail's or Thermos's proposal writes it as the Python (or bash) side. Verified
