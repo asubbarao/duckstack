@@ -10,12 +10,11 @@ The output is a **writeup**, not rows. Three steps:
 ## 1. Collect (dev, one query)
 
 Run [collect.sql](collect.sql) on dev through `mcp__dev__query`. It returns one row per session (`source`, `session`,
-`first_ts`, `last_ts`, `prompts`, `chars`, and `said`: his messages in order), read from `stream.blocks`, which
-already parses every transcript. The window is the one `INTERVAL` in it. Verified 2026-10-19: 14 days gave 303
+`first_ts`, `last_ts`, `prompts`, `chars`, and `said`: his messages in order) from the view `agent.prompts`, which
+reads `stream.blocks`. The window is the one `INTERVAL` in it. Verified 2026-10-19: 14 days gave 303
 sessions and about 4,300 messages.
 
-Nothing is stored: each reader in step 2 runs collect.sql itself with `AND session_id IN (<its group>)` added to
-the `typed` CTE.
+Nothing is stored: each reader in step 2 runs `FROM agent.prompts WHERE session_id IN (<its group>)`.
 
 ## 2. Analyse (one Opus 5.5 reader per group of sessions)
 
