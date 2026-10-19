@@ -1,6 +1,7 @@
 -- stream.blocks: one row per block of every Claude and Codex message, agent_data's column names, in an in-memory
 -- database (nothing writes a WAL) with a BM25 index on message_content. block_key is file:line:block (line is the
--- record's row in its stored file), unique by construction. is_prompt is a person's typed message.
+-- record's row in its stored file), unique by construction. is_prompt is a person's typed message. is_repeat marks a
+-- resumed session's copy of a line: same uuid, not the earliest (timestamp, file) holding it; computed at each build.
 -- stream.parsed: the parse of agent.lines (fields are JSON there, hence ->> '$'); the build's input only. A view in the
 -- stream catalog resolves names inside stream, so it names dev.agent.lines.
 -- Boot builds the view, the table and the index, each its own post built from the previous step's receipt (a post binds
@@ -12,7 +13,7 @@ WITH intent AS (
 CREATE OR REPLACE VIEW stream.main.parsed AS
 WITH line AS (
     SELECT ['text', 'thinking', 'output', 'content'] AS content_keys, ['name', 'call_id'] AS name_keys,
-           ['id', 'tool_use_id', 'call_id'] AS id_keys,
+           ['id', 'tool_use_id', 'call_id'] AS id_keys, ['command', 'cmd', 'sql', '$'] AS command_keys,
            ['<', '[Request interrupted', 'This session is being continued', 'Base directory for this skill',
             'Another Claude session sent a message'] AS harness_prefixes,
            transcript AS file_path, file_row_number AS line, CASE WHEN contains(transcript, '/.codex/') THEN 'codex' ELSE 'claude' END AS source,
@@ -37,12 +38,15 @@ WITH line AS (
            coalesce(b -> 'input', try_cast(b ->> 'arguments' AS JSON)) AS tool_input, strlen(b::VARCHAR) AS content_bytes
     FROM block
 )
-SELECT * EXCLUDE (harness_prefixes),
+SELECT * EXCLUDE (harness_prefixes, command_keys),
+       coalesce([tool_input ->> k FOR k IN command_keys IF tool_input ->> k IS NOT NULL][1], tool_input::VARCHAR) AS tool_command,
        message_role = 'user' AND block_type IN ('text', 'input_text') AND NOT is_agent
        AND NOT list_bool_or([starts_with(ltrim(message_content), p) FOR p IN harness_prefixes]) AS is_prompt
 FROM parsed
 $v$ AS parsed_sql,
-           $c$CREATE TABLE IF NOT EXISTS stream.main.blocks AS SELECT * FROM stream.main.parsed$c$ AS create_sql,
+           $c$CREATE TABLE IF NOT EXISTS stream.main.blocks AS
+SELECT *, uuid IS NOT NULL AND file_path IS DISTINCT FROM arg_min(file_path, (timestamp, file_path)) OVER (PARTITION BY uuid) AS is_repeat
+FROM stream.main.parsed$c$ AS create_sql,
            $p$PRAGMA create_fts_index('stream.main.blocks', 'block_key', 'message_content', overwrite = 1)$p$ AS index_sql
 ), parsed_step AS (
     SELECT create_sql, index_sql, array_agg(selfdispatch(parsed_sql)) AS receipts FROM intent GROUP BY create_sql, index_sql

@@ -9,9 +9,11 @@ WITH changed AS (
 ), window_step AS (
     SELECT array_agg(selfdispatch(tera_render($w$
 CREATE OR REPLACE TABLE stream.main.blocks AS
-SELECT * FROM stream.main.blocks WHERE file_path NOT IN ({{ files | join(sep=", ") }})
-UNION ALL BY NAME
-SELECT * FROM stream.main.parsed WHERE file_path IN ({{ files | join(sep=", ") }})
+SELECT * EXCLUDE (is_repeat),
+       uuid IS NOT NULL AND file_path IS DISTINCT FROM arg_min(file_path, (timestamp, file_path)) OVER (PARTITION BY uuid) AS is_repeat
+FROM (SELECT * FROM stream.main.blocks WHERE file_path NOT IN ({{ files | join(sep=", ") }})
+      UNION ALL BY NAME
+      SELECT * FROM stream.main.parsed WHERE file_path IN ({{ files | join(sep=", ") }}))
 $w$, changed::JSON, autoescape := false))) AS receipts
     FROM changed WHERE len(files) > 0
 ), index_step AS (

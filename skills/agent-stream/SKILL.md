@@ -9,7 +9,7 @@ allowed-tools: mcp__dev__query
 Start from `agent.messages`: one row per message block, agent_data's column names (`source, session_id, file_path,
 line, block_index, block_key, is_agent, timestamp, message_role, block_type, tool_name, tool_use_id, uuid, model, cwd,
 git_branch, entrypoint`), plus `is_prompt` (a person's typed message), `content_bytes`, and `head`/`tail` (first and
-last 100 characters) in place of the full text, so a 290 KB paste never fills a reply. List there; search with the
+last 100 characters) and `tool_command_head` in place of the full text, so a 290 KB paste never fills a reply. List there; search with the
 query under Search. The full text of a row you picked is `stream.blocks.message_content` on the same `block_key`.
 A resumed session repeats lines under the same `uuid`; `is_repeat` marks those copies, so filter `NOT is_repeat`.
 Never unpack `agent.lines` JSON by hand, never `read_conversations`, and never read `lake.agent.stream` (stale since
@@ -20,8 +20,8 @@ SELECT timestamp, session_id, content_bytes, head, tail FROM agent.messages
 WHERE is_prompt AND timestamp > now() - INTERVAL 3 DAY ORDER BY timestamp;
 ```
 
-Turns, actions and plans read `stream.blocks` (full text and `tool_input`), joined to `agent.messages` on
-`block_key` for `is_repeat`. The raw store below is for fields neither carries (`session_meta`, payload extras).
+Turns, actions and plans read `stream.blocks` (full text, `tool_input`, and `tool_command`: the input's command,
+cmd or sql, else the whole input). The raw store below is for fields neither carries (`session_meta`, payload extras).
 
 ## The store
 
@@ -65,8 +65,8 @@ Each prompt pairs with the last assistant text before the next prompt. `reply IS
 ```sql
 WITH messages AS (
   SELECT b.source, b.session_id, b.file_path, b.timestamp AS ts, b.is_agent, b.is_prompt, b.message_role, b.message_content
-  FROM stream.blocks b SEMI JOIN agent.messages m ON m.block_key = b.block_key AND NOT m.is_repeat
-  WHERE b.block_type IN ('text', 'input_text', 'output_text') AND b.timestamp > now() - INTERVAL 2 DAY
+  FROM stream.blocks b
+  WHERE NOT b.is_repeat AND b.block_type IN ('text', 'input_text', 'output_text') AND b.timestamp > now() - INTERVAL 2 DAY
 ), prompts AS (
   SELECT source, session_id, file_path, ts, message_content AS prompt,
          lead(ts) OVER (PARTITION BY file_path ORDER BY ts) AS next_prompt_ts
@@ -101,10 +101,9 @@ WITH actions AS (
                  {action: 'issue comment', words: ['gh', 'issue', 'comment']}, {action: 'fork', words: ['gh', 'repo', 'fork']},
                  {action: 'push', words: ['git', 'push']}], recursive := true)
 ), calls AS (
-  SELECT b.source, b.session_id, b.file_path, b.timestamp AS ts, b.is_agent, b.tool_name,
-         coalesce(b.tool_input ->> 'command', b.tool_input ->> 'cmd', b.tool_input ->> 'sql', b.tool_input ->> '$', b.tool_input::VARCHAR) AS cmd
-  FROM stream.blocks b SEMI JOIN agent.messages m ON m.block_key = b.block_key AND NOT m.is_repeat
-  WHERE b.block_type IN ('tool_use', 'function_call', 'custom_tool_call') AND b.timestamp > now() - INTERVAL 2 DAY
+  SELECT b.source, b.session_id, b.file_path, b.timestamp AS ts, b.is_agent, b.tool_name, b.tool_command AS cmd
+  FROM stream.blocks b
+  WHERE NOT b.is_repeat AND b.block_type IN ('tool_use', 'function_call', 'custom_tool_call') AND b.timestamp > now() - INTERVAL 2 DAY
 )
 SELECT a.action, c.* FROM calls c
 JOIN actions a ON list_has_all(string_split(translate(c.cmd, '''";{}()|&', '         '), ' '), a.words)
@@ -120,11 +119,11 @@ a heredoc, also matches, so read `cmd`. Codex's `exec` tool takes JavaScript tha
 ```sql
 SELECT 'tool' AS via, source, session_id, file_path, timestamp, is_agent, tool_name AS what, tool_input::VARCHAR AS plan
 FROM stream.blocks
-WHERE timestamp > now() - INTERVAL 2 DAY AND tool_name IN ('ExitPlanMode', 'TodoWrite', 'mcp__ccd_turn__update_plan', 'update_plan')
+WHERE NOT is_repeat AND timestamp > now() - INTERVAL 2 DAY AND tool_name IN ('ExitPlanMode', 'TodoWrite', 'mcp__ccd_turn__update_plan', 'update_plan')
 UNION ALL BY NAME
 SELECT 'message' AS via, source, session_id, file_path, timestamp, is_agent, 'proposed_plan' AS what, message_content AS plan
 FROM stream.blocks
-WHERE timestamp > now() - INTERVAL 2 DAY AND message_role = 'assistant' AND starts_with(ltrim(message_content), '<proposed_plan>')
+WHERE NOT is_repeat AND timestamp > now() - INTERVAL 2 DAY AND message_role = 'assistant' AND starts_with(ltrim(message_content), '<proposed_plan>')
 ORDER BY timestamp;
 ```
 
