@@ -196,7 +196,10 @@ SELECT 'Safari', 'close', 'tab', $osa$tell application "Safari" to close tab {{ 
 -- its job running). reap marks every process of a group the reaper kills: the group's oldest process was spawned by
 -- an agent, the group is 10 minutes old, and it is not an orphaned app or system helper. reap_dev_job marks a process
 -- dev's shell started (a shellfs command, a nohup job) that is an hour old: it shares dev's group, started after dev,
--- so the wrapper and feeder started with dev never qualify. It is killed alone, never by group, which would kill dev.
+-- so the wrapper and feeder started with dev never qualify. reap_client_job marks a command a session's own DuckDB
+-- (server/client.sql) has run for over 3 minutes: one stuck shellfs command blocks every later call to that session.
+-- kill_id is what the reaper kills: -pgid for a reaped group, the pid alone for the other two (they share a group
+-- with a process that must live), NULL otherwise.
 -- Orphaned groups whose oldest command matches one of these are apps and system helpers, never reaped.
 CREATE OR REPLACE VIEW reap_exempt_prefixes AS
 SELECT unnest(['%.app/Contents/%', '/System/%', '/usr/%', '/Library/%', '/opt/homebrew/Cellar/podman/%']) AS pattern;
@@ -232,18 +235,27 @@ WITH ps_words AS (
     FROM procs g LEFT JOIN procs l ON l.pid = g.pgid LEFT JOIN procs p ON p.pid = g.ppid
 ), grouped AS (
     SELECT *, arg_max(spawned_by, age_s) OVER (PARTITION BY pgid) AS group_spawned_by,
-           arg_max(args, age_s) OVER (PARTITION BY pgid) AS group_root_args, max(age_s) OVER (PARTITION BY pgid) AS group_age_s,
-           file_name(exe) = 'duckdb' AND contains(args, '/.duck/db/dev.duckdb') AS is_dev_server,
-           arg_max(CASE WHEN is_dev_server THEN {pid: pid, pgid: pgid, age_s: age_s} END, CASE WHEN is_dev_server THEN age_s END) OVER () AS dev
+           arg_max(args, age_s) OVER (PARTITION BY pgid) AS group_root_args, max(age_s) OVER (PARTITION BY pgid) AS group_age_s
     FROM owned
+), dev_server AS (   -- dev's own duckdb; the jobs its shell starts share this group
+    SELECT pgid, arg_max(pid, age_s) AS dev_pid, max(age_s) AS dev_age_s
+    FROM owned WHERE file_name(exe) = 'duckdb' AND contains(args, '/.duck/db/dev.duckdb')
+    GROUP BY pgid
 ), exempt_groups AS (
-    SELECT DISTINCT g.pgid FROM grouped g JOIN reap_exempt_prefixes e ON g.group_root_args LIKE e.pattern
-    WHERE g.group_spawned_by = 'orphan'
+    SELECT DISTINCT process.pgid
+    FROM grouped AS process JOIN reap_exempt_prefixes AS exempt_prefix ON process.group_root_args LIKE exempt_prefix.pattern
+    WHERE process.group_spawned_by = 'orphan'
+), marked AS (
+    SELECT process.*, dev.dev_pid, dev.dev_age_s,
+           coalesce(process.group_spawned_by IS NOT NULL AND process.group_age_s >= 600 AND exempt.pgid IS NULL, false) AS reap,
+           coalesce(process.pid <> dev.dev_pid AND process.age_s < dev.dev_age_s AND process.age_s >= 3600, false) AS reap_dev_job,
+           coalesce(contains(process.parent_args, '/server/client.sql') AND process.age_s >= 180, false) AS reap_client_job
+    FROM grouped AS process
+    LEFT JOIN exempt_groups AS exempt ON exempt.pgid = process.pgid
+    LEFT JOIN dev_server AS dev ON dev.pgid = process.pgid
 )
-SELECT g.* EXCLUDE (is_dev_server, dev), g.dev.pid AS dev_pid, g.dev.pgid AS dev_pgid, g.dev.age_s AS dev_age_s,
-       coalesce(g.group_spawned_by IS NOT NULL AND g.group_age_s >= 600 AND x.pgid IS NULL, false) AS reap,
-       coalesce(g.pgid = g.dev.pgid AND g.pid <> g.dev.pid AND g.age_s < g.dev.age_s AND g.age_s >= 3600, false) AS reap_dev_job
-FROM grouped g LEFT JOIN exempt_groups x ON x.pgid = g.pgid;
+SELECT *, CASE WHEN reap THEN -pgid WHEN true IN (reap_dev_job, reap_client_job) THEN pid END AS kill_id
+FROM marked;
 
 -- Every file macOS keeps in DiagnosticReports: crash reports (.ips), out-of-memory kills (JetsamEvent*.ips), resource
 -- reports (.diag: disk writes, CPU, wakeups). The globs name whole folders, which always hold files: a glob matching
