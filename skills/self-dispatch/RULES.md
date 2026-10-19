@@ -24,8 +24,9 @@ writing SQL on this machine.
    `coalesce(read_csv…, read_blob…)` (09-23, 09-30).
 5. **Results come back as columns.** "whatever you construct in the self dispatch you unnest the arr and it
    comes back as a column … if agents are manually parsing out field names like that I am going to vomit" (09-22).
-   Until quackapi returns typed replies, one `->>` per receipt body field is fine; no ladders, no `from_json`
-   structures (10-18).
+   Until quackapi returns typed replies, a receipt body field may be read with one `->>` (no chained arrows),
+   once, in the CTE right after the unnest, which names it as a column for every later reader; no ladders, no
+   `from_json` structures (10-18).
 6. **No scripts around it.** No `.sh`/`.py` files, no COPY-a-script-then-run-it, no base64, no nohup
    launchers, no polling loops: the command is a column and gets dispatched (09-20, 10-09, 10-12, 10-14, 10-16).
    "you're a fucking moron if you think an sh file is needed" (10-12).
@@ -46,8 +47,8 @@ writing SQL on this machine.
     until the result is right, then save the `.sql`; no castles of temp tables (1–2 staging tables are
     fine); no per-question tables like `north_dakota_revenue` (09-29, 10-14, 10-15). `CREATE OR REPLACE
     TABLE t AS SELECT … FROM t`, no `BEGIN`/`COMMIT`, no `INSERT` when CTAS works (09-23).
-12. **Readable strings.** Arrays of words, a template with holes (the four shapes: sql, shell, network, the bash
-    loop fallback), or a plain `concat` when a statement has only a few holes (10-18); no `||` chains, no `chr(39)`/`chr(10)`
+12. **Readable strings.** Arrays of words, a canonical template with holes (rule 17: shell, pipeline, sql,
+    network, loop), or a plain `concat` when a statement has only a few holes (10-18); no `||` chains, no `chr(39)`/`chr(10)`
     gymnastics, no nested quotes or escape hell (09-22, 10-12). `quote_literal(col)` is fine; `translate()` for
     character swaps (09-23, 10-16). No `printf` / `format`: on 10-17 a printf-built command and a printf in a
     dispatch were both rejected; declare the parts as columns and render with Tera.
