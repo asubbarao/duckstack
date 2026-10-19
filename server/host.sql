@@ -194,7 +194,9 @@ SELECT 'Safari', 'close', 'tab', $osa$tell application "Safari" to close tab {{ 
 -- (its group leader is the zsh a Claude Bash call starts, sourcing ~/.claude/shell-snapshots), 'codex' (a child of
 -- codex outside its own install and MCP servers), 'orphan' (the group leader is gone: an agent's call ended and left
 -- its job running). reap marks every process of a group the reaper kills: the group's oldest process was spawned by
--- an agent, the group is 10 minutes old, and it is not an orphaned app or system helper.
+-- an agent, the group is 10 minutes old, and it is not an orphaned app or system helper. reap_dev_job marks a process
+-- dev's shell started (a shellfs command, a nohup job) that is an hour old: it shares dev's group, started after dev,
+-- so the wrapper and feeder started with dev never qualify. It is killed alone, never by group, which would kill dev.
 CREATE OR REPLACE VIEW host_processes AS
 WITH ps_words AS (
     SELECT content, list_filter(string_split(content, ' '), w -> w <> '') AS words
@@ -227,13 +229,19 @@ WITH ps_words AS (
     FROM procs g LEFT JOIN procs l ON l.pid = g.pgid LEFT JOIN procs p ON p.pid = g.ppid
 ), grouped AS (
     SELECT *, arg_max(spawned_by, age_s) OVER (PARTITION BY pgid) AS group_spawned_by,
-           arg_max(args, age_s) OVER (PARTITION BY pgid) AS group_root_args, max(age_s) OVER (PARTITION BY pgid) AS group_age_s
+           arg_max(args, age_s) OVER (PARTITION BY pgid) AS group_root_args, max(age_s) OVER (PARTITION BY pgid) AS group_age_s,
+           file_name(split_part(args, ' ', 1)) = 'duckdb' AND contains(args, '/.duck/db/dev.duckdb') AS is_dev_server,
+           arg_max(CASE WHEN is_dev_server THEN pid END, CASE WHEN is_dev_server THEN age_s END) OVER () AS dev_pid,
+           arg_max(CASE WHEN is_dev_server THEN pgid END, CASE WHEN is_dev_server THEN age_s END) OVER () AS dev_pgid,
+           max(CASE WHEN is_dev_server THEN age_s END) OVER () AS dev_age_s
     FROM owned
 )
-SELECT *, coalesce(group_spawned_by IS NOT NULL AND group_age_s >= 600
-                   AND NOT (group_spawned_by = 'orphan'
-                            AND len(list_filter(['%.app/Contents/%', '/System/%', '/usr/%', '/Library/%', '/opt/homebrew/Cellar/podman/%'],
-                                                k -> group_root_args LIKE k)) > 0), false) AS reap
+SELECT * EXCLUDE (is_dev_server),
+       coalesce(group_spawned_by IS NOT NULL AND group_age_s >= 600
+                AND NOT (group_spawned_by = 'orphan'
+                         AND len(list_filter(['%.app/Contents/%', '/System/%', '/usr/%', '/Library/%', '/opt/homebrew/Cellar/podman/%'],
+                                             k -> group_root_args LIKE k)) > 0), false) AS reap,
+       coalesce(pgid = dev_pgid AND pid <> dev_pid AND age_s < dev_age_s AND age_s >= 3600, false) AS reap_dev_job
 FROM grouped;
 
 -- Every file macOS keeps in DiagnosticReports: crash reports (.ips), out-of-memory kills (JetsamEvent*.ips), resource
