@@ -33,8 +33,7 @@ WITH ps_words AS (
     SELECT ps.*, string_split(etime, '-') AS day_split, list_reverse(string_split(day_split[-1], ':')) AS smh,
            CASE len(day_split) WHEN 2 THEN day_split[1]::BIGINT ELSE 0 END * 86400
              + coalesce(smh[3]::BIGINT, 0) * 3600 + smh[2]::BIGINT * 60 + smh[1]::BIGINT AS age_s,
-           CASE right(rtrim(mem, '+-'), 1) WHEN 'G' THEN 1024 WHEN 'M' THEN 1 WHEN 'K' THEN 1/1024 ELSE 0 END
-             * TRY_CAST(rtrim(rtrim(mem, '+-'), 'BKMG') AS DOUBLE) AS footprint_mb
+           MAP {'G': 1024, 'M': 1, 'K': 1/1024}[right(rtrim(mem, '+-'), 1)] * TRY_CAST(rtrim(rtrim(mem, '+-'), 'BKMG') AS DOUBLE) AS footprint_mb
     FROM ps LEFT JOIN top USING (pid)
 ), owned AS (
     SELECT process.* EXCLUDE (day_split, smh), now() AS observed_at, leader.args AS leader_args, parent.args AS parent_args,

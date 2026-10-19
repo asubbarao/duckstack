@@ -10,27 +10,27 @@ WITH targets AS (
     FROM host_processes WHERE kill_id IS NOT NULL
     GROUP BY stamp
 ), dumped AS (
-    SELECT stamp, array_agg(selfdispatch(tera_render($d$
+    SELECT targets, array_agg(selfdispatch(tera_render($d$
 COPY (SELECT * FROM host_processes WHERE kill_id IS NOT NULL) TO '~/.duck/logs/reaped-{{ stamp }}.json' (FORMAT json)
-$d$, json_object('stamp', stamp), autoescape := false))) AS receipts
-    FROM targets GROUP BY stamp   -- listed reads stamp to find the file
+$d$, targets::JSON, autoescape := false))) AS receipts
+    FROM targets GROUP BY targets
 ), listed AS (
     SELECT array_agg(selfdispatch(tera_render($l$
-SELECT list(DISTINCT kill_id) AS ids FROM read_json('~/.duck/logs/reaped-{{ stamp }}.json')
-$l$, json_object('stamp', stamp), autoescape := false))) AS receipts
-    FROM dumped CROSS JOIN UNNEST(receipts) AS t(r) WHERE r.status = 200
+SELECT string_agg(DISTINCT kill_id::VARCHAR, ' ') AS ids FROM read_json('~/.duck/logs/reaped-{{ stamp }}.json')
+$l$, dumped.targets::JSON, autoescape := false))) AS receipts
+    FROM dumped CROSS JOIN UNNEST(receipts) AS dump(receipt) WHERE dump.receipt.status = 200
 ), killed AS (
     SELECT array_agg(selfdispatch(tera_render($k$
-SELECT content FROM read_lines($c$kill -TERM -- {{ ids | join(sep=" ") }} 2>&1; sleep 5; kill -KILL -- {{ ids | join(sep=" ") }} 2>/dev/null; echo reaped |$c$)
-$k$, listing, autoescape := false))) AS receipts
-    FROM listed CROSS JOIN UNNEST(receipts) AS t(r) CROSS JOIN UNNEST(r.body::JSON[]) AS b(listing)
-    WHERE r.status = 200
+SELECT content FROM read_lines($c$kill -TERM -- {{ ids }} 2>&1; sleep 5; kill -KILL -- {{ ids }} 2>/dev/null; echo reaped |$c$)
+$k$, kill_list.listing, autoescape := false))) AS receipts
+    FROM listed CROSS JOIN UNNEST(receipts) AS list(receipt) CROSS JOIN UNNEST(list.receipt.body::JSON[]) AS kill_list(listing)
+    WHERE list.receipt.status = 200
 )
-SELECT 'dump' AS step, r.status, r.body FROM dumped CROSS JOIN UNNEST(receipts) AS t(r)
-UNION ALL SELECT 'list' AS step, r.status, r.body FROM listed CROSS JOIN UNNEST(receipts) AS t(r)
-UNION ALL SELECT 'kill' AS step, r.status, r.body FROM killed CROSS JOIN UNNEST(receipts) AS t(r);
+SELECT 'dump' AS step, dump.receipt.status, dump.receipt.body FROM dumped CROSS JOIN UNNEST(receipts) AS dump(receipt)
+UNION ALL SELECT 'list' AS step, list.receipt.status, list.receipt.body FROM listed CROSS JOIN UNNEST(receipts) AS list(receipt)
+UNION ALL SELECT 'kill' AS step, kill.receipt.status, kill.receipt.body FROM killed CROSS JOIN UNNEST(receipts) AS kill(receipt);
 $reap$ AS sql
 ), posted AS (
     SELECT sql, array_agg(selfdispatch(sql)) AS receipts FROM program GROUP BY sql
 )
-SELECT cron(sql, '0 */5 * * * *') AS job, r.status FROM posted CROSS JOIN UNNEST(receipts) AS t(r);
+SELECT cron(sql, '0 */5 * * * *') AS job, boot.receipt.status FROM posted CROSS JOIN UNNEST(receipts) AS boot(receipt);
