@@ -1,17 +1,13 @@
--- Message blocks: one row per block of every Claude and Codex message, agent_data's column names. Columns are read with
--- ->> '$' because agent.lines keeps every top-level field as JSON (agent.sql). block_key is file:line:block (line is the
--- record's row in its stored file), unique by construction. is_repeat marks a resumed session's copy of a line (same uuid,
--- not the file where it first appeared). is_prompt is a person's typed message.
--- stream.parsed: the parse of agent.lines, the build's input only; it reads every stored file, so nothing queries it.
--- A view in the stream catalog resolves names inside stream, so it names dev.agent.lines.
--- stream.blocks: the one table, in an in-memory database (nothing writes a WAL) with a BM25 index on message_content.
--- The refresh posts one statement per step, each built from the previous step's receipt: a post binds alone, so a step
--- may use what the one before it created, and the PRAGMA (expanded when parsed) runs after the table exists. Posted now
--- and every 15 minutes, 30 s after the copies: the table keeps its rows older than 20 minutes and re-reads the last 20.
+-- stream.blocks: one row per block of every Claude and Codex message, agent_data's column names, in an in-memory
+-- database (nothing writes a WAL) with a BM25 index on message_content. block_key is file:line:block (line is the
+-- record's row in its stored file), unique by construction. is_prompt is a person's typed message.
+-- stream.parsed: the parse of agent.lines (fields are JSON there, hence ->> '$'); the build's input only. A view in the
+-- stream catalog resolves names inside stream, so it names dev.agent.lines.
+-- Each step is its own post, built from the previous step's receipt (a post binds alone; the PRAGMA is expanded when
+-- parsed), and every receipt is returned. Boot builds the table whole. The refresh, at boot and every 15 minutes, 30 s
+-- after the copies, replaces the rows of each transcript changed in the last 30 minutes, then rebuilds the index.
 -- fts names its tables without a catalog, so a search sets search_path = 'dev.main,stream.main' first.
 ATTACH IF NOT EXISTS ':memory:' AS stream;
-WITH program AS (
-    SELECT $refresh$
 WITH intent AS (
     SELECT $v$
 CREATE OR REPLACE VIEW stream.main.parsed AS
@@ -44,67 +40,43 @@ WITH line AS (
     FROM block
 )
 SELECT * EXCLUDE (harness_prefixes),
-       uuid IS NOT NULL AND file_path IS DISTINCT FROM arg_min(file_path, timestamp) OVER (PARTITION BY uuid) AS is_repeat,
        message_role = 'user' AND block_type IN ('text', 'input_text') AND NOT is_agent
        AND NOT list_bool_or(list_transform(harness_prefixes, lambda p: starts_with(ltrim(message_content), p))) AS is_prompt
 FROM parsed
 $v$ AS parsed_sql,
-           $c$CREATE TABLE IF NOT EXISTS stream.main.blocks AS SELECT * FROM stream.main.parsed$c$ AS create_sql,
-           $w$
-CREATE OR REPLACE TABLE stream.main.blocks AS
-SELECT * FROM stream.main.blocks WHERE (timestamp >= now() - INTERVAL 20 MINUTE) IS NOT TRUE
-UNION ALL BY NAME
-SELECT * FROM stream.main.parsed WHERE timestamp >= now() - INTERVAL 20 MINUTE
-$w$ AS window_sql,
-           $p$PRAGMA create_fts_index('stream.main.blocks', 'block_key', 'message_content', overwrite = 1)$p$ AS index_sql
+           $c$CREATE TABLE IF NOT EXISTS stream.main.blocks AS SELECT * FROM stream.main.parsed$c$ AS create_sql
 ), parsed_step AS (
-    SELECT create_sql, window_sql, index_sql, array_agg(selfdispatch(parsed_sql)) AS receipts
-    FROM intent GROUP BY create_sql, window_sql, index_sql
+    SELECT create_sql, array_agg(selfdispatch(parsed_sql)) AS receipts FROM intent GROUP BY create_sql
 ), create_step AS (
-    SELECT window_sql, index_sql, array_agg(selfdispatch(create_sql)) AS receipts
-    FROM parsed_step CROSS JOIN UNNEST(receipts) AS t(r) WHERE r.status = 200 GROUP BY window_sql, index_sql
-), window_step AS (
-    SELECT index_sql, array_agg(selfdispatch(window_sql)) AS receipts
-    FROM create_step CROSS JOIN UNNEST(receipts) AS t(r) WHERE r.status = 200 GROUP BY index_sql
-), index_step AS (
-    SELECT array_agg(selfdispatch(index_sql)) AS receipts
-    FROM window_step CROSS JOIN UNNEST(receipts) AS t(r) WHERE r.status = 200 GROUP BY index_sql
+    SELECT array_agg(selfdispatch(create_sql)) AS receipts
+    FROM parsed_step CROSS JOIN UNNEST(receipts) AS t(r) WHERE r.status = 200 GROUP BY create_sql
 )
+SELECT r.* FROM parsed_step CROSS JOIN UNNEST(receipts) AS t(r)
+UNION ALL
+SELECT r.* FROM create_step CROSS JOIN UNNEST(receipts) AS t(r);
+
+WITH program AS (
+    SELECT $refresh$
+WITH changed AS (
+    SELECT list(quote_literal(path)) AS files FROM dev.agent.entries
+    WHERE reader = 'read_json' AND modified >= now()::TIMESTAMP - INTERVAL 30 MINUTE
+), window_step AS (
+    SELECT array_agg(selfdispatch(tera_render($w$
+CREATE OR REPLACE TABLE stream.main.blocks AS
+SELECT * FROM stream.main.blocks WHERE file_path NOT IN ({{ files | join(sep=", ") }})
+UNION ALL BY NAME
+SELECT * FROM stream.main.parsed WHERE file_path IN ({{ files | join(sep=", ") }})
+$w$, changed::JSON, autoescape := false))) AS receipts
+    FROM changed WHERE len(files) > 0
+), index_step AS (
+    SELECT array_agg(selfdispatch($p$PRAGMA create_fts_index('stream.main.blocks', 'block_key', 'message_content', overwrite = 1)$p$)) AS receipts
+    FROM window_step CROSS JOIN UNNEST(receipts) AS t(r) WHERE r.status = 200
+)
+SELECT r.* FROM window_step CROSS JOIN UNNEST(receipts) AS t(r)
+UNION ALL
 SELECT r.* FROM index_step CROSS JOIN UNNEST(receipts) AS t(r);
 $refresh$ AS sql
 ), posted AS (
     SELECT sql, array_agg(selfdispatch(sql)) AS receipts FROM program GROUP BY sql
 )
 SELECT cron(sql, '30 */15 * * * *') AS job, r.* FROM posted CROSS JOIN UNNEST(receipts) AS t(r);
-
--- The views over the table, once, after the boot build above.
--- agent.messages: stream.blocks without the full text (head, tail), so a 290 KB paste never fills a reply.
--- agent.sessions: one row per session to pick from, then read its blocks by session_id: activity, and the count and
--- first and last of its prompts, near-repeats dropped (rapidfuzz_ratio 90+ against the previous prompt).
-WITH intent AS (
-    SELECT unnest([$m$
-CREATE OR REPLACE VIEW agent.messages AS
-SELECT * EXCLUDE (message_content, tool_input), left(message_content, 100) AS head,
-       right(message_content, 100) AS tail, left(tool_input::VARCHAR, 100) AS tool_input_head
-FROM stream.blocks
-$m$, $s$
-CREATE OR REPLACE VIEW agent.sessions AS
-WITH prompt AS (
-    SELECT session_id, timestamp, left(message_content, 200) AS opening,
-           lag(opening) OVER (PARTITION BY session_id ORDER BY timestamp) AS previous_opening
-    FROM stream.blocks WHERE is_prompt AND NOT is_repeat
-), prompts AS (
-    SELECT session_id, count(opening) AS prompts, arg_min(opening, timestamp) AS first_prompt, arg_max(opening, timestamp) AS last_prompt
-    FROM prompt WHERE (rapidfuzz_ratio(opening, previous_opening) >= 90) IS NOT TRUE
-    GROUP BY session_id
-), activity AS (
-    SELECT session_id, source, min(timestamp) AS started, max(timestamp) AS last_active, count(block_key) AS blocks
-    FROM stream.blocks WHERE NOT is_repeat GROUP BY session_id, source
-)
-SELECT a.*, p.prompts, p.first_prompt, p.last_prompt
-FROM activity a LEFT JOIN prompts p USING (session_id)
-$s$]) AS sql
-), dispatched AS (
-    SELECT array_agg(selfdispatch(sql)) AS receipts FROM intent
-)
-SELECT r.* FROM dispatched CROSS JOIN UNNEST(receipts) AS t(r);
