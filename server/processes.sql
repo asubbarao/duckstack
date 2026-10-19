@@ -13,11 +13,14 @@
 -- Orphaned groups whose oldest command matches one of these are apps and system helpers, never reaped.
 CREATE OR REPLACE VIEW reap_exempt_prefixes AS
 SELECT unnest(['%.app/Contents/%', '/System/%', '/usr/%', '/Library/%', '/opt/homebrew/Cellar/podman/%']) AS pattern;
+-- Codex's own install and MCP servers: its children there are not agent work.
+CREATE OR REPLACE VIEW codex_own_prefixes AS
+SELECT unnest(['/Applications/ChatGPT.app/', getenv('HOME') || '/.codex/', getenv('HOME') || '/.local/bin/']) AS prefix;
 CREATE OR REPLACE VIEW host_processes AS
 WITH ps_words AS (
     SELECT content, list_filter(string_split(content, ' '), w -> w <> '') AS words
     FROM read_lines($cmd$ps -axww -o pid=,ppid=,pgid=,etime=,args= |$cmd$, "trim" := true)
-), ps AS (   -- args is the rest of the line after etime, which alone of the first four holds a ':'
+), ps AS (   -- args is the rest of the line after etime; etime always holds a ':', so pid digits never match it
     SELECT words[1]::BIGINT AS pid, words[2]::BIGINT AS ppid, words[3]::BIGINT AS pgid, words[4] AS etime, words[5] AS exe,
            left(trim(substr(content, strpos(content, words[4]) + len(words[4]))), 2000) AS args
     FROM ps_words
@@ -34,14 +37,16 @@ WITH ps_words AS (
              * TRY_CAST(rtrim(rtrim(mem, '+-'), 'BKMG') AS DOUBLE) AS footprint_mb
     FROM ps LEFT JOIN top USING (pid)
 ), owned AS (
-    SELECT g.* EXCLUDE (day_split, smh), now() AS observed_at, l.args AS leader_args, p.args AS parent_args,
-           CASE WHEN g.pgid <= 1 THEN NULL
-                WHEN l.pid IS NULL THEN 'orphan'
-                WHEN contains(l.args, '/.claude/shell-snapshots/') THEN 'claude'
-                WHEN file_name(p.exe) = 'codex' AND NOT list_bool_or([starts_with(g.args, prefix) FOR prefix IN
-                     ['/Applications/ChatGPT.app/', '/Users/aloksubbarao/.codex/', '/Users/aloksubbarao/.local/bin/']]) THEN 'codex'
+    SELECT process.* EXCLUDE (day_split, smh), now() AS observed_at, leader.args AS leader_args, parent.args AS parent_args,
+           CASE WHEN process.pgid <= 1 THEN NULL
+                WHEN leader.pid IS NULL THEN 'orphan'
+                WHEN contains(leader.args, '/.claude/shell-snapshots/') THEN 'claude'
+                WHEN file_name(parent.exe) = 'codex' AND codex_own.prefix IS NULL THEN 'codex'
            END AS spawned_by
-    FROM procs g LEFT JOIN procs l ON l.pid = g.pgid LEFT JOIN procs p ON p.pid = g.ppid
+    FROM procs AS process
+    LEFT JOIN procs AS leader ON leader.pid = process.pgid
+    LEFT JOIN procs AS parent ON parent.pid = process.ppid
+    LEFT JOIN codex_own_prefixes AS codex_own ON starts_with(process.args, codex_own.prefix)
 ), grouped AS (
     SELECT *, arg_max(spawned_by, age_s) OVER (PARTITION BY pgid) AS group_spawned_by,
            arg_max(args, age_s) OVER (PARTITION BY pgid) AS group_root_args, max(age_s) OVER (PARTITION BY pgid) AS group_age_s

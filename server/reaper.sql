@@ -22,8 +22,9 @@ $l$, json_object('stamp', stamp), autoescape := false))) AS receipts
 ), killed AS (
     SELECT array_agg(selfdispatch(tera_render($k$
 SELECT content FROM read_lines($c$kill -TERM -- {{ ids | join(sep=" ") }} 2>&1; sleep 5; kill -KILL -- {{ ids | join(sep=" ") }} 2>/dev/null; echo reaped |$c$)
-$k$, (r.body::JSON)[0], autoescape := false))) AS receipts
-    FROM listed CROSS JOIN UNNEST(receipts) AS t(r) WHERE r.status = 200
+$k$, listing::JSON, autoescape := false))) AS receipts
+    FROM listed CROSS JOIN UNNEST(receipts) AS t(r) CROSS JOIN UNNEST(r.body::JSON::STRUCT(ids BIGINT[])[]) AS b(listing)
+    WHERE r.status = 200
 )
 SELECT 'dump' AS step, r.status, r.body FROM dumped CROSS JOIN UNNEST(receipts) AS t(r)
 UNION ALL SELECT 'list' AS step, r.status, r.body FROM listed CROSS JOIN UNNEST(receipts) AS t(r)
