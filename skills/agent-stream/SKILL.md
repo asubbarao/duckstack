@@ -131,10 +131,9 @@ ORDER BY timestamp;
 
 Pick sessions from `agent.sessions` (one row each: activity, prompt count, first and last prompt), then read their
 blocks by `session_id`. To find blocks by words, BM25 over `stream.blocks` (rebuilt every 15 minutes from transcripts
-changed in the last 30, on a store up to 5 minutes behind, so up to ~20 minutes behind live). fts names its tables without a catalog, so set `search_path` first:
+changed in the last 30, on a store up to 5 minutes behind, so up to ~20 minutes behind live):
 
 ```sql
-SET search_path = 'dev.main,stream.main';
 SELECT session_id, block_key, timestamp, content_bytes, score
 FROM (SELECT *, stream.fts_main_blocks.match_bm25(block_key, 'ohad uploaded documents') AS score FROM stream.blocks)
 WHERE score IS NOT NULL ORDER BY score DESC LIMIT 20;
