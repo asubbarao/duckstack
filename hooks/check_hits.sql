@@ -222,7 +222,7 @@ SELECT 'sql_set_on_dev' AS check_id, call_id, tool_name, coalesce(next_prompt_co
 UNION ALL
 SELECT 'sql_shellfs_curl_self' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((len(list_filter(sql_shellfs_pipes, pipe -> list_contains(pipe.commands, 'curl') AND len(list_filter(pipe.words, word -> contains(word, ':9495'))) > 0)) > 0), false)
 UNION ALL
-SELECT 'sql_shellfs_exit_hack' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((len(list_filter(sql_table_function_calls, t -> len(list_filter(t.literals, l -> ends_with(rtrim(l), '|') AND len(list_filter(['|| true', '; true'], hack -> contains(l, hack))) > 0)) > 0)) > 0), false)
+SELECT 'sql_shellfs_exit_hack' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((len(list_filter(sql_shellfs_pipes, pipe -> list_has_any(pipe.commands, ['true', ':']))) > 0), false)
 UNION ALL
 SELECT 'sql_shellfs_grep' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((list_has_any(sql_shellfs_commands, ['grep', 'egrep', 'rg'])), false)
 UNION ALL

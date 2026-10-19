@@ -159,8 +159,9 @@ in that one place:
 5. **Receipts read as columns.** `receipt.*` gives status, body and error. No `->>` ladders and no `from_json` /
    `::JSON[]` over the body.
 6. **Status checked.** The next stage (or the final SELECT) derives a flag from `receipt.status` and keeps the
-   failed rows. Judge by status: when the generated statement fails, dev answers 500 with the DuckDB error in
-   the body and `receipt.error` stays NULL (verified 2026-10-18). `receipt.error` is set only when the post
+   failed rows. Judge by status: when the generated statement fails, dev answers a non-200 (422 for binder,
+   parser, cast and missing-file errors, verified 2026-10-19) with the DuckDB error in the body, and
+   `receipt.error` stays NULL. `receipt.error` is set only when the post
    itself fails. A pipeline that reads bodies without looking at status is a finding.
 7. **Unparsed bodies.** An empty body, or a body that came back as text where rows were expected, is a failure:
    the reader or its `:=` options are wrong. Fix the generated statement; don't parse around it.
@@ -224,23 +225,18 @@ SELECT TRY_CAST(content AS JSON) FROM read_lines($cmd$for f in a35d1dd0-… 1f83
   tail -n 300 ~/.claude/projects/-Users-aloksubbarao-inframe/$f.jsonl | sed "s/^/{\"_s\":\"$f\",\"_l\":/; s/\$/}/"; done |$cmd$)
 ```
 ```sql
--- GOOD: the sessions are rows; one statement per row through shell.tera; receipts unnested
+-- GOOD: the sessions are rows; transcripts are already the agent.messages view, so a join with the filter
+-- pushed in does it. No dispatch is needed when no table function takes a per-row literal.
 WITH sessions AS (
-    SELECT sessionId AS session_id, 'read_json' AS reader, '' AS options,   -- read_json detects newline-delimited JSON itself
-           [concat_ws('/', getenv('HOME'), '.claude/projects', translate(cwd, '/.', '--'), concat(sessionId, '.jsonl'))] AS sources
-    FROM terminal_sessions WHERE sessionId IS NOT NULL
-), rendered AS (
-    SELECT session_id, tera_render('shell.tera', c::JSON, autoescape := false,
-                       template_path := concat_ws('/', getenv('HOME'), '.duck/deploy/skills/self-dispatch/templates/*.tera')) AS sql
-    FROM sessions AS c
-), dispatched AS (
-    SELECT session_id, array_agg(selfdispatch(sql)) AS receipts FROM rendered GROUP BY ALL
+    SELECT sessionId::VARCHAR AS session_id, custom_title FROM terminal_sessions WHERE sessionId IS NOT NULL
 )
-SELECT session_id, receipt.*, receipt.status IS DISTINCT FROM 200 AS failed FROM dispatched CROSS JOIN UNNEST(receipts) AS t(receipt);
+SELECT session_id, custom_title, timestamp, content_bytes, head
+FROM sessions JOIN agent.messages USING (session_id)
+WHERE is_prompt AND timestamp > now() - INTERVAL 1 DAY;
 ```
 
-Verified on dev 2026-10-18: three sessions, each `200`, body `[{"type":"custom-title","customTitle":"INF-1583",…}, …]`,
-`failed` false. Each body is the whole transcript (4–26 MB).
+Verified on dev 2026-10-19 on the same three open sessions: 56 prompt rows, 14.6 KB in all. Reading the raw
+`.jsonl` per session instead returned 4.5 MB and 10.7 MB bodies and a 507 for the third.
 
 **printf building a path, the reader's schema declared, arrows digging into the result** (checks 6, 7):
 ```sql
@@ -250,7 +246,7 @@ SELECT printf('%s/.claude/projects/%s/%s.jsonl', getenv('HOME'), replace(cwd, '/
 … read_json(…, maximum_depth := 1) WHERE type ->> '$' IN ('user', 'assistant') …
 … CASE json_type(message -> 'content') WHEN 'VARCHAR' THEN message ->> 'content' ELSE message ->> '$.content[0].text' END
 ```
-GOOD is the query above: values in the first CTE, the template substitutes them, `SELECT *`, `receipt.*`.
+GOOD is the query above: the transcript is a view with typed columns (`agent.messages`), filtered, never dug into.
 
 **Parquet snapshots in the hot path of a one-query job** (checks 9, 10):
 ```sql

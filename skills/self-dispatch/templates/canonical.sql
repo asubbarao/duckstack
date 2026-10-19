@@ -31,7 +31,7 @@ WITH sources AS (
 ), dispatched AS (
     SELECT array_agg(selfdispatch(sql)) AS receipts FROM rendered
 )
-SELECT receipt.* FROM dispatched CROSS JOIN UNNEST(receipts) AS t(receipt);
+SELECT receipt.*, receipt.status IS DISTINCT FROM 200 AS failed FROM dispatched CROSS JOIN UNNEST(receipts) AS t(receipt);
 
 -- 2. sql: in the database; the names come from information_schema. DDL, DML and PRAGMA have the same shape.
 WITH tables AS (
@@ -43,11 +43,11 @@ WITH tables AS (
 ), dispatched AS (
     SELECT array_agg(selfdispatch(sql)) AS receipts FROM rendered
 )
-SELECT receipt.* FROM dispatched CROSS JOIN UNNEST(receipts) AS t(receipt);
+SELECT receipt.*, receipt.status IS DISTINCT FROM 200 AS failed FROM dispatched CROSS JOIN UNNEST(receipts) AS t(receipt);
 
 -- 4. network: one request per row to another host (never dev itself: that is selfdispatch). Another DuckDB's
 --    host:9495/sql takes the same body. The row's columns ride with its receipt: target next to receipt.*.
---    Verified 2026-10-18: httpbin | 200 | [{"response":{"status":200,"reason":"OK","body":"{ \"data\": ... }"}}]
+--    Verified 2026-10-19: httpbin | 200 | [{"status":200,"reason":"OK","body":"{ \"data\": ... }"}] | failed false
 WITH requests AS (
     SELECT 'httpbin' AS target, 'https://httpbin.org/post' AS url, json_object('sql', 'SELECT 42 AS answer')::VARCHAR AS body
 ), rendered AS (
@@ -57,7 +57,7 @@ WITH requests AS (
 ), dispatched AS (
     SELECT target, array_agg(selfdispatch(sql)) AS receipts FROM rendered GROUP BY ALL
 )
-SELECT target, receipt.* FROM dispatched CROSS JOIN UNNEST(receipts) AS t(receipt);
+SELECT target, receipt.*, receipt.status IS DISTINCT FROM 200 AS failed FROM dispatched CROSS JOIN UNNEST(receipts) AS t(receipt);
 
 -- 3. bash_loop_fallback_method: a FALLBACK. This example has a row source, so example 1 is the right answer;
 --    it is here only to show the call. The audit lists every use of this template.
@@ -70,4 +70,4 @@ WITH counts AS (
 ), dispatched AS (
     SELECT array_agg(selfdispatch(sql)) AS receipts FROM rendered
 )
-SELECT receipt.* FROM dispatched CROSS JOIN UNNEST(receipts) AS t(receipt);
+SELECT receipt.*, receipt.status IS DISTINCT FROM 200 AS failed FROM dispatched CROSS JOIN UNNEST(receipts) AS t(receipt);

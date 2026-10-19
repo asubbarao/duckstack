@@ -15,8 +15,7 @@ writing SQL on this machine.
 2. **Each pair of CTEs is one orchestration step.** The next step's statements are built from the previous
    step's receipts: "a single selfdispatch, flicks on it, then the SUBSEQUENT SELF DISPATCH clicks on the
    next link … each duo of selfdispatch is an orchestration" (10-17). Order comes from that dependency;
-   inside one array use `array_agg(… ORDER BY …)` / `array_sort` only when order matters; `WITH ORDINALITY` only
-   numbers the elements; otherwise it is async (09-24, 10-08, 10-14).
+   inside one array use `WITH ORDINALITY` / `array_sort` only when order matters, otherwise it is async (09-24, 10-08).
 3. **Self-dispatch is the escape hatch for every binder error.** "self-disaptch works in all cases. it BYPASSES
    all binder errors and allows concatenating col params into table functions" (09-24). Never claim a reader
    "needs a literal", never `SET VARIABLE`/`getvariable` hand-offs, never `query()`/`query_table` (09-20, 10-08, 10-13).
@@ -69,10 +68,7 @@ writing SQL on this machine.
     `{% for %}` only for output that is genuinely loop-shaped (an osascript or bash loop) when that is
     simpler (09-28, 10-15).
 17. **A few canonical templates by shape**, called by name with `template_path :=` and the row as context
-    (`c::JSON`): `templates/` here holds `sql.tera` (a SQL statement), `shell.tera` (shellfs readers),
-    `bash_loop_fallback_method.tera` (a shell loop, the fallback) and `network.tera` (a request to another host,
-    including an array of statements sent to another DuckDB's `:9495`) (10-16, 10-17, 10-18). Git data comes from the
-    duck_tails views already on dev (`git_changes`, `branch_diff`, ...), joined; no template needed (10-18). "if tera dont
+    (`c::JSON`): `templates/` here holds shell, pipeline, sql, network and loop (10-16, 10-17). "if tera dont
     help reduce complexity, we will toss" (10-08). Someone without the `.tera` files must find the SQL easy
     to rewrite without Tera (10-16).
 
@@ -81,8 +77,7 @@ writing SQL on this machine.
 18. **Every host command through shellfs readers** with their `:=` options: `read_csv` / `read_json` /
     `read_lines('cmd |')` for curl, gh, git, osascript, aws, codex (09-28, 10-08, 10-11 "curl is not
     banned through shellfs"). Never `column0 VARCHAR`: use the reader's options. `read_text` is batch,
-    `read_lines` streams. No `sed`, `tr` or `awk` in the pipe, and no `jq` beyond shell.tera's fixed
-    `jq -c '.[]'` array split; parse in SQL with json_schema or the reader's options (09-24, 09-29, 10-14).
+    `read_lines` streams. At most a simple `jq` in the pipe; no `sed`/`tr`/`awk` — do it in SQL (09-24, 09-29).
 19. **Use the extensions built for the job:** hostfs for the filesystem, duck_tails for git, duck_hunt for
     test/CI logs, sitting_duck and parser_tools for code, webbed for HTML, agent_data / `agent.stream` for
     transcripts, urlpattern / netquack for URLs, scalarfs for content-as-file. Never grep/find/cat (10-07, 10-08, 10-14).
@@ -116,14 +111,12 @@ or a template render, the rows are sent as `array_agg(selfdispatch(sql))` groupe
 `CROSS JOIN UNNEST` and `receipt.*`. The reference is `SKILL.md`. Because every dispatch takes that shape, the
 receipt problems below have one place to be checked.
 
-28. **Receipts are columns.** Read `receipt.status`, `receipt.error` and `receipt.body` as columns. The body comes
-    back from /sql as JSON text, so one `->>` per field you use is accepted until quackapi returns typed replies.
-    Ladders (`->'a'->'b'->>'c'`) and hand-typed `from_json` structures are not (10-09, 10-13, 10-14; tested 10-18:
-    reading a body back through `read_json('data+varchar:…')` returns JSON text again).
+28. **Receipts are columns.** Read `receipt.status`, `receipt.error` and `receipt.body` as columns; body fields
+    follow rule 5 (10-09, 10-13, 10-14).
 29. **Check every stage's receipts.** The next stage filters on `receipt.status` and keeps failed receipts as
     rows behind a flag. A timeout, an error status or an empty or unparsed body counts as a failure, not as
-    an empty result (10-14, 10-16). Judge by `receipt.status`: a failed statement comes back as a 500 with the
-    error in the body and `receipt.error` NULL (verified 2026-10-18).
+    an empty result (10-14, 10-16). Judge by `receipt.status IS DISTINCT FROM 200`: a failed statement comes back
+    as 422 (binder, parser, cast, missing file; verified 2026-10-19) with the error in the body and `receipt.error` NULL.
 30. **One array, one `CROSS JOIN UNNEST(receipts)` per step**, never `unnest(receipts)` in a SELECT list. A receipt stays on its
     source row, so nothing joins back afterwards (10-12, 10-13).
 31. **Source rows are real rows** (catalog, hostfs, a table), never `range()` / `generate_series` (hook, 10-12).
@@ -156,7 +149,8 @@ receipt problems below have one place to be checked.
     - a `timeout` wrapper, since the tool's own option bounds it (hook, 09-15);
     - an inline `duckdb -c` program; make the read a view (hook, 09-25). A checked-in `.sql` run with
       `duckdb -f` as its own process is fine;
-    - `|| true` / `; true`, since the shell template takes the accepted exit codes (hook warns, 10-16).
+    - a `true` or `:` command (`|| true`, `; true`), since the shell template takes the accepted exit codes
+      (hook warns on the parsed pipe, 10-16).
 38. Hard-code no `/Users/…` path. Use scalarfs path variables, `getenv('HOME')`, or a column declared once
     (hook warns, 09-25, 10-15).
 39. Git status and diff come from a view: the hostfs tree joined to duck_tails `git_tree` hashes. Never shell
