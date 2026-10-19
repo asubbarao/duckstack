@@ -4,8 +4,8 @@
 -- resumed session's copy of a line: same uuid, not the earliest (timestamp, file) holding it; computed at each build.
 -- stream.parsed: the parse of agent.lines (fields are JSON there, hence ->> '$'); the build's input only. A view in the
 -- stream catalog resolves names inside stream, so it names dev.agent.lines.
--- Boot builds the view, the table and the index, each its own post built from the previous step's receipt (a post binds
--- alone; the PRAGMA is expanded when parsed), and returns every receipt. blocks_refresh.sql keeps it current.
+-- Boot posts the view, then the empty table from that receipt (a post binds alone), and returns every receipt.
+-- blocks_refresh.sql fills it (at boot every transcript is new to it) and builds the index.
 -- fts names its tables without a catalog, so a search sets search_path = 'dev.main,stream.main' first.
 ATTACH IF NOT EXISTS ':memory:' AS stream;
 WITH intent AS (
@@ -44,19 +44,12 @@ SELECT * EXCLUDE (harness_prefixes, command_keys),
        AND NOT list_bool_or([starts_with(ltrim(message_content), p) FOR p IN harness_prefixes]) AS is_prompt
 FROM parsed
 $v$ AS parsed_sql,
-           $c$CREATE TABLE IF NOT EXISTS stream.main.blocks AS
-SELECT *, uuid IS NOT NULL AND file_path IS DISTINCT FROM arg_min(file_path, (timestamp, file_path)) OVER (PARTITION BY uuid) AS is_repeat
-FROM stream.main.parsed$c$ AS create_sql,
-           $p$PRAGMA create_fts_index('stream.main.blocks', 'block_key', 'message_content', overwrite = 1)$p$ AS index_sql
+           $c$CREATE TABLE IF NOT EXISTS stream.main.blocks AS SELECT *, NULL::BOOLEAN AS is_repeat FROM stream.main.parsed LIMIT 0$c$ AS create_sql
 ), parsed_step AS (
-    SELECT create_sql, index_sql, array_agg(selfdispatch(parsed_sql)) AS receipts FROM intent GROUP BY create_sql, index_sql
+    SELECT create_sql, array_agg(selfdispatch(parsed_sql)) AS receipts FROM intent GROUP BY create_sql
 ), create_step AS (
-    SELECT index_sql, array_agg(selfdispatch(create_sql)) AS receipts
-    FROM parsed_step CROSS JOIN UNNEST(receipts) AS t(r) WHERE r.status = 200 GROUP BY index_sql
-), index_step AS (
-    SELECT array_agg(selfdispatch(index_sql)) AS receipts
-    FROM create_step CROSS JOIN UNNEST(receipts) AS t(r) WHERE r.status = 200 GROUP BY index_sql
+    SELECT array_agg(selfdispatch(create_sql)) AS receipts
+    FROM parsed_step CROSS JOIN UNNEST(receipts) AS t(r) WHERE r.status = 200 GROUP BY create_sql
 )
 SELECT r.* FROM parsed_step CROSS JOIN UNNEST(receipts) AS t(r)
-UNION ALL SELECT r.* FROM create_step CROSS JOIN UNNEST(receipts) AS t(r)
-UNION ALL SELECT r.* FROM index_step CROSS JOIN UNNEST(receipts) AS t(r);
+UNION ALL SELECT r.* FROM create_step CROSS JOIN UNNEST(receipts) AS t(r);

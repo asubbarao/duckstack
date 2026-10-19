@@ -1,13 +1,16 @@
--- Keeps stream.blocks (blocks.sql) current: now and every 15 minutes, 30 s after the copies, it replaces the rows of each
--- transcript agent.entries shows changed in the last 30 minutes (a literal list, so the scan reads only those files),
--- then rebuilds the BM25 index from that step's receipt. No transcript changed, no post.
+-- Fills and keeps stream.blocks (blocks.sql) current: now and every 15 minutes, 30 s after the copies, it replaces the rows
+-- of each transcript agent.entries shows changed in the last 30 minutes or not in the table yet (at boot, all of them; a
+-- literal list, so the scan reads only those files), recomputes is_repeat over the whole table, then rebuilds the BM25
+-- index from that step's receipt. Nothing changed, no post.
 WITH program AS (
     SELECT $refresh$
-WITH intent AS (   -- twice the cron period, so a run that fails or overlaps loses nothing
-    SELECT INTERVAL 30 MINUTE AS lookback
+WITH transcript AS (
+    SELECT path, modified FROM dev.agent.entries WHERE reader = 'read_json'
 ), changed AS (
-    SELECT list(quote_literal(path)) AS files FROM dev.agent.entries SEMI JOIN intent ON modified >= now()::TIMESTAMP - intent.lookback
-    WHERE reader = 'read_json'
+    SELECT list(quote_literal(path)) AS files FROM (
+        SELECT path FROM transcript WHERE modified >= now()::TIMESTAMP - INTERVAL 30 MINUTE   -- twice the cron period
+        UNION
+        SELECT path FROM transcript ANTI JOIN stream.main.blocks b ON b.file_path = transcript.path)
 ), window_step AS (
     SELECT array_agg(selfdispatch(tera_render($w$
 CREATE OR REPLACE TABLE stream.main.blocks AS

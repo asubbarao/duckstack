@@ -130,8 +130,8 @@ ORDER BY timestamp;
 ## Search
 
 Pick sessions from `agent.sessions` (one row each: activity, prompt count, first and last prompt), then read their
-blocks by `session_id`. To find blocks by words, BM25 over `stream.blocks` (refreshed every 15 minutes from the
-transcripts changed in the last 30, so up to ~20 minutes behind the live files). fts names its tables without a catalog, so set `search_path` first:
+blocks by `session_id`. To find blocks by words, BM25 over `stream.blocks` (rebuilt every 15 minutes from transcripts
+changed in the last 30, on a store up to 5 minutes behind, so up to ~20 minutes behind live). fts names its tables without a catalog, so set `search_path` first:
 
 ```sql
 SET search_path = 'dev.main,stream.main';

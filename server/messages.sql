@@ -18,7 +18,8 @@ WITH prompt AS (
     SELECT session_id, array_agg(opening ORDER BY timestamp) AS openings
     FROM prompt WHERE NOT is_near_repeat GROUP BY session_id
 ), activity AS (
-    SELECT session_id, source, min(timestamp) AS started, max(timestamp) AS last_active, count(block_key) AS blocks
+    SELECT session_id, source, min(timestamp) AS started, max(timestamp) AS last_active,
+           array_agg(block_key ORDER BY timestamp) AS block_keys, len(block_keys) AS blocks
     FROM agent.messages WHERE NOT is_repeat GROUP BY session_id, source
 )
 SELECT a.*, len(p.openings) AS prompts, p.openings[1] AS first_prompt, p.openings[-1] AS last_prompt, p.openings
