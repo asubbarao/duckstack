@@ -48,7 +48,7 @@ writing SQL on this machine.
     fine); no per-question tables like `north_dakota_revenue` (09-29, 10-14, 10-15). `CREATE OR REPLACE
     TABLE t AS SELECT … FROM t`, no `BEGIN`/`COMMIT`, no `INSERT` when CTAS works (09-23).
 12. **Readable strings.** Arrays of words, a canonical template with holes (rule 17: shell, pipeline, sql,
-    network, loop), or a plain `concat` when a statement has only a few holes (10-18); no `||` chains, no `chr(39)`/`chr(10)`
+    network, loop), or one plain `concat` of at most two holes (10-18); no `||` chains, no `chr(39)`/`chr(10)`
     gymnastics, no nested quotes or escape hell (09-22, 10-12). `quote_literal(col)` is fine; `translate()` for
     character swaps (09-23, 10-16). No `printf` / `format`: on 10-17 a printf-built command and a printf in a
     dispatch were both rejected; declare the parts as columns and render with Tera.
