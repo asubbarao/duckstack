@@ -4,4 +4,4 @@ CREATE SCHEMA IF NOT EXISTS agent;
 CREATE OR REPLACE VIEW agent.docs AS
 SELECT filename AS path, file_name(filename) AS name, size, last_modified, content
 FROM read_text(list_transform(['/.claude/projects/*/memory/*.md', '/.claude/plans/*.md', '/.codex/memories/*.md',
-    '/.codex/memories/*/*/*/*.md', '/.claude/CLAUDE.md', '/AGENTS.md', '/.codex/AGENTS.md'], p -> getenv('HOME') || p));
+    '/.codex/memories/*/*/*/*.md', '/.claude/CLAUDE.md', '/AGENTS.md', '/.codex/AGENTS.md'], lambda p: concat(getenv('HOME'), p)));

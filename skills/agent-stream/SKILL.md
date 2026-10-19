@@ -11,7 +11,7 @@ line, block_index, block_key, is_agent, timestamp, message_role, block_type, too
 git_branch, entrypoint`), plus `is_prompt` (a person's typed message), `content_bytes`, and `head`/`tail` (first and
 last 100 characters) in place of the full text, so a 290 KB paste never fills a reply. List there; search with the
 query under Search. The full text of a row you picked is `stream.blocks.message_content` on the same `block_key`.
-A resumed session repeats lines under the same `uuid`; dedupe by `uuid` in the query. Never unpack `agent.lines`
+A resumed session repeats lines under the same `uuid`; `is_repeat` marks those copies, so filter `NOT is_repeat`. Never unpack `agent.lines`
 JSON by hand, never `read_conversations`, and never read `lake.agent.stream` (stale since 2026-10-09).
 
 ```sql
