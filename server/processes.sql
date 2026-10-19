@@ -62,7 +62,7 @@ WITH ps_words AS (
 ), marked AS (
     SELECT process.*, dev.dev_pid, dev.dev_age_s,
            coalesce(process.group_spawned_by IS NOT NULL AND process.group_age_s >= 600 AND exempt.pgid IS NULL, false) AS reap,
-           coalesce(process.pid <> dev.dev_pid AND process.age_s < dev.dev_age_s AND process.age_s >= 3600, false) AS reap_dev_job,
+           coalesce(process.age_s < dev.dev_age_s AND process.age_s >= 3600, false) AS reap_dev_job,
            coalesce(contains(process.parent_args, '/server/client.sql') AND process.age_s >= 180, false) AS reap_client_job
     FROM grouped AS process
     LEFT JOIN exempt_groups AS exempt ON exempt.pgid = process.pgid

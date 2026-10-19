@@ -15,7 +15,7 @@ $d$, targets::JSON, autoescape := false))) AS receipts
 ), listed AS (
     SELECT array_agg(selfdispatch(tera_render($l$
 SELECT string_agg(DISTINCT kill_id::VARCHAR, ' ') AS ids FROM read_json('~/.duck/logs/reaped-{{ stamp }}.json')
-$l$, json_object('stamp', stamp), autoescape := false))) AS receipts
+$l$, dumped::JSON, autoescape := false))) AS receipts
     FROM dumped CROSS JOIN UNNEST(receipts) AS dump_step(receipt) WHERE dump_step.receipt.status = 200
 ), killed AS (
     SELECT array_agg(selfdispatch(tera_render($k$
