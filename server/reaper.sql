@@ -5,15 +5,15 @@
 -- Nothing to kill, no file and no command.
 WITH program AS (
     SELECT $reap$
-WITH targets AS (
-    SELECT strftime(timezone('UTC', now()), '%Y%m%dT%H%M%SZ') AS stamp
+WITH targets AS (   -- one row, this run's stamp, only when something is marked
+    SELECT strftime(timezone('UTC', now()), '%Y%m%dT%H%M%SZ') AS stamp, list(kill_id) AS kill_ids
     FROM host_processes WHERE kill_id IS NOT NULL
-    GROUP BY stamp
+    GROUP BY ALL HAVING len(kill_ids) > 0
 ), dumped AS (
     SELECT targets, array_agg(selfdispatch(tera_render($d$
 COPY (SELECT * FROM host_processes WHERE kill_id IS NOT NULL) TO '~/.duck/logs/reaped-{{ stamp }}.json' (FORMAT json)
 $d$, targets::JSON, autoescape := false))) AS receipts
-    FROM targets GROUP BY targets
+    FROM targets GROUP BY ALL
 ), listed AS (
     SELECT array_agg(selfdispatch(tera_render($l$
 SELECT string_agg(DISTINCT kill_id::VARCHAR, ' ') AS ids FROM read_json('~/.duck/logs/reaped-{{ stamp }}.json')
@@ -22,8 +22,9 @@ $l$, dumped.targets::JSON, autoescape := false))) AS receipts
 ), killed AS (
     SELECT array_agg(selfdispatch(tera_render($k$
 SELECT content FROM read_lines($c$kill -TERM -- {{ ids }} 2>&1; sleep 5; kill -KILL -- {{ ids }} 2>/dev/null; echo reaped |$c$)
-$k$, (list.receipt.body::JSON[])[1], autoescape := false))) AS receipts   -- the list step returns one row
-    FROM listed CROSS JOIN UNNEST(receipts) AS list(receipt) WHERE list.receipt.status = 200
+$k$, ids_row, autoescape := false))) AS receipts
+    FROM listed CROSS JOIN UNNEST(receipts) AS list(receipt) CROSS JOIN UNNEST(list.receipt.body::JSON[]) AS listing(ids_row)
+    WHERE list.receipt.status = 200
 )
 SELECT 'dump' AS step, dump.receipt.status, dump.receipt.body FROM dumped CROSS JOIN UNNEST(receipts) AS dump(receipt)
 UNION ALL SELECT 'list' AS step, list.receipt.status, list.receipt.body FROM listed CROSS JOIN UNNEST(receipts) AS list(receipt)

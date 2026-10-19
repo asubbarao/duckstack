@@ -20,7 +20,8 @@ CREATE OR REPLACE VIEW host_processes AS
 WITH ps_words AS (
     SELECT content, list_filter(string_split(content, ' '), w -> w <> '') AS words
     FROM read_lines($cmd$ps -axww -o pid=,ppid=,pgid=,etime=,args= |$cmd$, "trim" := true)
-), ps AS (   -- args is the rest of the line after etime; etime always holds a ':', so pid digits never match it
+), ps AS (   -- args is the rest of the line after etime; etime always holds a ':', so pid digits never match it.
+             -- ps and top pad columns with runs of spaces, which read_csv can't split; follow-up: a reader with ppid/pgid/args.
     SELECT words[1]::BIGINT AS pid, words[2]::BIGINT AS ppid, words[3]::BIGINT AS pgid, words[4] AS etime, words[5] AS exe,
            left(trim(substr(content, strpos(content, words[4]) + len(words[4]))), 2000) AS args
     FROM ps_words
