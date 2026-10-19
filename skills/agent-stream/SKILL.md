@@ -62,13 +62,14 @@ cmd or sql, else the whole input). The raw store below is for fields neither car
 
 Start here when asked about "the chat", "a session" or anything happening right now. Concurrent sessions
 include other terminals and Claude Desktop. One row per session: its newest message (a prompt you typed or the
-reply), newest session first. Never `ORDER BY session, ts`: that walks one session's whole history before
+reply), newest session first. A typed prompt, slash commands included, is a user line with `origin.kind = 'human'`;
+the `<system-reminder>` block the harness attaches to it is not the prompt. Never `ORDER BY session, ts`: that walks one session's whole history before
 showing any other.
 
 ```sql
 WITH blocks AS (
   SELECT coalesce(sessionId ->> '$', parse_filename(transcript, true)) AS session_id,
-         (timestamp ->> '$')::TIMESTAMPTZ AS ts, message ->> 'role' AS role,
+         (timestamp ->> '$')::TIMESTAMPTZ AS ts, message ->> 'role' AS role, origin ->> 'kind' AS origin_kind,
          unnest(CASE json_type(message -> 'content') WHEN 'ARRAY' THEN message -> '$.content[*]' ELSE [message -> 'content'] END) AS block
   FROM agent.lines
   WHERE type ->> '$' IN ('user', 'assistant') AND NOT contains(transcript, '/subagents/')
@@ -77,11 +78,7 @@ WITH blocks AS (
   SELECT session_id, ts, role, coalesce(block ->> 'text', block ->> '$') AS text
   FROM blocks
   WHERE coalesce(block ->> 'type', 'text') = 'text'
-    AND CASE role WHEN 'user' THEN NOT starts_with(ltrim(text), '<')                 -- harness tags, reminders
-                               AND NOT starts_with(text, '[Request interrupted')
-                               AND NOT starts_with(text, 'This session is being continued')
-                               AND NOT starts_with(text, 'Base directory for this skill')
-                               AND NOT starts_with(text, 'Another Claude session sent a message')
+    AND CASE role WHEN 'user' THEN origin_kind = 'human' AND NOT starts_with(ltrim(text), '<system-reminder>')
                   ELSE true END
 )
 SELECT session_id, max(ts) AS last_ts, arg_max(role, ts) AS last_role, arg_max(text, ts) AS last_text,
