@@ -7,11 +7,12 @@ allowed-tools: mcp__dev__query
 # Agent stream
 
 Start from `agent.messages`: one row per message block, agent_data's column names (`source, session_id, file_path,
-is_agent, timestamp, message_role, block_type, tool_name, tool_use_id, uuid, model, cwd, git_branch, entrypoint`),
-plus `is_prompt` (a person's typed message), `content_bytes`, and `head`/`tail` (first and last 100 characters) in
-place of the full text, so a 290 KB paste never fills a reply. Search and list there; the full text of a row you
-picked is `agent.lines.message` (or `payload` for Codex) on the same `uuid`. Never unpack
-`agent.lines` JSON by hand, never `read_conversations`, and never read `lake.agent.stream` (stale since 2026-10-12).
+line, block_index, block_key, is_agent, timestamp, message_role, block_type, tool_name, tool_use_id, uuid, model, cwd,
+git_branch, entrypoint`), plus `is_prompt` (a person's typed message), `content_bytes`, and `head`/`tail` (first and
+last 100 characters) in place of the full text, so a 290 KB paste never fills a reply. List there; search with the
+query under Search. The full text of a row you picked is `stream.blocks.message_content` on the same `block_key`.
+A resumed session repeats lines under the same `uuid`; dedupe by `uuid` in the query. Never unpack `agent.lines`
+JSON by hand, never `read_conversations`, and never read `lake.agent.stream` (stale since 2026-10-09).
 
 ```sql
 SELECT timestamp, session_id, content_bytes, head, tail FROM agent.messages
@@ -38,8 +39,8 @@ The raw store below is for what `agent.messages` doesn't carry.
   Claude subagent files share their parent's `session`; `contains(transcript, '/subagents/')` marks them.
   Each Codex thread is its own session.
 - `contains(transcript, '/.codex/')` tells Codex from Claude.
-- `(timestamp ->> '$')::TIMESTAMPTZ` is the line's time. There is no line number: order by that time within a
-  `transcript`.
+- `(timestamp ->> '$')::TIMESTAMPTZ` is the line's time. `file_row_number` is the line's row in its stored file, so
+  (`transcript`, `file_row_number`) is unique.
 - **Claude** lines: `type` is `user`/`assistant`/`system`/…; `message` holds `role` and `content`, a string or an
   array of blocks (`text`, `thinking`, `tool_use` with `id, name, input`, `tool_result`).
 - **Codex** lines: `type` is `session_meta`, `turn_context`, `response_item`, `event_msg`, …; `payload ->> 'type'`
@@ -189,27 +190,15 @@ ORDER BY ts;
 
 ## Search
 
-Keep the terms as an array and intersect tokens, rather than chaining text predicates:
+Pick sessions from `agent.sessions` (one row each: activity, prompt count, first and last prompt), then read their
+blocks by `session_id`. To find blocks by words, BM25 over `stream.blocks` (rebuilt every 15 minutes, so up to ~20
+minutes behind). fts names its tables without a catalog, so set `search_path` first:
 
 ```sql
-WITH recent AS (
-  SELECT e.session, l.transcript, (l.timestamp ->> '$')::TIMESTAMPTZ AS ts,
-         CASE WHEN contains(l.transcript, '/.codex/') THEN 'codex' ELSE 'claude' END AS source,
-         CASE WHEN l.type ->> '$' IN ('user', 'assistant') THEN l.message
-              WHEN l.payload ->> 'type' IN ('message', 'agent_message') THEN l.payload END AS msg
-  FROM agent.lines l JOIN agent.entries e ON e.path = l.transcript
-  WHERE (l.timestamp ->> '$')::TIMESTAMPTZ > now() - INTERVAL 7 DAY
-), messages AS (
-  SELECT session, transcript, ts, source, role, coalesce(block ->> 'text', block ->> '$') AS text
-  FROM (SELECT *, coalesce(msg ->> 'role', 'agent') AS role,
-               unnest(CASE json_type(msg -> 'content') WHEN 'ARRAY' THEN json_extract(msg, '$.content[*]') ELSE [msg -> 'content'] END) AS block
-        FROM recent WHERE msg IS NOT NULL)
-  WHERE coalesce(block ->> 'type', 'text') IN ('text', 'input_text', 'output_text')
-)
-SELECT source, session, transcript, ts, role, text
-FROM messages
-WHERE len(array_intersect(string_split(lower(text), ' '), ['webbed', 'crawler', 'tera', 'shellfs'])) > 0
-ORDER BY ts DESC;
+SET search_path = 'dev.main,stream.main';
+SELECT session_id, block_key, timestamp, content_bytes, score
+FROM (SELECT *, stream.fts_main_blocks.match_bm25(block_key, 'ohad uploaded documents') AS score FROM stream.blocks)
+WHERE score IS NOT NULL ORDER BY score DESC LIMIT 20;
 ```
 
 ## Subagents and forks
