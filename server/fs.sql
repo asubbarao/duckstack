@@ -61,12 +61,10 @@ WITH worklist AS (
               WHEN f.modified IS NULL THEN 'walk'
               WHEN file_last_modified(path) > f.modified THEN 'list' END AS action
   FROM fs.folders f FULL OUTER JOIN (SELECT getenv('HOME') AS path) USING (path)
-), pruned AS (   -- a walk prunes the names excluded at any depth
-  SELECT scope, list(name) AS names FROM fs.rules GROUP BY scope
-), work AS (
-  SELECT w.path, w.action, p.names
-  FROM worklist w JOIN pruned p USING (scope)
-  WHERE w.action IS NOT NULL
+), work AS (   -- a walk prunes the names excluded at any depth
+  SELECT w.path, w.action, list(r.name) AS names
+  FROM worklist w JOIN fs.rules r USING (scope)
+  WHERE w.action IS NOT NULL GROUP BY w.path, w.action
 ), statements AS (
   SELECT action, tera_render(CASE action
     WHEN 'gone' THEN $t$DELETE FROM fs.dirs WHERE starts_with(path || '/', $p${{ path }}/$p$);

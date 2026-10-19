@@ -6,11 +6,10 @@
 -- expired. 30 days here.
 WITH program AS (
     SELECT $lake$
-FROM read_csv($cmd$mkdir -p "$HOME/.duck/lake/duckstack" && echo ready |$cmd$, header := false);
+SELECT content FROM read_text($cmd$mkdir -p "$HOME/.duck/lake/duckstack" |$cmd$);
 ATTACH IF NOT EXISTS 'ducklake:~/.duck/lake/duckstack/catalog.ducklake' AS lake (DATA_INLINING_ROW_LIMIT 0);
 CREATE SCHEMA IF NOT EXISTS lake.otel;
 CREATE SCHEMA IF NOT EXISTS lake.agents;
-CREATE TABLE IF NOT EXISTS lake.agents.ext_fetch (url VARCHAR, fetched_at TIMESTAMPTZ, response JSON);
 FROM otlp_serve('otlp:127.0.0.1:4318', catalog := 'lake', schema := 'otel', disable_auth := true, maintenance_retention_ms := 2592000000);
 $lake$ AS sql
 ), dispatched AS (
