@@ -150,10 +150,12 @@ the review checks these points in that one place:
 2. **A canonical template by name.** `tera_render('shell.tera' | 'sql.tera' | 'bash_loop_fallback_method.tera',
    c::JSON, autoescape := false, template_path := …)`. No inline template, no new `.tera` without a new shape, no
    `row_to_json`. The bash loop template is a fallback and needs a reason.
-3. **The macro.** `array_agg(selfdispatch(sql)) AS receipts`. Never a hand-written `quackapi_post` to /sql, a
-   curl to /sql, a `quack_query` back to dev, or a lone post.
-4. **One `CROSS JOIN UNNEST(receipts)` per step**, never `unnest(receipts)` in a SELECT list, and nothing joined back
-   to the source afterwards.
+3. **The macro, with the row.** `array_agg({'pr_number': pr_number, 'receipt': selfdispatch(sql)}) AS dispatched`:
+   the row's key columns ride with its receipt. Two arrays matched by position (`prs` plus `receipts[n]`) are a
+   finding, and the hook blocks them. Never a hand-written `quackapi_post` to /sql, a curl to /sql, a `quack_query`
+   back to dev, or a lone post.
+4. **One `CROSS JOIN UNNEST(dispatched)` per step**, never `unnest(...)` of receipts in a SELECT list, and nothing
+   joined back to the source afterwards.
 5. **Receipts read as columns.** `receipt.*` gives status, body and error. No `->>` ladders and no `from_json` /
    `::JSON[]` over the body.
 6. **Status checked.** The next stage (or the final SELECT) derives a flag from `receipt.status` and keeps the
@@ -177,18 +179,18 @@ WITH tables AS (                          -- real rows, every value a column
     SELECT table_schema, table_name, 5 AS row_limit
     FROM information_schema.tables WHERE table_schema = 'fs'
 ), rendered AS (                          -- a canonical template by name; Tera only fills holes
-    SELECT tera_render('sql.tera', c::JSON, autoescape := false,
+    SELECT table_name, tera_render('sql.tera', c::JSON, autoescape := false,
                        template_path := concat_ws('/', getenv('HOME'), '.duck/deploy/skills/self-dispatch/templates/*.tera')) AS sql
     FROM tables AS c
-), dispatched AS (                        -- visible self-dispatch
-    SELECT array_agg(selfdispatch(sql)) AS receipts FROM rendered
+), dispatched AS (                        -- visible self-dispatch; each row rides with its receipt
+    SELECT array_agg({'table_name': table_name, 'receipt': selfdispatch(sql)}) AS dispatched FROM rendered
 )
-SELECT receipt.*, receipt.status IS DISTINCT FROM 200 AS failed
-FROM dispatched CROSS JOIN UNNEST(receipts) AS t(receipt);
+SELECT d.table_name, d.receipt.*, d.receipt.status IS DISTINCT FROM 200 AS failed
+FROM dispatched CROSS JOIN UNNEST(dispatched) AS t(d);
 ```
 
 The first CTE declares everything, the template only substitutes, the reader is `SELECT *` and brings its own
-columns, and the result is `receipt.*` with failures kept as flagged rows. `selfdispatch(sql)` is exactly `quackapi_post('http://127.0.0.1:9495/sql', json_object('sql', sql)::VARCHAR)`: the
+columns, and the result is each row's key next to `receipt.*`, with failures kept as flagged rows. `selfdispatch(sql)` is exactly `quackapi_post('http://127.0.0.1:9495/sql', json_object('sql', sql)::VARCHAR)`: the
 post always goes to dev itself, and whatever varies by row goes inside the statement. A query that hand-writes the
 post, takes a URL per row, or builds it with `url_build` is a finding.
 
@@ -215,17 +217,17 @@ SELECT TRY_CAST(content AS JSON) FROM read_lines($cmd$for f in a35d1dd0-… 1f83
 ```sql
 -- GOOD: the sessions are rows; one statement per row through shell.tera; receipts unnested
 WITH sessions AS (
-    SELECT 'read_json' AS reader, '' AS options,   -- read_json detects newline-delimited JSON itself
+    SELECT sessionId AS session_id, 'read_json' AS reader, '' AS options,   -- read_json detects newline-delimited JSON itself
            [concat_ws('/', getenv('HOME'), '.claude/projects', translate(cwd, '/.', '--'), concat(sessionId, '.jsonl'))] AS sources
     FROM terminal_sessions WHERE sessionId IS NOT NULL
 ), rendered AS (
-    SELECT tera_render('shell.tera', c::JSON, autoescape := false,
+    SELECT session_id, tera_render('shell.tera', c::JSON, autoescape := false,
                        template_path := concat_ws('/', getenv('HOME'), '.duck/deploy/skills/self-dispatch/templates/*.tera')) AS sql
     FROM sessions AS c
 ), dispatched AS (
-    SELECT array_agg(selfdispatch(sql)) AS receipts FROM rendered
+    SELECT array_agg({'session_id': session_id, 'receipt': selfdispatch(sql)}) AS dispatched FROM rendered
 )
-SELECT receipt.*, receipt.status IS DISTINCT FROM 200 AS failed FROM dispatched CROSS JOIN UNNEST(receipts) AS t(receipt);
+SELECT d.session_id, d.receipt.*, d.receipt.status IS DISTINCT FROM 200 AS failed FROM dispatched CROSS JOIN UNNEST(dispatched) AS t(d);
 ```
 
 **printf building a path, the reader's schema declared, arrows digging into the result** (checks 6, 7):
