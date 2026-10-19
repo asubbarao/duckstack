@@ -10,9 +10,9 @@ The output is a **writeup**, not rows. Three steps:
 ## 1. Collect (dev, one query)
 
 Run [collect.sql](collect.sql) on dev through `mcp__dev__query`. It returns one row per session (`source`, `session`,
-`first_ts`, `last_ts`, `prompts`, `chars`, and `said`: his messages in order). It self-dispatches one narrow
-statement per session file, because one scan of `agent.lines` over every file filled dev's 15 GB. Verified
-2026-10-18: one day gave 54 sessions and 829 messages, all status 200. Change the window in both places it appears.
+`first_ts`, `last_ts`, `prompts`, `chars`, and `said`: his messages in order), read from `stream.blocks`, which
+already parses every transcript. The window is the one `INTERVAL` in it. Verified 2026-10-19: 14 days gave 303
+sessions and about 4,300 messages.
 
 Save the rows for the readers: wrap the query in `COPY (…) TO '<scratch>/said.parquet'`. That is a result handed to
 other agents, not a round trip.
@@ -40,6 +40,8 @@ Merge the readers' rules into `writeups/<date>.md` beside this file:
    newer wins; say which one.
 3. **Already enforced:** rules a hook check already blocks, by check id.
 4. **Not yet enforced:** rules a hook could catch, with the check to add.
-5. **Changed since the last writeup:** new rules and reversed rules.
+5. **Never mechanically checkable:** process rules no hook can check.
+6. **Contradicts RULES.md:** his messages that disagree with RULES.md, for him to rule on; RULES.md stands until he does.
+7. **Changed since the last writeup:** new rules and reversed rules.
 
 Then show him the writeup inline. Rules that change RULES.md or the hooks go in a PR through the review queue.
