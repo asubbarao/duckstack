@@ -61,32 +61,40 @@ cmd or sql, else the whole input). The raw store below is for fields neither car
 ## Now: what every session is doing
 
 Start here when asked about "the chat", "a session" or anything happening right now. Concurrent sessions
-include other terminals and Claude Desktop. One row per session: its newest message (a prompt you typed or the
-reply), newest session first. A typed prompt, slash commands included, is a user line with `origin.kind = 'human'`;
-the `<system-reminder>` block the harness attaches to it is not the prompt. Never `ORDER BY session, ts`: that walks one session's whole history before
-showing any other.
+include other terminals and Claude Desktop. One row per session active in the last hour: its title, branch, the
+PRs it linked, minutes idle, and the other live sessions that share its branch or one of its PRs. Two sessions on
+one branch, or one PR, are about to collide. It reads only top-level fields: no message text.
 
 ```sql
-WITH blocks AS (
-  SELECT coalesce(sessionId ->> '$', parse_filename(transcript, true)) AS session_id,
-         (timestamp ->> '$')::TIMESTAMPTZ AS ts, message ->> 'role' AS role, origin ->> 'kind' AS origin_kind,
-         unnest(CASE json_type(message -> 'content') WHEN 'ARRAY' THEN message -> '$.content[*]' ELSE [message -> 'content'] END) AS block
+WITH session_lines AS (
+  SELECT sessionId ->> '$' AS session_id, (timestamp ->> '$')::TIMESTAMPTZ AS ts,
+         gitBranch ->> '$' AS branch, coalesce(customTitle ->> '$', aiTitle ->> '$') AS title,
+         prRepository ->> '$' || '#' || prNumber ->> '$' AS pr
   FROM agent.lines
-  WHERE type ->> '$' IN ('user', 'assistant') AND NOT contains(transcript, '/subagents/')
-    AND (timestamp ->> '$')::TIMESTAMPTZ > now() - INTERVAL 24 HOUR
-), texts AS (
-  SELECT session_id, ts, role, coalesce(block ->> 'text', block ->> '$') AS text
-  FROM blocks
-  WHERE coalesce(block ->> 'type', 'text') = 'text'
-    AND CASE role WHEN 'user' THEN origin_kind = 'human' AND NOT starts_with(ltrim(text), '<system-reminder>')
-                  ELSE true END
+  WHERE NOT contains(transcript, '/subagents/') AND NOT contains(transcript, '/.codex/')
+), live_sessions AS (
+  SELECT session_id, max(ts) AS last_ts FROM session_lines GROUP BY session_id HAVING max(ts) > now() - INTERVAL 1 HOUR
+), per_session AS (
+  SELECT s.session_id, l.last_ts, list_distinct(list(s.title)) AS titles, arg_max(s.branch, s.ts) AS branch,
+         list_distinct(list(s.pr)) AS prs
+  FROM session_lines s JOIN live_sessions l USING (session_id) GROUP BY s.session_id, l.last_ts
+), touches AS (
+  SELECT session_id, 'branch ' || branch AS thing FROM per_session WHERE branch <> 'staging'
+  UNION ALL
+  SELECT session_id, unnest(prs) AS thing FROM per_session
+), shared AS (
+  SELECT a.session_id, list_distinct(list(b.session_id || ' ' || a.thing)) AS shares_with
+  FROM touches a JOIN touches b ON a.thing = b.thing AND a.session_id <> b.session_id
+  GROUP BY a.session_id
 )
-SELECT session_id, max(ts) AS last_ts, arg_max(role, ts) AS last_role, arg_max(text, ts) AS last_text,
-       strlen(last_text) AS last_text_bytes
-FROM texts GROUP BY session_id ORDER BY last_ts DESC LIMIT 20;
+SELECT p.session_id, p.titles, p.branch, p.prs, date_diff('minute', p.last_ts, now()) AS idle_min, s.shares_with
+FROM per_session p LEFT JOIN shared s USING (session_id) ORDER BY p.last_ts DESC;
 ```
 
-Claude sessions only: Codex text blocks are `input_text`/`output_text` under `payload`.
+- `titles` lists every title the session has had: title lines carry no timestamp.
+- `prs` holds only the PRs Claude Code recorded as linked; a PR opened through dev's shellfs isn't one.
+- `staging` is the shared checkout's branch, so it isn't counted as an overlap.
+- Claude sessions only: Codex keeps its branch under `payload.git` of its `session_meta` line, not at the top level.
 
 ## Turns: each prompt and the reply that closed it
 
