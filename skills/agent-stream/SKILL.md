@@ -61,40 +61,25 @@ cmd or sql, else the whole input). The raw store below is for fields neither car
 ## Now: what every session is doing
 
 Start here when asked about "the chat", "a session" or anything happening right now. Concurrent sessions
-include other terminals and Claude Desktop. One row per session active in the last hour: its title, branch, the
-PRs it linked, minutes idle, and the other live sessions that share its branch or one of its PRs. Two sessions on
-one branch, or one PR, are about to collide. It reads only top-level fields: no message text.
+include other terminals, Claude Desktop and Codex. One row per session active in the last hour from `agent.sessions`
+(every column but the big `prompts` and `block_keys`; `last_prompt` says what it was asked), its minutes idle, and
+the other live sessions on its branch. Two sessions on one branch are about to collide.
 
 ```sql
-WITH session_lines AS (
-  SELECT sessionId ->> '$' AS session_id, (timestamp ->> '$')::TIMESTAMPTZ AS ts,
-         gitBranch ->> '$' AS branch, coalesce(customTitle ->> '$', aiTitle ->> '$') AS title,
-         prRepository ->> '$' || '#' || prNumber ->> '$' AS pr
-  FROM agent.lines
-  WHERE NOT contains(transcript, '/subagents/') AND NOT contains(transcript, '/.codex/')
-), live_sessions AS (
-  SELECT session_id, max(ts) AS last_ts FROM session_lines GROUP BY session_id HAVING max(ts) > now() - INTERVAL 1 HOUR
-), per_session AS (
-  SELECT s.session_id, l.last_ts, list_distinct(list(s.title)) AS titles, arg_max(s.branch, s.ts) AS branch,
-         list_distinct(list(s.pr)) AS prs
-  FROM session_lines s JOIN live_sessions l USING (session_id) GROUP BY s.session_id, l.last_ts
-), touches AS (
-  SELECT session_id, 'branch ' || branch AS thing FROM per_session WHERE branch <> 'staging'
-  UNION ALL
-  SELECT session_id, unnest(prs) AS thing FROM per_session
+WITH live AS (
+  SELECT * EXCLUDE (prompts, block_keys), date_diff('minute', last_active, now()) AS idle_min
+  FROM agent.sessions WHERE last_active > now() - INTERVAL 1 HOUR
 ), shared AS (
-  SELECT a.session_id, list_distinct(list(b.session_id || ' ' || a.thing)) AS shares_with
-  FROM touches a JOIN touches b ON a.thing = b.thing AND a.session_id <> b.session_id
-  GROUP BY a.session_id
+  SELECT a.session_id, list(b.session_id) AS shares_branch_with
+  FROM live a JOIN live b ON a.git_branch = b.git_branch AND a.session_id <> b.session_id
+  WHERE a.git_branch <> 'staging' GROUP BY a.session_id
 )
-SELECT p.session_id, p.titles, p.branch, p.prs, date_diff('minute', p.last_ts, now()) AS idle_min, s.shares_with
-FROM per_session p LEFT JOIN shared s USING (session_id) ORDER BY p.last_ts DESC;
+SELECT * FROM live LEFT JOIN shared USING (session_id) ORDER BY last_active DESC;
 ```
 
-- `titles` lists every title the session has had: title lines carry no timestamp.
-- `prs` holds only the PRs Claude Code recorded as linked; a PR opened through dev's shellfs isn't one.
+- `agent.sessions` sits on `stream.blocks`, so a session shows up to ~20 minutes late and `idle_min` counts from
+  its last stored block.
 - `staging` is the shared checkout's branch, so it isn't counted as an overlap.
-- Claude sessions only: Codex keeps its branch under `payload.git` of its `session_meta` line, not at the top level.
 
 ## Turns: each prompt and the reply that closed it
 
