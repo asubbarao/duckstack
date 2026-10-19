@@ -18,7 +18,8 @@ permissions:
 
 jobs:
   server-bootstrap:
-    runs-on: ubuntu-latest
+    # host.sql binds its views by running osascript, so the boot only exists on a Mac.
+    runs-on: macos-latest
     timeout-minutes: 15
     env:
       QUACK_TOKEN: ci-bootstrap-token
