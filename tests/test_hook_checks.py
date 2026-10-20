@@ -1,4 +1,4 @@
-"""Each case in hook_cases.json goes through the hook's own facts and checks; the named checks must fire or stay quiet."""
+"""Each case in hook_cases.json goes through the hook's own facts and checks; hook_cases.sql returns the verdict."""
 
 import json
 import os
@@ -11,6 +11,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 # The PreToolUse hook runs on this binary with its ~/.duckdbrc extensions, so the cases do too.
 HOOK_DUCKDB = os.environ.get("HOOK_DUCKDB", "/opt/homebrew/bin/duckdb")
+CASES = json.loads((ROOT / "tests/hook_cases.json").read_text())
 
 
 @pytest.fixture(scope="module")
@@ -26,15 +27,10 @@ def results():
         check=False,
     )
     assert run.returncode == 0, run.stderr
-    rows = json.loads(run.stdout[run.stdout.index("[{") :])
-    return {row["case_id"]: row for row in rows}
-
-
-CASES = json.loads((ROOT / "tests/hook_cases.json").read_text())
+    return {row["case_id"]: row for row in json.loads(run.stdout)}
 
 
 @pytest.mark.parametrize("case_id", [case["case_id"] for case in CASES])
 def test_case(results, case_id):
     row = results[case_id]
-    assert set(row["fires"]) <= set(row["fired"]), row
-    assert not set(row["quiet"]) & set(row["fired"]), row
+    assert row["fires_ok"] and row["quiet_ok"], row

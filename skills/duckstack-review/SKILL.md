@@ -122,8 +122,9 @@ someone else left, the fix removes it too.
 
 ### 8. Banned habits
 
-The house list in `~/.claude/CLAUDE.md` and memory: values clauses, star counts, limit-one,
-recursive CTEs, regex on structured or backend data, positional splitting of structure, OR
+The house list in `~/.claude/CLAUDE.md` and memory: values clauses, star counts, limit-one without
+an ORDER BY (Alok 10-20: "limit 1 is a valid ; ONLY with an orderby though"; `arg_max(row, v)` is the
+first choice, RULES.md 29), recursive CTEs, regex on structured or backend data, positional splitting of structure, OR
 chains (use `IN`, `IS DISTINCT FROM` or a set of terms), aggregate filter clauses, scalar
 subqueries in a select list, forced materialization, left-joined lateral unnests.
 

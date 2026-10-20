@@ -89,15 +89,15 @@ WITH parsed_texts AS (
 SELECT call_id, sql_source, program_index, n.type AS statement_kind, n.peek AS statement_sql,
        [upper(w) FOR w IN string_split(trim(n.peek), ' ') IF w <> ''][1:5] AS head_words,
        len(string_split(n.peek, E'\n')) AS statement_lines,
-       -- json_serialize_sql takes only a SELECT; a view's query is the text after its first ' AS ', and
-       -- COPY (query) TO's is the text between its first '(' and its last ') TO '.
+       -- json_serialize_sql takes only a SELECT; a view's query is the text after its first ' AS ', and a
+       -- COPY's is everything before its last ') TO ' after 'COPY ('. sitting_duck prints a COPY in that
+       -- canonical form and gives it no child nodes, so the text is the only handle on its query.
        CASE WHEN n.type = 'select_statement'
             THEN json_serialize_sql(n.peek, skip_null := true, skip_empty := true, skip_default := true) -> 'statements' -> 0
             WHEN n.type = 'create_view'
             THEN json_serialize_sql(substr(n.peek, instr(upper(translate(n.peek, E'\n\t\r', '   ')), ' AS ') + 4), skip_null := true, skip_empty := true, skip_default := true) -> 'statements' -> 0
-            WHEN n.type = 'sql_statement' AND starts_with(upper(ltrim(n.peek)), 'COPY') AND starts_with(ltrim(substr(ltrim(n.peek), 5)), '(')
-            THEN json_serialize_sql(substr(n.peek, instr(n.peek, '(') + 1,
-                                           length(n.peek) - instr(reverse(upper(translate(n.peek, E'\n\t\r', '   '))), ' OT )') - 4 - instr(n.peek, '(')),
+            WHEN n.type = 'sql_statement' AND starts_with(n.peek, 'COPY (')
+            THEN json_serialize_sql(substr(list_reduce(string_split(n.peek, ') TO ')[:-2], (head, rest) -> concat(head, ') TO ', rest)), length('COPY (') + 1),
                                     skip_null := true, skip_empty := true, skip_default := true) -> 'statements' -> 0 END AS ast,
        row_number() OVER (PARTITION BY call_id, sql_source, program_index ORDER BY piece_no, n.node_id) AS statement_no
 FROM nodes WHERE n.depth = 1;
@@ -116,20 +116,20 @@ SELECT s.call_id, s.sql_source, s.program_index, s.statement_no, t.id AS node_id
                  WHEN (t.value ->> 'ref_type') = 'REGULAR' THEN t.value ->> 'join_type'
                  ELSE t.value ->> 'ref_type' END END AS join_kind,
        t.value -> 'right' ->> 'type' AS join_right_type,
-       [lower(c ->> 'class') FOR c IN json_extract(t.value, '$.right.function.children[*]')] AS join_right_arg_kinds,
+       [lower(c ->> 'class') FOR c IN coalesce((t.value -> 'right' -> 'function' -> 'children')::JSON[], [])] AS join_right_arg_kinds,
+       -- A node's arguments: a table function keeps them under 'function', every other node directly.
+       coalesce(CASE WHEN (t.value ->> 'type') = 'TABLE_FUNCTION' THEN t.value -> 'function' -> 'children' ELSE t.value -> 'children' END::JSON[], []) AS children,
        [CASE WHEN (c ->> 'class') = 'FUNCTION' THEN c ->> 'function_name'
              WHEN (c ->> 'class') = 'CAST' AND (c -> 'child' ->> 'class') = 'CONSTANT' THEN 'constant'
              ELSE lower(c ->> 'class') END
-        FOR c IN CASE WHEN (t.value ->> 'type') = 'TABLE_FUNCTION' THEN json_extract(t.value, '$.function.children[*]') ELSE json_extract(t.value, '$.children[*]') END] AS arg_kinds,
+        FOR c IN children] AS arg_kinds,
        -- Constant arguments, and the constants inside a list argument (read_text(['a', 'b'])).
        -- json_serialize_sql drops an empty string's value; a non-null constant without one is ''.
        [coalesce(c -> 'value' ->> 'value', CASE WHEN (c -> 'value' ->> 'is_null') = 'false' THEN '' END)
-        FOR c IN flatten([CASE WHEN (a ->> 'function_name') = 'list_value' THEN json_extract(a, '$.children[*]') ELSE [a] END
-                          FOR a IN CASE WHEN (t.value ->> 'type') = 'TABLE_FUNCTION' THEN json_extract(t.value, '$.function.children[*]') ELSE json_extract(t.value, '$.children[*]') END])
+        FOR c IN flatten([CASE WHEN (a ->> 'function_name') = 'list_value' THEN (a -> 'children')::JSON[] ELSE [a] END FOR a IN children])
         IF (c ->> 'class') = 'CONSTANT'] AS literal_args,
        -- Named arguments (hive_partitioning := false) carry their name as the argument's alias.
-       [c ->> 'alias' FOR c IN CASE WHEN (t.value ->> 'type') = 'TABLE_FUNCTION' THEN json_extract(t.value, '$.function.children[*]') ELSE json_extract(t.value, '$.children[*]') END
-        IF (c ->> 'alias') IS NOT NULL] AS named_args,
+       [c ->> 'alias' FOR c IN children IF (c ->> 'alias') IS NOT NULL] AS named_args,
        -- Operators that read like functions (COALESCE, IN, NOT) keep their AST type as a name.
        CASE WHEN (t.value ->> 'class') = 'OPERATOR' THEN lower(t.value ->> 'type') END AS op
 FROM sql_statements s CROSS JOIN LATERAL json_tree(s.ast) AS t

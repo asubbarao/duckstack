@@ -115,8 +115,9 @@ writing SQL on this machine.
     QUALIFY and the like are fine (10-20).
 29. **The inline replacements the hooks name** (10-20). Top n per group: `arg_max(x, v, n)` / `max(v, n)` return
     lists (`arg_max(label, val, 2)` gives `['five', 'three']`, `max(val, 2)` gives `[5, 3]`); `arg_max(x, v)` /
-    `max_by` the single row. One ordered row: `ORDER BY ... LIMIT 1`; `LIMIT 1` with no `ORDER BY` is an arbitrary
-    row and is blocked. Instead of `any_value(col)`, keep the array (`array_agg(col)` / `list(col)`) and leave it
+    `max_by` the single row. One ordered row: first `arg_max(s, started)` over the row struct (`FROM sessions AS s`),
+    the same verb as top n; `ORDER BY ... LIMIT 1` is also valid: "limit 1 is a valid ; ONLY with an orderby though,
+    agents dont usually do that" (10-20). `LIMIT 1` with no `ORDER BY` is an arbitrary row and is blocked. Instead of `any_value(col)`, keep the array (`array_agg(col)` / `list(col)`) and leave it
     unselected, or take `[1]` of it. Instead of `string_split(x, sep)[n]`, keep the array or use a reader that returns
     columns (`read_csv` with its delimiter, `parse_path`, netquack); the hook warns.
 30. **Friendly SQL we lean on**, kept as a query rather than prose: `references/friendly_sql.sql`. Its first query

@@ -13,7 +13,9 @@ FROM read_json('tests/hook_cases.json');
 .read hooks/hook_checks.sql
 .read hooks/check_hits.sql
 .mode json
-SELECT cases.case_id, cases.fires, cases.quiet, list_sort(list_filter(array_agg(DISTINCT hits.check_id), check_id -> check_id IS NOT NULL)) AS fired
+SELECT cases.case_id, cases.fires, cases.quiet,
+       list_sort(list_filter(array_agg(DISTINCT hits.check_id), check_id -> check_id IS NOT NULL)) AS fired,
+       list_has_all(fired, cases.fires) AS fires_ok, NOT list_has_any(fired, cases.quiet) AS quiet_ok
 FROM read_json('tests/hook_cases.json') AS cases
 LEFT JOIN check_hits AS hits ON hits.call_id = cases.case_id
 GROUP BY cases.case_id, cases.fires, cases.quiet ORDER BY cases.case_id;
