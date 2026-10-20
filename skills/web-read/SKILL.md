@@ -12,6 +12,22 @@ whole-document parsing → select what you need. A page you will read again land
 first (the crawl skill), and is parsed from there.
 Raw HTML never goes into context: an 82,892-character docs page is 652 typed blocks; read those.
 
+Use the approved `web_page(url)` table macro in `server/macros.sql` for HTTP pages. It preserves
+the full native QuackAPI response (status, headers, body, error) and adds whole-document webbed
+columns: `html`, `duckblocks`, `links`, `images`, `tables`, `dom`, `attributes`, `document`,
+`urls`, and `frames`. Select the useful columns before returning results to an agent:
+
+```sql
+SELECT url, status, error, links, frames FROM web_page('https://www.nflbite.is/');
+```
+
+For URL rows, render ordinary calls to this macro, aggregate `selfdispatch(sql)`, then
+`CROSS JOIN UNNEST` the receipts. Project once from each receipt body immediately after
+unnesting. No extra fetching macro, browser, cache or server is needed. This is native DuckDB;
+it cannot run in WASM. URLs in remote JavaScript are discovered as text, never executed.
+Verified 2026-10-19 on NFLBite and the extension index; connection refusal remains a row with
+status 0, an error and empty link lists. HTTP 403 remains a row with status 403.
+
 The casts are written out even where a function would accept VARCHAR: `(body)::HTML` makes the value a webbed
 HTML document, so every html_* function after it operates on a typed column, and the next reader sees what the
 column is. Same for `::JSON`.

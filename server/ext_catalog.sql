@@ -24,14 +24,12 @@ FROM yml FULL JOIN page USING (extension_name) LEFT JOIN readme ON ltrim(url_par
     UNION ALL
     SELECT 'refresh', $r$INSERT INTO lake.agents.ext_fetch BY NAME
 WITH links AS (
-    SELECT url_resolve('https://duckdb.org/community_extensions/list_of_extensions', l.href) AS url, l.text
-    FROM read_html_objects('https://duckdb.org/community_extensions/list_of_extensions') CROSS JOIN UNNEST(html_extract_links(html)) AS u(l)
-), pages AS (
-    SELECT url, urlpattern_extract('https://duckdb.org/community_extensions/extensions/:name.html', url, 'name') AS name
-    FROM links WHERE urlpattern_test('https://duckdb.org/community_extensions/extensions/:name.html', url)
+    SELECT l.*, url_resolve('https://duckdb.org/community_extensions/list_of_extensions', l.href) AS url,
+           urlpattern_extract('https://duckdb.org/community_extensions/extensions/:name.html', url, 'name') AS name
+    FROM (SELECT unnest(links) AS l FROM web_page('https://duckdb.org/community_extensions/list_of_extensions') WHERE status = 200)
 ), urls AS (
-    SELECT url FROM pages
-    UNION ALL SELECT tera_render('https://raw.githubusercontent.com/duckdb/community-extensions/main/extensions/{{ name }}/description.yml', p::JSON, autoescape := false) FROM pages AS p
+    SELECT url FROM links WHERE name IS NOT NULL
+    UNION ALL SELECT tera_render('https://raw.githubusercontent.com/duckdb/community-extensions/main/extensions/{{ name }}/description.yml', l::JSON, autoescape := false) FROM links AS l WHERE name IS NOT NULL
     UNION ALL SELECT url FROM links WHERE text = 'GitHub'
 )
 SELECT url, now() AS fetched_at, to_json(quackapi_fetch(url)) AS response
