@@ -114,8 +114,9 @@ jar gave `x=1` and `/cookies` echoed `{"x": "1"}`).
 - **The Chrome bridge (`--chrome`)** is for a login that can't be scripted (MFA, captcha) or a
   session that already lives in Chrome. It is not needed just because a cookie is HttpOnly.
 - **A form that needs a CSRF token:** GET the form, read the hidden `<input>` value and POST it
-  back with the jar. `html_to_duck_blocks` drops `<input>`, so blocks don't carry the token; no
-  reader-only way to get it has been verified yet.
+  back with the jar. `html_to_duck_blocks` drops `<input>`. The attribute XPath reads it:
+  `html_extract_text(parse_html(body), '//input[@name=''authenticity_token'']/@value')`. On
+  github.com/login that returned the 88-char token (2026-10-20).
 
 ## Step 2 — Look before parsing
 
@@ -137,8 +138,25 @@ Never return a page body to the conversation: lengths, heads, counts, and bounde
 3. **Links**: `html_extract_links(body::HTML)` → `STRUCT(text, href, title, line_number)[]`,
    expanded once with `CROSS JOIN UNNEST`.
 4. **Tables**: `html_extract_tables(body::HTML)`; never walk `<tr>/<td>`.
-5. **One region**: `html_extract_text(body::HTML, '<xpath>')` → the matching nodes' text as a
-   list; XPath for axes, text predicates, `last()`, `not()`.
+5. **XPath, with the paths as rows.** Take the page's own element paths, filter them with a WHERE,
+   and pass each one as a column. `html_extract_text(html, xpath)` takes a VARCHAR xpath, so no
+   dispatch is needed. Use `parse_html(body)`: on 2026-10-20 `body::HTML` gave 0 attribute rows
+   where `parse_html` gave 406. On nflbite this returned the 30 team names under
+   `/html/body/div/div/header/div/div/nav/ul/li/div/a`:
+
+```sql
+WITH page AS (
+    SELECT parse_html(content) AS html FROM read_text('https://<site>/<page>')
+), document_xpaths AS (
+    SELECT html, list_distinct(list_transform(xml_extract_attributes(html, '//*'), a -> a.element_path)) AS xpaths FROM page
+)
+SELECT xpath, html_extract_text(html, xpath) AS texts FROM document_xpaths CROSS JOIN UNNEST(xpaths) AS t(xpath);
+```
+
+   `xml_extract_attributes` lists only elements that have attributes. On github.com/login it
+   returned 0 rows while `html_extract_text` worked, so check `len(xpaths)` before you rely on it.
+   A hand-typed XPath for one known node is fine (`//input[@name='x']/@value`). A 40-line chain
+   of them is the failure.
 
 ```sql
 WITH page AS (
