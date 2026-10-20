@@ -1,7 +1,9 @@
 -- Episodes of tool calls with signatures and real token cost (cluster-challenge §1). One row per episode: a new
 -- episode after a 2-min gap or an arm switch (DuckDB/MCP vs not). Signatures come from sitting_duck: bash `command`
--- nodes, SQL `invocation` nodes, and the shell commands inside a SQL `'… |'` literal. new_tokens counts each next
--- assistant turn once (parallel calls share one). The window is 2 days to stay under dev's 2-min deadline.
+-- nodes, SQL `invocation` nodes, and the shell commands inside a SQL `'… |'` literal. new_tokens counts each API
+-- response once, keyed on message.id: one response is written to several transcript lines (one per content block)
+-- and parallel calls share one. The window is 2 days to stay under dev's 2-min deadline. Known gap: in some subagent
+-- transcripts agent.lines.file_row_number and stream.blocks.line disagree, so the ASOF join can attach a later turn.
 WITH uses AS (
   SELECT tool_use_id, arg_min({'file_path': file_path, 'line': line, 'ts': timestamp, 'tool_name': tool_name, 'cmd': tool_command, 'input': tool_input}, line) AS u
   FROM stream.blocks WHERE block_type = 'tool_use' AND NOT is_repeat AND timestamp > now() - INTERVAL 2 DAY AND NOT contains(file_path, '/.codex/')
@@ -10,7 +12,7 @@ WITH uses AS (
   SELECT tool_use_id, arg_min({'result_line': line, 'result_bytes': content_bytes, 'is_image': contains(left(message_content, 200), '"type":"image"')}, line) AS r
   FROM stream.blocks WHERE block_type = 'tool_result' AND NOT is_repeat AND timestamp > now() - INTERVAL 2 DAY GROUP BY tool_use_id
 ), usage AS (
-  SELECT transcript, file_row_number,
+  SELECT transcript, file_row_number, message ->> 'id' AS response_id,
          (message -> 'usage' ->> 'cache_creation_input_tokens')::BIGINT + (message -> 'usage' ->> 'input_tokens')::BIGINT + (message -> 'usage' ->> 'output_tokens')::BIGINT AS new_tokens
   FROM agent.lines WHERE type ->> '$' = 'assistant' AND (timestamp ->> '$')::TIMESTAMPTZ > now() - INTERVAL 2 DAY AND NOT contains(transcript, '/.codex/')
 ), call_data AS (
@@ -25,7 +27,7 @@ WITH uses AS (
          list_sort(list_distinct(list_concat(programs, sql_readers, CASE WHEN u.tool_name IN ('Bash', 'mcp__dev__query', 'mcp__duck__query') THEN [] ELSE [u.tool_name] END))) AS call_signature
   FROM uses JOIN results USING (tool_use_id)
 ), with_tokens AS (
-  SELECT call_data.*, usage.file_row_number AS next_turn, usage.new_tokens
+  SELECT call_data.*, usage.response_id AS next_turn, usage.new_tokens
   FROM call_data ASOF JOIN usage ON call_data.file_path = usage.transcript AND usage.file_row_number >= call_data.result_line + 1
 ), episode_starts AS (
   SELECT *, CASE WHEN lag(ts) OVER w IS NULL THEN 1 WHEN ts - lag(ts) OVER w > INTERVAL 2 MINUTE THEN 1 WHEN arm <> lag(arm) OVER w THEN 1 ELSE 0 END AS starts_episode

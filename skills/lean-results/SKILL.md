@@ -37,7 +37,7 @@ median 912 new tokens, a Bash turn 810 (+13%); p90 4,027 vs 2,637 (+53%). Writin
 - Bound the query before it runs; a result over the MCP's 25k-token limit fails after running, and the retry is
   another full turn.
 - Do not re-read an image: four PNGs read 25–27 times each were 154 MB of the Read tool's 244 MB.
-- Read a file once: 3,213 of 11,503 text reads were re-reads (26.1 MB; setup.sql 41× in 9 sessions). A bounded
+- Read a file once: 2,664 of 10,955 text reads were re-reads (ids deduped; setup.sql 41× in 9 sessions). A bounded
   `read_lines` slice is 1.32× the same `sed` slice, so the saving is not re-reading, not the reader.
 - A chain of greps is the cost, not one grep: ask the question once as a parse or an aggregate.
 
