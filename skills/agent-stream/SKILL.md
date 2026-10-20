@@ -46,6 +46,46 @@ cmd or sql, else the whole input). The raw store below is for fields neither car
 - If a filter on several `payload` fields fails with `Failed to cast value to numerical`, project them as columns
   in one CTE and filter in the next.
 
+## Fields only `agent.lines` has
+
+The transcripts are already read: `agent.lines` has every top-level field of every line (192 columns), auto-read,
+each a `JSON` column, for every session and subagent. Hook timings, denials and attribution live only here.
+`SELECT column_name FROM duckdb_columns() WHERE schema_name = 'agent' AND table_name = 'lines'` lists them.
+
+| Question | Columns |
+|---|---|
+| Hook runs and their time | `attachment ->> 'type'` (`hook_success`, `hook_cancelled`, …), `'hookEvent'`, `'hookName'`, `'command'`, `'durationMs'`, `'timedOut'` |
+| Denied tool calls | `toolDenialKind` (`permission-rule`, `user-rejected`, `automode-blocked`; `cancelled`/`interrupted` are aborts) |
+| Which skill, MCP server or plugin | `attributionSkill`, `attributionMcpServer`, `attributionMcpTool`, `attributionPlugin` |
+| Cost and turn time | `totalCostUSD`, `modelUsage`, `durationMs`, `totalToolDuration` |
+
+```sql
+WITH recent_lines AS (
+  SELECT transcript, toolDenialKind ->> '$' AS denial_kind, attachment ->> 'type' AS attachment_type,
+         attachment ->> 'hookEvent' AS hook_event, attachment ->> 'command' AS hook_command,
+         (attachment ->> 'durationMs')::DOUBLE AS hook_ms, attachment ->> 'timedOut' AS timed_out
+  FROM agent.lines
+  WHERE (timestamp ->> '$')::TIMESTAMPTZ > now() - INTERVAL 2 DAY
+), hook_runs AS (
+  SELECT 'hook' AS kind, hook_event AS what, hook_command AS detail, count(transcript) AS n,
+         median(hook_ms) AS p50_ms, max(hook_ms) AS max_ms, count(timed_out) AS timeouts
+  FROM recent_lines WHERE starts_with(attachment_type, 'hook_') AND hook_ms IS NOT NULL GROUP BY ALL
+), denials AS (
+  SELECT 'denial' AS kind, denial_kind AS what, count(transcript) AS n FROM recent_lines WHERE denial_kind IS NOT NULL GROUP BY ALL
+)
+SELECT * FROM hook_runs UNION ALL BY NAME SELECT * FROM denials ORDER BY kind, n DESC;
+```
+
+**Ways agents get this wrong** (each one seen, the last on 2026-10-20 in a `/doctor` run):
+- Reading `~/.claude/projects/*/*.jsonl` again with `read_ndjson_objects` or `read_json`. That redoes dev's work.
+  It covers a sample of files, not the store, and it skips subagent files. On the whole glob it runs past dev's
+  2-minute budget, or falls back to one `MAP(VARCHAR, JSON)` column.
+- Copying fields out to a scratch parquet or a `.duckdb` file to "save re-parsing". The parsed copy is
+  already on dev.
+- Using `json_extract_string`, regexp or `split_part` on raw line text for a field that is already a column here.
+- Writing the query before checking `duckdb_views()`. A transcript question starts with `agent.messages`,
+  `stream.blocks` or `agent.lines`.
+
 ## Rules
 
 - **One statement covers every session.** Filter by a time window, `file_path IN (…)` or `session_id IN (…)`.
