@@ -4,10 +4,11 @@ CREATE OR REPLACE MACRO quote_literal(s) AS CASE WHEN s IS NOT NULL THEN concat(
 -- selfdispatch: post one SQL statement to dev's /sql and return the receipt (status, body, error). Callers collect
 -- receipts with array_agg(selfdispatch(sql)) and UNNEST them; a failed statement stays a receipt, no rows post nothing.
 -- The post always goes to dev itself; whatever varies by row (a URL, a command, a file) goes inside the statement.
--- A failed statement comes back as a non-200 with the DuckDB error in the body's detail; error carries it, so
--- failures show in receipt.error. The one-element list makes the lambda post once (a macro argument used twice posts twice).
+-- Filter NULL programs before invoking POST; an empty list produces a NULL receipt without a request.
+-- The receipt lambda evaluates each POST once and preserves the server's error detail.
 CREATE OR REPLACE MACRO selfdispatch(sql) AS
-    list_transform([quackapi_post('http://127.0.0.1:9495/sql', json_object('sql', sql)::VARCHAR)],
+    list_transform(list_transform(list_filter([sql], statement -> statement IS NOT NULL),
+        statement -> quackapi_post('http://127.0.0.1:9495/sql', json_object('sql', statement)::VARCHAR)),
         p -> {'status': p.status, 'body': p.body,
               'error': coalesce(p.error, CASE WHEN p.status IS DISTINCT FROM 200
                                               THEN coalesce(try_cast(p.body AS JSON) ->> 'detail', p.body::VARCHAR) END)})[1];

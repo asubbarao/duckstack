@@ -71,6 +71,18 @@ record as columns. A durable crawl instead renders an insert into the existing f
 `INSERT INTO lake.agents.ext_fetch BY NAME SELECT requested_url AS url, now() AS fetched_at,
 response FROM web_page(<quoted URL>)`, using the same post/unnest molecule.
 
+`selfdispatch(NULL)` makes no POST and returns NULL. `array_agg` retains that NULL receipt;
+`CROSS JOIN UNNEST(arr)` therefore retains the source row even when it needs no request.
+The caller's CASE constructs a nullable program; it does not wrap the network call.
+
+Projection pruning is verified by `tests/web_page_contract.sql` on DuckDB 1.5.6 and candidate
+quackapi e262cb0: 50 NULL programs made zero loopback requests; 50 mixed rows made 25 requests
+and retained all 50 rows. `SELECT links FROM web_page(...)` pruned the other parsing columns
+in both optimized plans and executed zero instrumented unused parsers; `SELECT *` executed
+all seven parser probes. `SELECT response` also pruned parsing, as used by catalogue writes.
+Run the SQL test from the checkout root, with `DUCKSTACK_QUACKAPI_EXTENSION` selecting a
+compatible candidate artifact when the signed installed extension predates this API.
+
 The casts are written out even where a function would accept VARCHAR: `(body)::HTML` makes the value a webbed
 HTML document, so every html_* function after it operates on a typed column, and the next reader sees what the
 column is. Same for `::JSON`.
