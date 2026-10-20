@@ -29,17 +29,14 @@ Pick the template by what the statement does. `templates/canonical.sql` has a ve
 | `sql.tera` | in the database: SELECT, DDL, DML, PRAGMA, names from information_schema | table_schema, table_name, … |
 | `bash_loop_fallback_method.tera` | FALLBACK: a bash loop when no row source exists; the audit lists every use | items, body |
 
-**Words for `pipeline.tera`.** Any of these is fine; pick the one that reads best. Observed on dev 2026-10-20:
-- A word list, a flag with its value as one word: `['curl', '-sS', '--max-time 30', '-c -', quote_literal(url)]`.
-  The default; always allowed. A shared prefix is one column reused with `list_concat(curl_base, [...])`.
-- Groups then `flatten([['curl', '-sS'], ['--max-time', '30']])`: allowed, same result, adds nothing.
-- Flags as a MAP, when flags come from rows or a base gets overrides: `map(list(flag), list(flag_value))` per site,
-  `map_concat(base, overrides)` (a later key replaces the earlier value in its place), then words with
-  `flatten(list_transform(map_entries(flags), e -> list_filter([e.key, e.value], w -> w IS NOT NULL)))`. A flag with
-  no value is `NULL::VARCHAR` (a bare `NULL` makes the map `MAP(VARCHAR, "NULL")`, which `map_concat` refuses).
-  Keys are unique, so a repeated flag (`-H` twice) stays in a word list.
-- Flags as a STRUCT: typed values (`"--max-time" INTEGER`) and `struct_update`, but not for flags that differ by row:
-  a list of structs merges every row's fields, so a missing flag and a flag with no value are both NULL.
+**Words for `pipeline.tera`:** a list, with a flag and its value as one word and `'|'` as the pipe:
+
+```sql
+['curl', '-sS', '--max-time 30'] AS curl_base,
+list_concat(curl_base, ['-c -', '-o /dev/null', quote_literal(login_url)]) AS log_in,
+list_concat(curl_base, ['--fail', '-b -', quote_literal(page_url)]) AS get_page,
+list_concat(log_in, ['|'], get_page) AS log_in_then_get_page
+```
 
 Dependent stages in one query (each stage an atom that dispatches and a molecule that unnests; the next atom renders
 from the last molecule's rows): [references/five_stage_pipeline.sql](references/five_stage_pipeline.sql).
