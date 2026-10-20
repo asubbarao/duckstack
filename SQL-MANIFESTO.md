@@ -66,7 +66,7 @@ quote-building. Building SQL text from character codes, `printf` or `format` sta
 ## 4. Self-dispatch is visible
 
 The atom is an ordinary control relation: original source columns plus readable executable SQL.
-Selecting it shows the generated programs without executing them. SQL owns every decision;
+Select the statement relation to inspect generated programs before posting. SQL owns every decision;
 Tera only removes construction boilerplate. Keep those columns when collecting posts, then
 unnest their array beside the same source row. Several preparation CTEs are fine; a fixed CTE
 count is not the contract. Each subsequent atom reads the preceding results, so the dependency
@@ -83,7 +83,8 @@ SELECT source.* EXCLUDE(receipts), r.* FROM dispatched AS source CROSS JOIN UNNE
 ```
 
 A single command still goes through `array_agg` and `CROSS JOIN UNNEST` of a one-element
-array. Use `WITH ORDINALITY` when order matters; arrays alone don't establish execution order.
+array. Posts go to the selected runtime's own localhost QuackAPI. Preserve NULL text as NULL;
+do not coalesce it to an empty string. Use `WITH ORDINALITY` when order matters; arrays alone don't establish execution order.
 Keep the generated `sql` beside its receipt when anything downstream needs it.
 
 ## 5. Views and tables first, macros last

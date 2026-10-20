@@ -6,8 +6,8 @@ allowed-tools: mcp__dev__query
 
 # Reading the web in DuckDB
 
-Every recipe below ran on 2026-10-17 exactly as written (shellfs, webbed, jsonata, quickjs, tera loaded). The shape
-is always the same: fetch with curl through shellfs → keep the raw response → **cast the body to its type** →
+The curl recipes were verified on 2026-10-17; native-macro verification is dated below. The shape
+is always the same: fetch → keep the raw response → **cast the body to its type** →
 whole-document parsing → select what you need. A page you will read again lands in `lake.agents.ext_fetch`
 first (the crawl skill), and is parsed from there.
 Raw HTML never goes into context: an 82,892-character docs page is 652 typed blocks; read those.
@@ -68,8 +68,8 @@ CROSS JOIN UNNEST(coalesce(try_cast(receipt.body AS JSON[]), [NULL])) AS p(page)
 Verified 2026-10-19: both dispatch and HTTP statuses were 200; link lists contained 81 and 551
 items. Each source URL remained beside its receipt. Interactive navigation keeps the HTTP
 record as columns. A durable crawl instead renders an insert into the existing fetch history:
-`INSERT INTO lake.agents.ext_fetch BY NAME SELECT url, now() AS fetched_at, response
-AS response FROM web_page(<quoted URL>)`, using the same post/unnest molecule.
+`INSERT INTO lake.agents.ext_fetch BY NAME SELECT requested_url AS url, now() AS fetched_at,
+response FROM web_page(<quoted URL>)`, using the same post/unnest molecule.
 
 The casts are written out even where a function would accept VARCHAR: `(body)::HTML` makes the value a webbed
 HTML document, so every html_* function after it operates on a typed column, and the next reader sees what the
@@ -147,5 +147,5 @@ FROM releases_picked CROSS JOIN UNNEST(picked::JSON[]) WITH ORDINALITY AS t(rele
 - Many URLs: one literal `web_page(<quoted URL>)` call per source row through the tested molecule above.
   Durable crawls land its full response in `lake.agents.ext_fetch`; interactive navigation may keep it
   unmaterialized. State the crawl limits in either case. The shared macro composes the native HTTP response with webbed.
-- A missing extension is `INSTALL x FROM community; LOAD x;`, then continue. `jsonata` and `quickjs` are
-  installed on dev but not loaded at boot.
+- A missing extension is `INSTALL x FROM community; LOAD x;`, then continue. `jsonata` is loaded
+  by `server/extensions.sql`; load `quickjs` when using its recipe.

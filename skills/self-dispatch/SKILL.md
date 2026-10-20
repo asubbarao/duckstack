@@ -6,12 +6,14 @@ description: Generate readable SQL from rows, execute native JSON self-posts, an
 # Self-dispatch
 
 An **atom is a control relation**: the original source columns plus a readable `executable_sql`
-column. Selecting it shows the programs without executing them. This is the ordinary control-table
+column. Selecting the statement relation shows programs before posting them. This is the ordinary control-table
 pattern; the generated program may use SQL, a ShellFS command reader or a network request.
 The caller owns every filter, argument and decision. Tera only substitutes those columns.
 
 Keep the source columns and executable SQL when collecting `array_agg(selfdispatch(executable_sql)) AS arr`.
-The molecule exposes its results with `CROSS JOIN UNNEST(arr)`, beside the source row. Further atoms
+Posts go to the selected runtime's own localhost QuackAPI. Always expose the array with
+`CROSS JOIN UNNEST(arr)`, even for one item, beside the source row. Preserve NULL text as NULL;
+do not coalesce it to an empty string. Further atoms
 read those results, so the whole dependency graph can stay one query. No encoding is needed.
 Preparation can take several CTEs; a fixed CTE count is not the contract.
 
@@ -19,10 +21,11 @@ One small example:
 
 ```sql
 WITH table_statements AS (
-    SELECT table_schema, table_name,
-           concat('SELECT * FROM information_schema.columns WHERE table_schema = ',
-                  quote_literal(table_schema), ' AND table_name = ', quote_literal(table_name)) AS executable_sql
-    FROM information_schema.tables WHERE table_catalog = current_database()
+    SELECT schema_name, view_name,
+           tera_render('SUMMARIZE "{{ schema_name }}"."{{ view_name }}"',
+                       source_view::JSON, autoescape := false) AS executable_sql
+    FROM duckdb_views() AS source_view
+    WHERE schema_name = 'information_schema' AND view_name IN ('tables', 'columns')
 ), table_posts AS (
     SELECT *, array_agg(selfdispatch(executable_sql)) AS arr FROM table_statements GROUP BY ALL
 )

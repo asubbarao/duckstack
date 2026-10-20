@@ -8,8 +8,9 @@ writing SQL on this machine.
 ## Self-dispatch
 
 **Atom = control relation** (10-19). Source columns plus a readable executable SQL column;
-selecting the atom shows the programs before execution. Preserve those columns beside the
-array of self-posts. The molecule unnests that array on the source row. SQL owns the logic,
+selecting the statement relation shows programs before posting. Preserve those columns beside
+the array of loopback QuackAPI self-posts. Always CROSS JOIN UNNEST that array, even for one
+item, on the source row. Preserve NULL text as NULL, never an empty-string fallback. SQL owns the logic,
 Tera only substitutes. Preparation may use several CTEs; there is no fixed CTE count.
 Generated SQL can contain ShellFS commands or network calls. No encoding is needed.
 

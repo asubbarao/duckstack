@@ -29,10 +29,9 @@ they improve the readable program, not whether they meet a fixed count. Tera onl
 SQL owns the filters, arguments and decisions. Simple CLI JSON reshaping may use jq; shell
 loops, FIFO plumbing and encoding workarounds do not replace source relations.
 
-Preserve requested functionality and columns. The approved web_page primitive deliberately
-offers whole-document parsed columns; callers choose their projections. Do not propose deleting
-those fields merely to shorten the macro. Route generation as an inspectable control relation
-is also an explicitly approved example. Show concrete before/after SQL for each actual finding.
+Preserve requested functionality and documented columns; callers choose their projections.
+A finding must identify a concrete defect or redundant derivation, rather than delete a
+requested field merely to shorten code. Show concrete before/after SQL for each finding.
 
 This is a style and efficiency review. Correctness bugs go to `/code-review`; here, a query
 that works but is ugly, slow or unreusable is a finding. The contract is

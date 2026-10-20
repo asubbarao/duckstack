@@ -1,6 +1,6 @@
 -- Macros Alok approved, read by setup.sql and ~/.duckdbrc.
 -- quote_literal: a value as a single-quoted SQL literal, for SQL that SQL writes.
-CREATE OR REPLACE MACRO quote_literal(s) AS concat($q$'$q$, replace(s, $q$'$q$, $q$''$q$), $q$'$q$);
+CREATE OR REPLACE MACRO quote_literal(s) AS CASE WHEN s IS NOT NULL THEN concat($q$'$q$, replace(s, $q$'$q$, $q$''$q$), $q$'$q$) END;
 -- selfdispatch: post one SQL statement to dev's /sql and return the receipt (status, body, error). Callers collect
 -- receipts with array_agg(selfdispatch(sql)) and UNNEST them; a failed statement stays a receipt, no rows post nothing.
 -- The post always goes to dev itself; whatever varies by row (a URL, a command, a file) goes inside the statement.
@@ -18,7 +18,7 @@ WITH fetched AS (
     SELECT page_url AS requested_url, fetched AS response
     FROM quackapi_fetch(page_url, timeout_ms := 30000, max_response_bytes := 16777216) AS fetched
 ), typed AS (
-    SELECT *, response.*, response AS full_response, encode(response.body) AS raw_body,
+    SELECT *, response.*, encode(response.body) AS raw_body,
            coalesce(response.url_effective, requested_url) AS url, url_parse(url) AS url_parts,
            list_filter(map_entries(response.headers), h -> lower(h.key) = 'content-type')[1].value AS content_type,
            CASE WHEN contains(lower(content_type), 'html') THEN response.body::HTML END AS html
