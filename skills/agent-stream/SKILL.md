@@ -38,6 +38,12 @@ cmd or sql, else the whole input). The raw store below is for fields neither car
 | `agent.entries` | transcript file or stored Parquet: `path, parent, name, stem, ext, bytes, modified, reader, session` |
 | `agent.lines` | transcript line: every top-level field as a `JSON` column, plus `transcript` (the source file's path) |
 
+`agent.lines` is the holding area: 192 fields, most over 90% NULL, every string still JSON-quoted. To read it, use
+the typed, snake_case statement that [references/lines_columns.sql](references/lines_columns.sql) derives (SUMMARIZE
+gate, json_type + TRY_CAST per field, one `COLUMNS([...])` line per type inside `inflect('snake', ...)`, DESCRIBE
+check), then fold the repeats [references/lines_redundancy.sql](references/lines_redundancy.sql) finds. Rerun both
+when new fields appear.
+
 - `session` (from `agent.entries`) is the session's path without extension; join `agent.entries e ON e.path = l.transcript`.
   Claude subagent files share their parent's `session`; `contains(transcript, '/subagents/')` marks them.
   Each Codex thread is its own session.

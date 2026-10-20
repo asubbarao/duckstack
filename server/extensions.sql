@@ -34,3 +34,5 @@ INSTALL netquack FROM community; LOAD netquack;
 INSTALL fts; LOAD fts;
 -- rapidfuzz_ratio() drops near-repeat prompts in agent.sessions (messages.sql).
 INSTALL rapidfuzz FROM community; LOAD rapidfuzz;
+-- inflector_to_snake_case() names columns (skills/agent-stream/references/lines_columns.sql).
+INSTALL inflector FROM community; LOAD inflector;
