@@ -50,7 +50,7 @@ WITH primary_checks AS (SELECT unnest([
  'action': 'block', 'hook_event': 'PreToolUse', 'hook_decision': 'deny', 'replaces_hooks': ['H8']},
 {'check_id': 'git_checkout_paths', 'rule_id': '01a14840-ee81-7898-9c20-368cf0023631', 'tools': ['Bash'],
  'predicate_sql': $p$len(list_filter(bash_command_details, d -> d.eff_exe = 'git' AND d.subcommand = 'checkout' AND list_contains(d.flags, '--'))) > 0$p$,
- 'message': 'Restore a file from a revision: read its lines on dev with read_lines($c$git -C <worktree> show ''<rev>:<path>'' |$c$) (quote the path: a $ in it is shell syntax) and Write them back. Not git checkout --.',
+ 'message': 'Restore a file from a revision: read it on dev through duck_tails, read_text(git_uri(''<worktree>'', ''<path>'', ''<rev>'')), and Write it back. Not git checkout --.',
  'action': 'block', 'hook_event': 'PreToolUse', 'hook_decision': 'deny', 'replaces_hooks': ['H8']},
 {'check_id': 'git_log_cli', 'rule_id': '01a14840-ee81-7898-9c20-368cf0023631', 'tools': ['Bash'],
  'predicate_sql': $p$list_contains(bash_git_subcommands, 'log')$p$,
