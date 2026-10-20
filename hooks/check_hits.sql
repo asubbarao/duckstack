@@ -140,7 +140,7 @@ SELECT 'sql_create_macro__tooling' AS check_id, call_id, tool_name, coalesce(nex
 UNION ALL
 SELECT 'sql_cross_join_not_unnest' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((sql_has_cross_join_not_unnest), false)
 UNION ALL
-SELECT 'sql_dispatch_shape' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((list_has_any(sql_functions, ['selfdispatch', 'quackapi_post']) AND NOT (len(list_filter(sql_function_calls, f -> f.name IN ('array_agg', 'list') AND list_has_any(f.args, ['selfdispatch', 'quackapi_post']))) > 0 AND sql_has_unnest_cross_join)), false)
+SELECT 'sql_dispatch_shape' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((len(list_filter(sql_function_calls, f -> f.name IN ('selfdispatch', 'quackapi_post') AND list_contains(f.args, 'constant'))) > 0), false)
 UNION ALL
 SELECT 'sql_drop_table' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((list_contains([h[1:2] FOR h IN sql_heads], ['DROP', 'TABLE'])), false)
 UNION ALL
