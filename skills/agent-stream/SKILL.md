@@ -54,25 +54,31 @@ each a `JSON` column, for every session and subagent. Hook timings, denials and 
 
 | Question | Columns |
 |---|---|
-| Hook runs and their time | `attachment ->> 'type'` (`hook_success`, `hook_cancelled`, …), `'hookEvent'`, `'hookName'`, `'command'`, `'durationMs'`, `'timedOut'` |
+| Hook runs and their time | `agent.attachment_fields` where `attachment_type` starts with `hook_` (`hook_success`, `hook_cancelled`, …); keys `hookEvent`, `hookName`, `command`, `durationMs`, `timedOut`, `timeoutMs`, `exitCode` |
+| Any other attachment | `agent.attachment_fields`: one (`key`, `value`) row per field, found with `json_keys`, so no field list is typed |
 | Denied tool calls | `toolDenialKind` (`permission-rule`, `user-rejected`, `automode-blocked`; `cancelled`/`interrupted` are aborts) |
 | Which skill, MCP server or plugin | `attributionSkill`, `attributionMcpServer`, `attributionMcpTool`, `attributionPlugin` |
 | Cost and turn time | `totalCostUSD`, `modelUsage`, `durationMs`, `totalToolDuration` |
 
+`PIVOT … ON key` turns one kind of attachment back into columns, whatever keys it has:
+
 ```sql
-WITH recent_lines AS (
-  SELECT CASE WHEN toolDenialKind IS NOT NULL THEN 'denial' WHEN starts_with(attachment ->> 'type', 'hook_') THEN 'hook' END AS kind,
-         coalesce(toolDenialKind ->> '$', attachment ->> 'hookEvent') AS what, attachment ->> 'command' AS detail,
-         (attachment ->> 'durationMs')::DOUBLE AS hook_ms, attachment ->> 'timedOut' = 'true' AS timed_out
-  FROM agent.lines WHERE (timestamp ->> '$')::TIMESTAMPTZ > now() - INTERVAL 2 DAY
+WITH hook_runs AS (
+    PIVOT (FROM agent.attachment_fields WHERE starts_with(attachment_type, 'hook_') AND ts > now() - INTERVAL 2 DAY)
+    ON key USING first(value) GROUP BY transcript, file_row_number
 )
-SELECT kind, what, detail, count(kind) AS n, median(hook_ms) AS p50_ms, max(hook_ms) AS max_ms, sum(timed_out::INT) AS timeouts
-FROM recent_lines WHERE kind IS NOT NULL GROUP BY ALL ORDER BY kind, n DESC;
+SELECT hookEvent, command, len(list(file_row_number)) AS runs, median(durationMs::DOUBLE) AS p50_ms,
+       max(durationMs::DOUBLE) AS max_ms, count_if(timedOut = 'true') AS timeouts
+FROM hook_runs GROUP BY ALL ORDER BY runs DESC;
+
+SELECT toolDenialKind ->> '$' AS denial_kind, len(list(file_row_number)) AS denials
+FROM agent.lines WHERE toolDenialKind IS NOT NULL AND (timestamp ->> '$')::TIMESTAMPTZ > now() - INTERVAL 2 DAY
+GROUP BY ALL ORDER BY denials DESC;
 ```
 
-Observed on dev 2026-10-20 (last two days): 1,272 `permission-rule` denials, 48 `user-rejected`, 11
-`automode-blocked`; 13,371 `PreToolUse` runs of hook_checks, median 1,064 ms, max 170 s, 2 timeouts.
-`timedOut` is `'true'` or `'false'` when present, so compare it to `'true'`; counting the field counts both.
+Observed on dev 2026-10-20 (last two days): 13,533 `PreToolUse` runs of hook_checks, median 1,057 ms, max
+170 s, 2 timeouts; 1,272 `permission-rule` denials, 48 `user-rejected`, 11 `automode-blocked`. `timedOut` is
+`'true'` or `'false'` when present, so compare it to `'true'`; counting the field counts both.
 
 **Ways agents get this wrong** (each one seen, the last on 2026-10-20 in a `/doctor` run):
 - Reading `~/.claude/projects/*/*.jsonl` again with `read_ndjson_objects` or `read_json`. That redoes dev's work.
