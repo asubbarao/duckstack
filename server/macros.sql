@@ -16,14 +16,14 @@ CREATE OR REPLACE MACRO selfdispatch(sql) AS
 CREATE OR REPLACE MACRO web_page(page_url) AS TABLE
 WITH fetched AS (
     SELECT page_url AS requested_url, content AS full_response
-    FROM read_text(tera_render($curl$curl -sSL --max-time 30 --max-redirs 8 --max-filesize 16777216 --proto '=http,https' --proto-redir '=http,https' --config - --write-out '\n__DUCK_WEB_METADATA__{"transfer":%{json},"headers":%{header_json}}' <<'CURL_REQUEST'
+    FROM read_text(tera_render($curl$curl -sSL --compressed --max-time 30 --max-redirs 8 --max-filesize 16777216 --proto '=http,https' --proto-redir '=http,https' --config - --write-out '\n__DUCK_WEB_METADATA__{"transfer":%{json},"headers":%{header_json}}' <<'CURL_REQUEST'
 url = {{ url | json_encode() }}
 CURL_REQUEST
 true |$curl$, {url: page_url}::JSON, autoescape := false))
 ), receipt AS (
     SELECT *, list_last(string_split(full_response, E'\n__DUCK_WEB_METADATA__')) AS metadata_text,
            metadata_text::JSON AS metadata,
-           left(full_response, strlen(full_response) - strlen(metadata_text) - strlen(E'\n__DUCK_WEB_METADATA__')) AS body
+           left(full_response, length(full_response) - length(metadata_text) - length(E'\n__DUCK_WEB_METADATA__')) AS body
     FROM fetched
 ), typed AS (
     SELECT *, coalesce(nullif(metadata ->> '$.transfer.url_effective', ''), requested_url) AS url,

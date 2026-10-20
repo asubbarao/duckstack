@@ -32,6 +32,9 @@ Tested two-URL molecule, using the selected dev endpoint inside `selfdispatch`. 
 ShellFS curl GET: 30-second timeout, eight redirects, 16 MiB body cap, HTTP(S) only. JSON-quoted
 URL configuration goes through a quoted heredoc. The final URL, rather than the requested URL,
 is the base for relative links; both URLs and the complete transfer metadata are retained.
+Keep the pipe source's final `|` directly against its dollar-quote delimiter; a trailing
+newline makes `read_text` treat it as a file pattern. Curl compression keeps large HTML
+responses within the time budget; decoded bodies are preserved exactly, including Unicode.
 
 ```sql
 -- Existing dev workers; batch 2; no delay, cache, retries or link following; depth 0, limit 2.
