@@ -210,7 +210,7 @@ SELECT 'sql_star_count' AS check_id, call_id, tool_name, coalesce(next_prompt_co
 UNION ALL
 SELECT 'sql_statement_too_long' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((sql_max_statement_lines > 80), false)
 UNION ALL
-SELECT 'sql_temp_object' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((len(list_filter(sql_heads, h -> h[1] = 'CREATE' AND list_has_any(h, ['TEMP', 'TEMPORARY']))) > 0), false)
+SELECT 'sql_temp_object' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((len(list_filter(sql_heads, h -> h[1] = 'CREATE' AND list_has_any(h, ['TEMP', 'TEMPORARY']) AND NOT list_contains(h, 'TYPE'))) > 0), false)
 UNION ALL
 SELECT 'sql_tera_logic' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((len(list_filter(sql_function_calls, f -> f.name = 'tera_render' AND len(list_filter(f.literals, l -> contains(l, '{%'))) > 0)) > 0), false)
 UNION ALL
