@@ -13,7 +13,7 @@ first (the crawl skill), and is parsed from there.
 Raw HTML never goes into context: an 82,892-character docs page is 652 typed blocks; read those.
 
 Use the approved `web_page(url)` table macro in `server/macros.sql` for HTTP pages. It preserves
-the full native QuackAPI response (status, headers, body, error) and adds whole-document webbed
+the full curl response (status, final headers, body, error, transfer metadata and final URL) and adds whole-document webbed
 columns: `html`, `duckblocks`, `links`, `images`, `tables`, `dom`, `attributes`, `document`,
 `urls`, and `frames`. Select the useful columns before returning results to an agent:
 
@@ -28,7 +28,10 @@ are discovered with netquack; remote scripts are never executed.
 Verified 2026-10-19 on NFLBite and the extension index; connection refusal remains a row with
 status 0, an error and empty link lists. HTTP 403 remains a row with status 403.
 
-Tested two-URL molecule, using the selected dev endpoint inside `selfdispatch`:
+Tested two-URL molecule, using the selected dev endpoint inside `selfdispatch`. The macro uses one
+ShellFS curl GET: 30-second timeout, eight redirects, 16 MiB body cap, HTTP(S) only. JSON-quoted
+URL configuration goes through a quoted heredoc. The final URL, rather than the requested URL,
+is the base for relative links; both URLs and the complete transfer metadata are retained.
 
 ```sql
 -- Existing dev workers; batch 2; no delay, cache, retries or link following; depth 0, limit 2.
