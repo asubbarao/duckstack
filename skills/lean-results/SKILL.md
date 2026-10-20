@@ -1,6 +1,6 @@
 ---
 name: lean-results
-description: Shape a dev query so its result costs fewer context tokens than the Bash call it replaces. Measured 2026-10-19 on the same inputs: DuckDB wins (0.22–0.35×) only when the query projects or aggregates a structural answer (read_json projected, read_ast call sites, per-file counts); carrying the same text through read_lines costs 1.02–1.86×. Use before any dev query whose result the agent will read, and to measure real tokens per tool turn from agent.lines usage.
+description: Shape a dev query so its result costs fewer context tokens than the Bash call it replaces. Measured so far (2026-10-19, same inputs): DuckDB wins (0.22–0.35×) where the query projects or aggregates a structural answer (read_json projected, read_ast call sites, per-file counts); carrying the same text through read_lines costs 1.02–1.86×. Use before any dev query whose result the agent will read, and to measure real tokens per tool turn from agent.lines usage.
 ---
 
 # Lean results
