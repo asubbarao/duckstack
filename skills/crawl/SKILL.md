@@ -95,15 +95,19 @@ dev today is the daily extension-catalog refresh in `server/ext_catalog.sql`.
 ## Sessions — cookies and logins
 
 The jar is a relation, not a file. `curl -c -` prints the Netscape cookie jar to stdout and
-`read_csv` reads it. The next request carries it as a `Cookie:` header in a self-dispatched curl
-([references/cookie_jar.sql](references/cookie_jar.sql), verified 2026-10-20 against httpbin: the
-jar gave `x=1` and `/cookies` echoed `{"x": "1"}`).
+`read_csv` reads it, to see which cookies a login set. To carry the session, pipe the jar from
+one curl into the next: `curl -c - -o /dev/null '<login>' | curl -b - '<page>' |`. The jar and
+the carry are two step rows of one template, `shell.tera`
+([references/cookie_jar.sql](references/cookie_jar.sql)). The cookie value then never becomes
+shell text, so nothing needs quoting. Observed on dev 2026-10-20 (httpbin): `x=1` and `x=a'b$c`
+both came back unchanged. Pasting the value into `-H 'Cookie: …'` broke on `a'b$c` (shell exit 2),
+and Tera's `autoescape` is HTML encoding, so it sent `a&#x27;b$c`.
 
 - **Log in:** `curl -sS -L -b '' -c - -o /dev/null [-d 'user=…&pass=…'] '<login url>' |`. The `-b ''`
   turns on the cookie engine so cookies set during the redirects are kept.
 - **HttpOnly cookies.** Observed on github.com/login (2026-10-20, curl 8.7.1): curl kept the
   HttpOnly `_gh_sess` cookie and wrote its line with a `#HttpOnly_` prefix on the domain. With
-  `comment = '#'` that line would be skipped. `null_padding = true`, then `WHERE name IS NOT NULL`,
+  `comment := '#'` that line would be skipped. `null_padding := true`, then `WHERE name IS NOT NULL`,
   then `replace(domain, '#HttpOnly_', '')` kept it.
 - **httpfs and a cookie set on a redirect.** Observed on 2026-10-20: `read_text('https://httpbin.org/cookies/set?x=1')`
   (which sets `x` and redirects to `/cookies`) returned `{"cookies": {}}`. A cookie you already
@@ -145,18 +149,20 @@ Never return a page body to the conversation: lengths, heads, counts, and bounde
 
 ```sql
 WITH page AS (
-    SELECT url, parse_html(arg_max(response ->> 'body', fetched_at)) AS html
+    SELECT url, '/html/body/div/div/header/div/div/nav/ul/li/div/a' AS xpath_prefix,
+           parse_html(arg_max(response ->> 'body', fetched_at)) AS html
     FROM lake.agents.ext_fetch WHERE url = 'https://<site>/<page>' GROUP BY url
 ), document_xpaths AS (
-    SELECT url, html, list_distinct(list_transform(xml_extract_attributes(html, '//*'), a -> a.element_path)) AS xpaths
+    SELECT *, list_distinct(list_transform(xml_extract_attributes(html, '//*'), a -> a.element_path)) AS xpaths
     FROM page
 )
 SELECT url, xpath, html_extract_text(html, xpath) AS texts
 FROM document_xpaths CROSS JOIN UNNEST(xpaths) AS t(xpath)
-WHERE starts_with(xpath, '/html/body/div/div/header/div/div/nav/ul/li/div/a');
+WHERE starts_with(xpath, xpath_prefix);
 ```
 
-   Without the WHERE, every distinct path on the page is a row; look at them, then filter.
+   With `xpath_prefix := '/html'`, every distinct path on the page is a row; look at them, then
+   set the prefix. On a stored duckdb.org page (2026-10-20), `'/html/body'` gave 68 paths.
 
    What was observed on 2026-10-20, not a general rule:
 
@@ -182,18 +188,19 @@ WHERE b.kind = 'block' ORDER BY n;
 URLs are strings: `url_resolve`, `url_origin`, `urlpattern_test`, `starts_with`, not `LIKE`, not regex.
 
 Some sites ship tables inside HTML comments (`<!-- <table>… -->`), so the rungs above miss them.
-Read the comments as nodes with the `//comment()` XPath, then parse each one. Observed on
-basketball-reference.com/teams/BOS/2024.html (2026-10-20): 110 comments, 10 with a `<table>`, and
-6,538 table rows inside them.
+Read the comments as nodes with the `//comment()` XPath, parse each one, then keep the ones that
+parsed to rows. Observed on basketball-reference.com/teams/BOS/2024.html (2026-10-20): 110
+comments, 10 of them with table rows, 6,538 rows in all.
 
 ```sql
 WITH page AS (
     SELECT url, parse_html(arg_max(response ->> 'body', fetched_at)) AS html
     FROM lake.agents.ext_fetch WHERE url = 'https://<site>/<page>' GROUP BY url
+), comment_tables AS (
+    SELECT url, c AS fragment, html_extract_table_rows(c) AS table_rows
+    FROM page CROSS JOIN UNNEST(html_extract_text(html, '//comment()')) AS t(c)
 )
-SELECT url, c AS fragment, html_extract_table_rows(c) AS table_rows
-FROM page CROSS JOIN UNNEST(html_extract_text(html, '//comment()')) AS t(c)
-WHERE contains(c, '<table');
+SELECT * FROM comment_tables WHERE len(table_rows) > 0;
 ```
 
 ## The shape catalog — pick before writing

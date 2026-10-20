@@ -1,25 +1,30 @@
--- Cookie jar as a relation, then the cookie carried on the next request.
--- Observed on dev 2026-10-20 (httpbin): cookie_header = x=1, status 200, body {"cookies": {"x": "1"}}.
--- timeout 30 s per request; one worker; batch 1; no delay; no link following; no cache; one page.
--- The login url is the read_csv literal (a reader takes a literal); for a form login add -L -b '' -d '<form>'.
--- The header sits in shell single quotes: a cookie value may legally contain ', which would break it.
+-- A login session in one query: the jar (which cookies the login set) and the carry (the next request with them).
+-- Both are step rows of one template, shell.tera. The carry pipes the jar from one curl into the next
+-- (-c - | -b -), so no cookie value is ever shell text and nothing needs quoting.
+-- timeout 30 s per request; one worker; batch 1; no delay; no link following; no cache; one page per login.
+-- For a form login add -L -d '<form>' to the first curl.
+-- Observed on dev 2026-10-20 (httpbin): x = 1 and x = a'b$c both came back unchanged, status 200, and the jar
+-- receipt had the x row after curl's three # comment lines. A value pasted into -H 'Cookie: …' broke on
+-- a'b$c (shell exit 2); Tera's autoescape is HTML encoding, so it sent a&#x27;b$c.
 WITH intent AS (
-    SELECT 'https://httpbin.org/cookies' AS target_url
-), cookie_jar AS (
-    SELECT * FROM read_csv($c$curl -sS --max-time 30 -c - -o /dev/null 'https://httpbin.org/cookies/set?x=1' |$c$,
-        delim := '\t', header := false, null_padding := true,
-        names := ['domain', 'include_subdomains', 'path', 'secure', 'expires', 'name', 'value'])
-    WHERE name IS NOT NULL                          -- comment lines; comment := '#' would also skip #HttpOnly_ cookies
-), cookie_headers AS (
-    SELECT replace(domain, '#HttpOnly_', '') AS domain, string_agg(concat(name, '=', value), '; ' ORDER BY name) AS cookie_header
-    FROM cookie_jar GROUP BY ALL
-), carried_requests AS (
-    SELECT h.*, i.target_url FROM cookie_headers AS h JOIN intent AS i ON starts_with(i.target_url, concat('https://', h.domain))
+    SELECT unnest(['https://httpbin.org/cookies/set?x=1', 'https://httpbin.org/cookies/set?x=a%27b%24c']) AS login_url,
+           'https://httpbin.org/cookies' AS target_url
+), steps AS (
+    SELECT login_url, target_url, unnest([
+        {step: 'jar', reader: 'read_csv',
+         options: $o$, delim := '\t', header := false, null_padding := true, names := ['domain', 'include_subdomains', 'path', 'secure', 'expires', 'name', 'value']$o$,
+         sources: [concat_ws(' ', 'curl -sS --max-time 30 -c - -o /dev/null', quote_literal(login_url), '|')]},
+        {step: 'carry', reader: 'read_text', options: '',
+         sources: [concat_ws(' ', 'curl -sS --max-time 30 -c - -o /dev/null', quote_literal(login_url),
+                             '| curl -sS --fail --max-time 30 -b -', quote_literal(target_url), '|')]}
+    ], max_depth := 2)
+    FROM intent
 ), rendered AS (
-    SELECT *, tera_render($t$SELECT content FROM read_text($c$curl -sS --fail --max-time 30 -H 'Cookie: {{ cookie_header }}' '{{ target_url }}' |$c$)$t$,
-           c::JSON, autoescape := false) AS executable_sql
-    FROM carried_requests AS c
+    SELECT *, tera_render('shell.tera', c::JSON, autoescape := false,
+           template_path := '/Users/aloksubbarao/.duck/deploy/skills/self-dispatch/templates/*.tera') AS executable_sql
+    FROM steps AS c
 ), posted AS (
-    SELECT domain, cookie_header, target_url, array_agg(selfdispatch(executable_sql)) AS receipts FROM rendered GROUP BY ALL
+    SELECT login_url, step, executable_sql, array_agg(selfdispatch(executable_sql)) AS receipts FROM rendered GROUP BY ALL
 )
-SELECT domain, cookie_header, target_url, receipt.status, receipt.body FROM posted CROSS JOIN UNNEST(receipts) AS t(receipt);
+SELECT login_url, step, executable_sql, receipt.status, receipt.body FROM posted CROSS JOIN UNNEST(receipts) AS t(receipt)
+ORDER BY login_url, step;

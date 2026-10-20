@@ -138,7 +138,7 @@ short-circuit a network call. Pagination is a relation (`range()`, probe-then-fa
 cursor rungs), never `WITH RECURSIVE`. Its macros are gone now: the request is curl through
 shellfs (the `http_client`-based `request()` is blocked by a hook), retry is `curl --retry`,
 spacing is `sleep_ms`, and the cookie jar is a relation (`/duckstack:crawl`, Sessions).
-The rest of conduit was reviewed on 2026-10-20 and recorded there.
+The rest of conduit was reviewed on 2026-10-20; what was useful is in the crawl skill.
 
 **Self-dispatch** — *the database writes the statement it cannot bind, then runs it.* Table
 functions bind literals; a scalar takes columns; so build the statement per row and hand it to
