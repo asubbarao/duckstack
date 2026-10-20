@@ -7,15 +7,16 @@
 -- agent.tool_clusters: one row per run of tool calls in one transcript file with no gap over a minute, deduped by
 -- tool_use_id: tools, kinds (Bash verbs or the tool name), every full command, result bytes, took. A long run of
 -- small calls is a candidate for one query. Filter with WHERE (started, session_id, n_bash, kinds).
-WITH messages_step AS (
-    SELECT array_agg(selfdispatch($m$
+-- Each view is a row; the dispatch is a column. The views read only stream.blocks, so no row waits on another.
+WITH views AS (
+    SELECT v.* FROM UNNEST([
+        {name: 'agent.messages', sql: $m$
 CREATE OR REPLACE VIEW agent.messages AS
 SELECT * EXCLUDE (message_content, tool_input, tool_command), left(message_content, 100) AS head,
        right(message_content, 100) AS tail, left(tool_command, 100) AS tool_command_head
 FROM stream.blocks
-$m$)) AS receipts
-), sessions_step AS (
-    SELECT array_agg(selfdispatch($s$
+$m$},
+        {name: 'agent.sessions', sql: $s$
 CREATE OR REPLACE VIEW agent.sessions AS
 WITH session_blocks AS (
     SELECT * FROM stream.blocks WHERE NOT is_repeat
@@ -38,10 +39,8 @@ WITH session_blocks AS (
 SELECT a.*, p.prompts, len(p.distinct_prompts) AS prompt_count,
        p.distinct_prompts[1].message_content AS first_prompt, p.distinct_prompts[-1].message_content AS last_prompt
 FROM activity a LEFT JOIN prompts p USING (session_id)
-$s$)) AS receipts
-    FROM messages_step CROSS JOIN UNNEST(receipts) AS t(r) WHERE r.status = 200
-), tool_clusters_step AS (
-    SELECT array_agg(selfdispatch($c$
+$s$},
+        {name: 'agent.tool_clusters', sql: $c$
 CREATE OR REPLACE VIEW agent.tool_clusters AS
 WITH tool_calls AS (
     SELECT tool_use_id, source, session_id, file_path, is_agent, model, tool_name, tool_command, min(timestamp) AS called_at
@@ -70,11 +69,7 @@ SELECT source, session_id, file_path, is_agent, cluster_no,
        array_agg(tool_command ORDER BY called_at) AS commands,
        sum(result_bytes) AS result_bytes, list_distinct(array_agg(model)) AS models
 FROM clustered GROUP BY ALL
-$c$)) AS receipts
-    FROM messages_step CROSS JOIN UNNEST(receipts) AS t(r) WHERE r.status = 200
+$c$}
+    ]) AS t(v)
 )
-SELECT r.* FROM messages_step CROSS JOIN UNNEST(receipts) AS t(r)
-UNION ALL
-SELECT r.* FROM sessions_step CROSS JOIN UNNEST(receipts) AS t(r)
-UNION ALL
-SELECT r.* FROM tool_clusters_step CROSS JOIN UNNEST(receipts) AS t(r);
+SELECT unnest(selfdispatch(sql)) FROM views;
