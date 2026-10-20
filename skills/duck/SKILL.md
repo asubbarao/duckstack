@@ -130,15 +130,15 @@ duckdb-skills is not.
 **conduit** (`duckdb-ops-toolkit/conduit`) — *the query language is the client.* An external,
 side-effecting capability, exposed as a relation, composed inside a query, mutation pushed to
 the tail. Grammar is data (`seam_catalog` rows carry only what varies), construction is a view,
-execution is scalars firing per row inline. Six macros total, each a wire mechanic or a
-fail-closed gate (`request`, `with_auth`, `cookie_parse`, `retryable`, `shell_sleep`,
-`xml_payload_checked`) — never a rename of an extension function, never a stage. The composed
-chain is CTEs visible at the call site: bind (JOIN to the catalog) → fire (`request()` over
-columns) → barrier (`array_agg` → `UNNEST WITH ORDINALITY`) → classify (ONE `CASE`) →
-terminal / to_retry (two `WHERE`s). Retry is an unrolled ladder gated by CTE cardinality
-(never `CASE` around a network call — it does not short-circuit). Pagination is a relation
-(`range()`, probe-then-fan, unrolled cursor rungs), never `WITH RECURSIVE`. `sql/conduit.sql`
-+ `sql/capstone.sql` are the whole thing.
+execution is scalars firing per row inline. The composed chain is CTEs visible at the call site:
+bind (JOIN to the catalog) → fire (one request per row) → barrier (`array_agg` → `UNNEST`) →
+classify (ONE `CASE`) → terminal / to_retry (two `WHERE`s). A write is gated by a CTE's rows
+(a 0-row CTE or a bare `WHERE`), never by a `CASE` around the call: `CASE` does not
+short-circuit a network call. Pagination is a relation (`range()`, probe-then-fan, unrolled
+cursor rungs), never `WITH RECURSIVE`. Its macros are gone now: the request is curl through
+shellfs (the `http_client`-based `request()` is blocked by a hook), retry is `curl --retry`,
+spacing is `sleep_ms`, and the cookie jar is a relation (`/duckstack:crawl`, Sessions).
+The rest of conduit was reviewed on 2026-10-20 and recorded there.
 
 **Self-dispatch** — *the database writes the statement it cannot bind, then runs it.* Table
 functions bind literals; a scalar takes columns; so build the statement per row and hand it to

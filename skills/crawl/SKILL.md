@@ -48,7 +48,13 @@ FROM read_text('curl -sSL --fail --max-time 30 https://github.com/Angelerator/Sa
 
 `--fail` makes a non-2xx exit non-zero, so the reader errors and no row lands; the url stays
 due and is retried. `--max-time` bounds every fetch. Add `-A '<agent>'`, `-H` or cookies as
-the site needs; they are curl flags, not a framework.
+the site needs; they are curl flags, not a framework. A 429 or 5xx is retried by curl itself:
+`--retry 2 --retry-delay 1` (verified 2026-10-20: two retries logged, then the final 429).
+Space requests with `sleep_ms(<ms>)`, not a shell sleep.
+
+A public page with no session needs no curl at all: httpfs reads it, `read_text('<url>')`,
+`read_json('<url>')` or webbed `read_html('<url>')`, and follows redirects, http→https included.
+It throws on a 404, so a url column is self-dispatched to make each failure a receipt.
 
 Every crawl states its limits, in a comment above the query: timeout, workers, batch size,
 delay, link-following, depth, cache and result limits. An API error page is never a seed.
@@ -86,6 +92,31 @@ already landed, anti-joined against recent fetches as above. Rerun it (or schedu
 `cron()`) and a crawl grows one round per run until nothing is due. The only scheduled fetch on
 dev today is the daily extension-catalog refresh in `server/ext_catalog.sql`.
 
+## Sessions — cookies and logins
+
+The jar is a relation, not a file. `curl -c -` prints the Netscape cookie jar to stdout and
+`read_csv` reads it. The next request carries it as a `Cookie:` header in a self-dispatched curl
+([references/cookie_jar.sql](references/cookie_jar.sql), verified 2026-10-20 against httpbin: the
+jar gave `x=1` and `/cookies` echoed `{"x": "1"}`).
+
+- **Log in:** `curl -sS -L -b '' -c - -o /dev/null [-d 'user=…&pass=…'] '<login url>' |`. The `-b ''`
+  turns on the cookie engine so cookies set during the redirects are kept.
+- **HttpOnly cookies are captured.** curl writes those lines with a `#HttpOnly_` prefix on the
+  domain, so `comment = '#'` silently drops the session cookie. Read with `null_padding = true` and
+  `WHERE name IS NOT NULL`, then `replace(domain, '#HttpOnly_', '')`. Verified on github.com/login:
+  `_gh_sess` came back.
+- **httpfs drops cookies set during a redirect**: `read_text('https://httpbin.org/cookies/set?x=1')`
+  returns `{"cookies": {}}`. To carry a cookie you already have through httpfs, set a secret in your
+  own `:memory:` client (never on dev):
+  `CREATE SECRET (TYPE http, EXTRA_HTTP_HEADERS MAP {'Cookie': '<header>'}, SCOPE 'https://<site>')`.
+- **Expired session:** a 401, or a redirect back to the login page, means log in again. The jar's
+  `expires` column says when.
+- **The Chrome bridge (`--chrome`)** is for a login that can't be scripted (MFA, captcha) or a
+  session that already lives in Chrome. It is not needed just because a cookie is HttpOnly.
+- **A form that needs a CSRF token:** GET the form, read the hidden `<input>` value and POST it
+  back with the jar. `html_to_duck_blocks` drops `<input>`, so blocks don't carry the token; no
+  reader-only way to get it has been verified yet.
+
 ## Step 2 — Look before parsing
 
 ```sql
@@ -121,6 +152,9 @@ WHERE b.kind = 'block' ORDER BY n;
 
 URLs are strings: `url_resolve`, `url_origin`, `urlpattern_test`, `starts_with`, not `LIKE`, not regex.
 
+Some sites ship tables inside HTML comments (`<!-- <table>… -->`), so every rung above misses them.
+`string_split(body, '<!--')` and parse each fragment as HTML.
+
 ## The shape catalog — pick before writing
 
 | The site looks like… | Shape | Rounds |
@@ -130,7 +164,8 @@ URLs are strings: `url_resolve`, `url_origin`, `urlpattern_test`, `starts_with`,
 | no map, unknown depth | **walk** — same-site links of landed pages, bounded by `LIMIT` per round | n |
 | pages are table-carriers keyed by an entity; the ask is relational | **crossjoin** — `html_extract_tables` per entity, typed join the site never renders | 1 + join |
 | it should refresh on its own | **staged** — a `cron()` line in `server/setup.sql` over a stale view; run 2 fetches 0 pages | — |
-| any of the above behind auth / an SPA | `--chrome` (below), or curl with the session cookie | — |
+| any of the above behind a login | curl with the cookie jar (Sessions, above); `--chrome` only if the login can't be scripted | — |
+| an SPA (the data appears only after JavaScript runs) | `--chrome` (below) | — |
 
 ## `--chrome` — the page needs the user's session or a rendered DOM
 
