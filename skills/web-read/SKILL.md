@@ -21,12 +21,37 @@ columns: `html`, `duckblocks`, `links`, `images`, `tables`, `dom`, `attributes`,
 SELECT url, status, error, links, frames FROM web_page('https://www.nflbite.is/');
 ```
 
-For URL rows, render ordinary calls to this macro, aggregate `selfdispatch(sql)`, then
-`CROSS JOIN UNNEST` the receipts. Project once from each receipt body immediately after
-unnesting. No extra fetching macro, browser, cache or server is needed. This is native DuckDB;
-it cannot run in WASM. URLs in remote JavaScript are discovered as text, never executed.
+For URL rows, render ordinary calls to this macro, aggregate `selfdispatch(sql)` on the source
+row, then `CROSS JOIN UNNEST` its receipts. This is native DuckDB, not WASM. HTML goes through
+webbed; JavaScript resources retain their body and metadata without HTML parsing. Textual URLs
+are discovered with netquack; remote scripts are never executed.
 Verified 2026-10-19 on NFLBite and the extension index; connection refusal remains a row with
 status 0, an error and empty link lists. HTTP 403 remains a row with status 403.
+
+Tested two-URL molecule, using the selected dev endpoint inside `selfdispatch`:
+
+```sql
+-- Existing dev workers; batch 2; no delay, cache, retries or link following; depth 0, limit 2.
+-- The selected service bounds each SQL request at 120 seconds.
+WITH targets AS (
+    SELECT unnest(['https://www.nflbite.is/', 'https://duckdb.org/community_extensions/list_of_extensions']) AS url,
+           quote_literal(url) AS quoted,
+           'SELECT url, status, error, links, frames FROM web_page({{ quoted }})' AS statement
+), rendered AS (
+    SELECT *, tera_render(statement, targets::JSON, autoescape := false) AS sql FROM targets
+), posted AS (
+    SELECT * EXCLUDE(sql), array_agg(selfdispatch(sql)) AS receipts FROM rendered GROUP BY ALL
+)
+SELECT url, receipt.status, receipt.error, receipt.body::JSON ->> '$[*].status' AS http_status,
+       len(receipt.body::JSON -> '$[*].links[*]') AS links
+FROM posted CROSS JOIN UNNEST(receipts) AS t(receipt);
+```
+
+Verified 2026-10-19: both dispatch and HTTP statuses were 200; link lists contained 81 and 551
+items. Each source URL remained beside its receipt. Interactive navigation keeps the HTTP
+record as columns. A durable crawl instead renders an insert into the existing fetch history:
+`INSERT INTO lake.agents.ext_fetch BY NAME SELECT url, now() AS fetched_at, to_json(response)
+AS response FROM web_page(<quoted URL>)`, using the same post/unnest molecule.
 
 The casts are written out even where a function would accept VARCHAR: `(body)::HTML` makes the value a webbed
 HTML document, so every html_* function after it operates on a typed column, and the next reader sees what the
@@ -101,7 +126,8 @@ FROM releases_picked CROSS JOIN UNNEST(picked::JSON[]) WITH ORDINALITY AS t(rele
 - Start at `LIMIT 3`; widen when the shape is right.
 - Whole-document readers (`html_to_duck_blocks`, `html_extract_links`, `read_html`, `jsonata` over the whole body)
   before any selector; a hand-written xpath/css/jsonpath per column means the shape is not understood yet.
-- Many URLs: one row per URL, self-dispatched, one literal `read_text('curl … |')` statement per row, landed in
-  `lake.agents.ext_fetch` (the crawl skill's `references/crawl_rows.sql`), with its limits stated.
+- Many URLs: one literal `web_page(<quoted URL>)` call per source row through the tested molecule above.
+  Durable crawls land its full response in `lake.agents.ext_fetch`; interactive navigation may keep it
+  unmaterialized. State the crawl limits in either case. ShellFS curl is the alternative transport.
 - A missing extension is `INSTALL x FROM community; LOAD x;`, then continue. `jsonata` and `quickjs` are
   installed on dev but not loaded at boot.

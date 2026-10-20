@@ -1,8 +1,6 @@
--- agents.ext_catalog: one row per community extension, from the newest fetches in lake.agents.ext_fetch: yml
--- (description.yml), page (the community page as HTML), functions (its tables) and readme (the GitHub README as
--- markdown). Agents query it; nobody fetches docs. The refresh fetches, with quackapi_fetch, every page, description.yml
--- and repo the list page names that has no fetch from the last day. Both statements are self-dispatched at boot, so a
--- lake failure is a failed receipt and dev keeps serving; the refresh also runs daily.
+-- agents.ext_catalog joins latest successful description.yml, HTML tables and GitHub README fetches.
+-- Refresh missing/day-old pages, descriptions and repositories daily.
+-- Both boot statements self-dispatch so a lake failure stays a receipt and dev keeps serving.
 CREATE SCHEMA IF NOT EXISTS agents;
 WITH program AS (
     SELECT 'view' AS step, $v$CREATE OR REPLACE VIEW agents.ext_catalog AS
@@ -24,12 +22,14 @@ FROM yml FULL JOIN page USING (extension_name) LEFT JOIN readme ON ltrim(url_par
     UNION ALL
     SELECT 'refresh', $r$INSERT INTO lake.agents.ext_fetch BY NAME
 WITH links AS (
-    SELECT l.*, url_resolve('https://duckdb.org/community_extensions/list_of_extensions', l.href) AS url,
-           urlpattern_extract('https://duckdb.org/community_extensions/extensions/:name.html', url, 'name') AS name
-    FROM (SELECT unnest(links) AS l FROM web_page('https://duckdb.org/community_extensions/list_of_extensions') WHERE status = 200)
+    SELECT l.*, 'https://duckdb.org/community_extensions/extensions/:name.html' AS page_pattern,
+           'https://raw.githubusercontent.com/duckdb/community-extensions/main/extensions/{{ name }}/description.yml' AS description_template,
+           urlpattern_extract(page_pattern, l.url, 'name') AS name
+    FROM web_page('https://duckdb.org/community_extensions/list_of_extensions') AS p CROSS JOIN UNNEST(p.links) AS t(l)
+    WHERE p.status = 200
 ), urls AS (
-    SELECT url FROM links WHERE name IS NOT NULL
-    UNION ALL SELECT tera_render('https://raw.githubusercontent.com/duckdb/community-extensions/main/extensions/{{ name }}/description.yml', l::JSON, autoescape := false) FROM links AS l WHERE name IS NOT NULL
+    SELECT unnest([url, tera_render(description_template, l::JSON, autoescape := false)]) AS url
+    FROM links AS l WHERE name IS NOT NULL
     UNION ALL SELECT url FROM links WHERE text = 'GitHub'
 )
 SELECT url, now() AS fetched_at, to_json(quackapi_fetch(url)) AS response

@@ -14,23 +14,24 @@ CREATE OR REPLACE MACRO selfdispatch(sql) AS
 
 -- web_page: one full HTTP receipt and whole-document webbed columns; callers choose what to project.
 CREATE OR REPLACE MACRO web_page(page_url) AS TABLE
-WITH url AS (
+WITH target AS (
     SELECT page_url AS url, url_parse(page_url) AS url_parts
 ), fetched AS (
-    SELECT *, quackapi_fetch(url) AS response FROM url
-), data AS (
+    SELECT *, quackapi_fetch(url) AS response FROM target
+), typed AS (
     SELECT *, response.*, coalesce(response.headers['Content-Type'], response.headers['content-type']) AS content_type,
            CASE WHEN contains(lower(content_type), 'html') THEN response.body::HTML END AS html FROM fetched
 )
 SELECT *, html_to_duck_blocks(html) AS duckblocks,
-       html_extract_links(html) AS links, html_extract_images(html) AS images,
+       html_extract_links(html) AS raw_links,
+       list_transform(raw_links, link -> struct_insert(link, url := url_resolve(url, link.href))) AS links,
+       html_extract_images(html) AS images,
        html_extract_tables_json(html) AS tables,
        parse_html(html::VARCHAR) AS dom,
        xml_extract_attributes(dom, '//*') AS attributes,
        xml_to_json(dom)::JSON AS document,
-       list_distinct(list_concat(extract_urls(body),
-           list_transform(list_filter(attributes, a -> a.attribute_name IN ('href', 'src', 'action', 'poster', 'data-src')),
-                          a -> url_resolve(url, a.attribute_value)))) AS urls,
-       list_transform(list_filter(attributes, a -> a.element_name = 'iframe' AND a.attribute_name = 'src'),
-                      a -> url_resolve(url, a.attribute_value)) AS frames
-FROM data;
+       list_transform(list_filter(attributes, a -> a.attribute_name IN ('href', 'src', 'action', 'poster', 'data-src')),
+                      a -> {element: a.element_name, url: url_resolve(url, a.attribute_value)}) AS resolved,
+       list_distinct(list_concat(extract_urls(body), list_transform(resolved, r -> r.url))) AS urls,
+       list_transform(list_filter(resolved, r -> r.element = 'iframe'), r -> r.url) AS frames
+FROM typed;
