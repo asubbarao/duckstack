@@ -1,11 +1,11 @@
 ---
 name: agent-door
 description: >
-  How an agent reaches the dev DuckDB: the dev MCP (query, execute), HTTP /sql, or Quack.
+  How an agent reaches the dev DuckDB: the dev MCP (query, query_full, execute), HTTP /sql, or Quack.
   Use before the first statement that touches dev, when a tool or port in your notes no longer answers,
   or when an agent without MCP needs to run SQL on dev.
 argument-hint: "[mcp | http | quack]"
-allowed-tools: mcp__dev__query, mcp__dev__execute
+allowed-tools: mcp__dev__query, mcp__dev__query_full, mcp__dev__execute
 ---
 
 # agent-door
@@ -15,9 +15,9 @@ restarts it (every MCP session drops); `~/.duck/dev.duckdb` is a rebuildable out
 
 | door | how | runs |
 |---|---|---|
-| `dev` MCP → `query(sql)` at `http://localhost:9495/mcp/` (quackapi serves duckdb_mcp; no separate port) | tool call | read-only SQL; no row cap, so write your own LIMIT. Refuses writes and file-access functions. |
-| `dev` MCP → `execute(sql)` | tool call | any statement: DDL, DML, LOAD, ATTACH, SET, file readers, shellfs (`read_lines('cmd |')`). Per-row table functions: build the statements as rows and run each through `execute`. |
-| `dev` MCP → `describe`, `list_tables`, `database_info`, `export` | tool call | duckdb_mcp built-ins. |
+| `dev` MCP → `query(sql)` at `http://localhost:9495/mcp/` | tool call | one SELECT, readers included; up to 50 complete rows / 8 KiB of result text, with explicit truncation metadata. Use ORDER BY for a meaningful prefix. |
+| `dev` MCP → `query_full(sql)` | tool call | SQL unchanged, complete result without preview caps; use when the result size is understood. |
+| `dev` MCP → `execute(statement)` | tool call | SQL unchanged: COPY, DDL, DML, LOAD, readers and ShellFS. COPY writes every source row. |
 | HTTP `/sql` | POST JSON `{"sql": "…"}` to `http://127.0.0.1:9495/sql` | any SQL, run untouched; a parse or bind error is HTTP 422 with the message. |
 | quack | `quack_query('quack:localhost:9494', $q$<SQL>$q$, token := getenv('QUACK_TOKEN'))` from a `:memory:` DuckDB with `LOAD quack` | any SQL |
 | HTTP `/inbox` | POST any JSON to `http://127.0.0.1:9495/inbox` | lands as a row in `quackapi_jobs` (queue `inbox`, `payload` JSON); 201 with the id |

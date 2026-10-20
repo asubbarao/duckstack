@@ -5,11 +5,13 @@ on:
     branches: [main]
     paths:
       - 'server/**'
+      - 'tests/test_mcp_preview.py'
       - '.github/workflows/server-bootstrap.yml'
   push:
     branches: [main]
     paths:
       - 'server/**'
+      - 'tests/test_mcp_preview.py'
       - '.github/workflows/server-bootstrap.yml'
   workflow_dispatch:
 
@@ -70,6 +72,9 @@ jobs:
             --data-raw '{"sql":"SELECT 42 AS answer"}' \
             "http://127.0.0.1:9495/sql")"
           test "$answer" = '[{"answer":42}]'
+
+          DUCKSTACK_DEV_URL=http://127.0.0.1:9495 \
+            uv run --no-project --with pytest python -m pytest tests/test_mcp_preview.py -q
 
       - name: Confirm a broken table macro fails startup
         run: |

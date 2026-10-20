@@ -1,22 +1,33 @@
 ---
 name: query
 description: >
-  Run SQL on dev through its MCP: `query` for a SELECT, `execute` for anything else. If the MCP is
+  Run SQL on dev through its MCP: `query` for a bounded SELECT preview, `query_full` for complete
+  results, `execute` for operations. If the MCP is
   missing from the harness, POST the same SQL to dev's /sql or use quack_query. Explore with live
   queries; save a .sql once its shape is proven.
 argument-hint: <SQL | question | path.sql>
-allowed-tools: mcp__dev__query, mcp__dev__execute
+allowed-tools: mcp__dev__query, mcp__dev__query_full, mcp__dev__execute
 ---
 
 # Query dev
 
 Read /duckstack:agent-door for the doors and /duckstack:duck for the SQL rules.
 
-- `query(sql)`: a SELECT. No row cap, so write your own `LIMIT` while shaping. It refuses writes and
-  file readers.
+- `query(sql)`: one SELECT, including file readers and ShellFS. Returns an object with `rows`,
+  `returned_rows`, `truncated`, `reason`, `row_limit: 50` and `byte_limit: 8192`. The complete
+  result text fits 8 KiB; 256 bytes are reserved for metadata. Rows are never cut inside a value.
+  The first overflow stops the preview; `reason` is `row_limit`, `byte_limit` or `oversized_row`.
+  An empty preview with `truncated: true` means data was omitted, not that the query had no rows.
+- `query_full(sql)`: runs the posted SQL unchanged and returns all rows without preview limits.
+  Use it deliberately when the result size is understood. Service timeout/transport caps still apply.
 - `execute(statement)`: one statement of any kind: DDL, DML, COPY, LOAD, ATTACH, SET, file readers,
   shellfs (`read_lines('cmd |')`). One statement per call; a dependent sequence is several calls in
   order.
+- Preview preserves the caller's ordering and inner SQL limit; it adds no timestamp ordering.
+  Use `ORDER BY` for a meaningful prefix. A SQL limit above 50 still receives a preview; use
+  `query_full` for the complete result. A preview limit does not bound aggregate input or memory.
+- Use `execute` for `COPY`; the entire source is written. Neither `execute`, `query_full` nor
+  HTTP `/sql` has preview limits. Errors remain errors, rather than empty previews.
 - Without the MCP: `POST http://127.0.0.1:9495/sql` with `{"sql": "..."}`; it runs the SQL
   untouched and a parse or bind error is a 422 with the message. Or `quack_query('quack:localhost:9494',
   $$...$$, token := getenv('QUACK_TOKEN'))` from a `:memory:` client. Same database either way; never
