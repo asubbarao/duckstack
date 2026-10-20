@@ -289,8 +289,9 @@ WITH primary_checks AS (SELECT unnest([
  'predicate_sql': $p$list_contains(sql_statement_kinds, 'create_table') AND list_contains(sql_sources, 'file')$p$,
  'message': 'Propose the new TABLE (name, columns, why a view or a direct extension call cannot do it) and create it only on Alok''s yes; derive state as views.',
  'action': 'block', 'hook_event': 'PreToolUse', 'hook_decision': 'ask', 'replaces_hooks': ['H6']},
+-- A PIVOT with no IN list parses as CREATE OR REPLACE TEMP TYPE "__pivot_enum_…" (sitting_duck, 2026-10-20); a type is not a temp object.
 {'check_id': 'sql_temp_object', 'rule_id': '01a14840-dca3-7314-b686-2daf8e9f115d', 'tools': ['@sql'],
- 'predicate_sql': $p$len(list_filter(sql_heads, h -> h[1] = 'CREATE' AND list_has_any(h, ['TEMP', 'TEMPORARY']))) > 0$p$,
+ 'predicate_sql': $p$len(list_filter(sql_heads, h -> h[1] = 'CREATE' AND list_has_any(h, ['TEMP', 'TEMPORARY']) AND NOT list_contains(h, 'TYPE'))) > 0$p$,
  'message': 'No temp tables or views: start as a bare SELECT, rerun until right, then CREATE OR REPLACE VIEW / TABLE AS or a .sql file.',
  'action': 'block', 'hook_event': 'PreToolUse', 'hook_decision': 'deny', 'replaces_hooks': []::VARCHAR[]},
 {'check_id': 'sql_drop_table', 'rule_id': '01a14840-dca3-7314-b686-2daf8e9f115d', 'tools': ['@sql'],
