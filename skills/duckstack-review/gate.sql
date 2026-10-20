@@ -13,14 +13,25 @@ LOAD markdown;
 LOAD tera;
 CREATE OR REPLACE VIEW pr_changes AS
 SELECT file_path, status FROM git_diff_tree(getenv('PR_REPO'), getenv('PR_BASE'), getenv('PR_HEAD'));
--- Each changed file after the PR (side 'head') and, when modified, as it is on main (side 'base'), each read once.
+-- Each changed file after the PR (side 'head') and, when modified, as it is on main (side 'base'): one git_read per
+-- file and side, self-dispatched; the row's keys ride the GROUP BY.
 CREATE OR REPLACE VIEW pr_versions AS
-SELECT pr_changes.*, version.side, blob.text AS content
-FROM pr_changes
-CROSS JOIN UNNEST([{'side': 'head', 'sha': getenv('PR_HEAD'), 'wanted': pr_changes.status <> 'deleted'},
-                   {'side': 'base', 'sha': getenv('PR_BASE'), 'wanted': pr_changes.status = 'modified'}]) AS v(version)
-CROSS JOIN LATERAL git_read_each(git_uri(getenv('PR_REPO'), pr_changes.file_path, version.sha)) AS blob
-WHERE version.wanted AND blob.is_text;
+WITH wanted AS (
+    SELECT pr_changes.*, version.side, quote_literal(git_uri(getenv('PR_REPO'), pr_changes.file_path, version.sha)) AS uri_literal
+    FROM pr_changes
+    CROSS JOIN UNNEST([{'side': 'head', 'sha': getenv('PR_HEAD'), 'wanted': pr_changes.status <> 'deleted'},
+                       {'side': 'base', 'sha': getenv('PR_BASE'), 'wanted': pr_changes.status = 'modified'}]) AS v(version)
+    WHERE version.wanted
+), read_dispatch AS (
+    SELECT file_path, status, side, array_agg(selfdispatch(tera_render($t$
+        SELECT is_text, text FROM git_read({{ uri_literal }})
+    $t$, wanted::JSON, autoescape := false))) AS receipts
+    FROM wanted GROUP BY ALL
+), blobs AS (
+    SELECT file_path, status, side, (e.row->>'is_text')::BOOLEAN AS is_text, e.row->>'text' AS content
+    FROM read_dispatch CROSS JOIN UNNEST(receipts) AS r(receipt) CROSS JOIN UNNEST(TRY_CAST(receipt.body AS JSON[])) AS e(row)
+)
+SELECT file_path, status, side, content FROM blobs WHERE is_text;
 CREATE OR REPLACE VIEW pr_files AS
 SELECT * EXCLUDE (side) FROM pr_versions WHERE side = 'head';
 
