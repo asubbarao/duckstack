@@ -1,6 +1,6 @@
 ---
 name: self-dispatch
-description: Generate readable SQL from rows, execute native JSON self-posts, and unnest receipts. Three templates in templates/: shell (any reader, batch sources, jq on/off), sql, and bash_loop_fallback_method.
+description: Generate readable SQL from rows, execute native JSON self-posts, and unnest receipts. Four templates in templates/: shell (any reader, batch sources, jq on/off), pipeline (one command as words), sql, and bash_loop_fallback_method.
 ---
 
 # Self-dispatch
@@ -25,6 +25,7 @@ Pick the template by what the statement does. `templates/canonical.sql` has a ve
 | template | for | row columns |
 |---|---|---|
 | `shell.tera` | commands or files through `read_csv`, `read_json`, `read_text` or `read_blob`; many sources per statement; curl, gh, osascript and git are commands | reader, sources (list: a command ends with ` \|`, a file is its path), options. jq is a boolean in the first CTE that appends only `\| jq -c '.[]'` |
+| `pipeline.tera` | one command or pipeline written as words, so no `concat_ws` builds the line; `'\|'` is a word, and a flag with its value may be one word (`'--max-time 30'`) | reader, words (list), options |
 | `sql.tera` | in the database: SELECT, DDL, DML, PRAGMA, names from information_schema | table_schema, table_name, … |
 | `bash_loop_fallback_method.tera` | FALLBACK: a bash loop when no row source exists; the audit lists every use | items, body |
 

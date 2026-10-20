@@ -197,8 +197,8 @@ WITH page AS (
     SELECT url, parse_html(arg_max(response ->> 'body', fetched_at)) AS html
     FROM lake.agents.ext_fetch WHERE url = 'https://<site>/<page>' GROUP BY url
 ), comment_tables AS (
-    SELECT url, c AS fragment, html_extract_table_rows(c) AS table_rows
-    FROM page CROSS JOIN UNNEST(html_extract_text(html, '//comment()')) AS t(c)
+    SELECT url, comment_html, html_extract_table_rows(comment_html) AS table_rows
+    FROM page CROSS JOIN UNNEST(html_extract_text(html, '//comment()')) AS t(comment_html)
 )
 SELECT * FROM comment_tables WHERE len(table_rows) > 0;
 ```
