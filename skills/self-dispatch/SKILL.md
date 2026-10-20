@@ -5,19 +5,28 @@ description: Generate readable SQL from rows, execute native JSON self-posts, an
 
 # Self-dispatch
 
-Every self-dispatch is the same three CTEs:
+An **atom is a control relation**: the original source columns plus a readable `executable_sql`
+column. Selecting it shows the programs without executing them. This is the ordinary control-table
+pattern; the generated program may use SQL, a ShellFS command reader or a network request.
+The caller owns every filter, argument and decision. Tera only substitutes those columns.
+
+Keep the source columns and executable SQL when collecting `array_agg(selfdispatch(executable_sql)) AS arr`.
+The molecule exposes its results with `CROSS JOIN UNNEST(arr)`, beside the source row. Further atoms
+read those results, so the whole dependency graph can stay one query. No encoding is needed.
+Preparation can take several CTEs; a fixed CTE count is not the contract.
+
+One small example:
 
 ```sql
-WITH c AS (                         -- 1. declare everything up front: rows, the command as text,
-    SELECT ...                      --    options as text, values prequoted (quote_literal)
-), rendered AS (                    -- 2. one statement per row; Tera only fills holes
-    SELECT tera_render('shell.tera', c::JSON, autoescape := false,
-                       template_path := '/Users/aloksubbarao/.duck/deploy/skills/self-dispatch/templates/*.tera') AS sql
-    FROM c
-), dispatched AS (                  -- 3. post them; the receipts come back as rows
-    SELECT array_agg(selfdispatch(sql)) AS receipts FROM rendered
+WITH table_statements AS (
+    SELECT table_schema, table_name,
+           concat('SELECT * FROM information_schema.columns WHERE table_schema = ',
+                  quote_literal(table_schema), ' AND table_name = ', quote_literal(table_name)) AS executable_sql
+    FROM information_schema.tables WHERE table_catalog = current_database()
+), table_posts AS (
+    SELECT *, array_agg(selfdispatch(executable_sql)) AS arr FROM table_statements GROUP BY ALL
 )
-SELECT receipt.* FROM dispatched CROSS JOIN UNNEST(receipts) AS t(receipt);
+SELECT source.* EXCLUDE(arr), receipt.* FROM table_posts AS source CROSS JOIN UNNEST(arr) AS t(receipt);
 ```
 
 Pick the template by what the statement does. `templates/canonical.sql` has a verified example of each.

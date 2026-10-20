@@ -21,6 +21,19 @@ done wrong. Keep the read bounded: by time window or by session files, never a f
 `agent.stream` (one took dev down). The checks below are that catalogue as of 2026-10-17,
 ranked by how often he raised each.
 
+The owner's 2026-10-19 clarification is the contract: an atom is the ordinary control-table
+pattern, carrying source columns and readable executable SQL. Keep those columns beside the
+array of self-posts; the molecule unnests it on the same row. A CTE that constructs executable
+SQL is not a finding merely for doing that. Several preparation CTEs are fine; judge whether
+they improve the readable program, not whether they meet a fixed count. Tera only substitutes.
+SQL owns the filters, arguments and decisions. Simple CLI JSON reshaping may use jq; shell
+loops, FIFO plumbing and encoding workarounds do not replace source relations.
+
+Preserve requested functionality and columns. The approved web_page primitive deliberately
+offers whole-document parsed columns; callers choose their projections. Do not propose deleting
+those fields merely to shorten the macro. Route generation as an inspectable control relation
+is also an explicitly approved example. Show concrete before/after SQL for each actual finding.
+
 This is a style and efficiency review. Correctness bugs go to `/code-review`; here, a query
 that works but is ugly, slow or unreusable is a finding. The contract is
 [SQL-MANIFESTO.md](../../SQL-MANIFESTO.md); read it first.

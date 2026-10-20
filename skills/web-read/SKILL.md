@@ -13,7 +13,7 @@ first (the crawl skill), and is parsed from there.
 Raw HTML never goes into context: an 82,892-character docs page is 652 typed blocks; read those.
 
 Use the approved `web_page(url)` table macro in `server/macros.sql` for HTTP pages. It preserves
-the complete curl response (final headers, transfer metadata, raw bytes, decoded body, status, error and final URL) and adds whole-document webbed
+the native HTTP response (headers, body, status, error and final URL) and adds whole-document webbed
 columns: `html`, `duckblocks`, `links`, `images`, `tables`, `dom`, `attributes`, `document`,
 `urls`, and `frames`. Select the useful columns before returning results to an agent:
 
@@ -28,17 +28,24 @@ are discovered with netquack; remote scripts are never executed.
 Verified 2026-10-19 on NFLBite and the extension index; connection refusal remains a row with
 status 0, an error and empty link lists. HTTP 403 remains a row with status 403.
 
-The macro runs one ShellFS curl request into `read_json`, which infers the transfer structure.
-There is no footer splitting or JSON-path ladder. A temporary FIFO streams the body to a bounded
-base64 encoder while curl emits its own metadata JSON. The owned reader finishes before those
-records are merged; the FIFO is removed on exit. DuckDB decodes the original bytes, preserving
-Unicode. Header and response columns remain JSON so their types stay stable across sites.
-Limits: 30 seconds, eight redirects, 16 MiB transfer and decoded HTML limits, 64 MiB JSON reader
-limit; no retries, cache, delay or link following. Oversized decoded bodies remain status-0 error
-rows with a clearly labelled truncated raw prefix and are not parsed or followed. The final URL
-is the base for relative links; the requested URL remains alongside it.
-Verified on 2026-10-19: one HTTP request per macro call, exact 4 MB Unicode bytes, compressed
-20 MB response rejected, prepared URL parameters, redirects and refused connections.
+The macro uses one native `quackapi_fetch` response, then webbed. No shell program or encoding
+sits between the HTTP response and its typed columns. The requested URL stays alongside the
+effective URL, which is the base for relative links.
+
+The native implementation requires the QuackAPI effective-URL and bounded-response update
+tracked in [quackapi PR 52](https://github.com/asubbarao/quackapi/pull/52). Its 1.5.6 artifact was
+tested with this complete macro: TopStreamer redirected to `/nfl/?league=nfl`, nine links were
+parsed and `ad1/` resolved correctly; connection refusal remained a status-0 row with an error.
+This is isolated-artifact evidence, not a claim that shared dev has deployed that version.
+Limits: 30-second timeout and 16 MiB response bound; no retries, extra workers, cache, delay or
+link following. A compatible signed extension must be deployed before replacing dev's macro.
+
+A basic fetch and parse already works on shared dev:
+
+```sql
+SELECT status, error, html_extract_links(body::HTML) AS links
+FROM quackapi_fetch('https://www.nflbite.is/');
+```
 
 ```sql
 -- Existing dev workers; batch 2; no delay, cache, retries or link following; depth 0, limit 2.
@@ -50,11 +57,12 @@ WITH targets AS (
 ), rendered AS (
     SELECT *, tera_render(statement, targets::JSON, autoescape := false) AS sql FROM targets
 ), posted AS (
-    SELECT * EXCLUDE(sql), array_agg(selfdispatch(sql)) AS receipts FROM rendered GROUP BY ALL
+    SELECT *, array_agg(selfdispatch(sql)) AS receipts FROM rendered GROUP BY ALL
 )
-SELECT url, receipt.status, receipt.error, receipt.body::JSON ->> '$[*].status' AS http_status,
-       len(receipt.body::JSON -> '$[*].links[*]') AS links
-FROM posted CROSS JOIN UNNEST(receipts) AS t(receipt);
+SELECT source.url, source.sql, receipt.status AS dispatch_status, receipt.error AS dispatch_error,
+       page ->> 'status' AS http_status, page -> 'links' AS links
+FROM posted AS source CROSS JOIN UNNEST(receipts) AS t(receipt)
+CROSS JOIN UNNEST(coalesce(try_cast(receipt.body AS JSON[]), [NULL])) AS p(page);
 ```
 
 Verified 2026-10-19: both dispatch and HTTP statuses were 200; link lists contained 81 and 551
@@ -138,6 +146,6 @@ FROM releases_picked CROSS JOIN UNNEST(picked::JSON[]) WITH ORDINALITY AS t(rele
   before any selector; a hand-written xpath/css/jsonpath per column means the shape is not understood yet.
 - Many URLs: one literal `web_page(<quoted URL>)` call per source row through the tested molecule above.
   Durable crawls land its full response in `lake.agents.ext_fetch`; interactive navigation may keep it
-  unmaterialized. State the crawl limits in either case. The shared macro owns the curl transport.
+  unmaterialized. State the crawl limits in either case. The shared macro composes the native HTTP response with webbed.
 - A missing extension is `INSTALL x FROM community; LOAD x;`, then continue. `jsonata` and `quickjs` are
   installed on dev but not loaded at boot.

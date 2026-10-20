@@ -65,14 +65,21 @@ quote-building. Building SQL text from character codes, `printf` or `format` sta
 
 ## 4. Self-dispatch is visible
 
+The atom is an ordinary control relation: original source columns plus readable executable SQL.
+Selecting it shows the generated programs without executing them. SQL owns every decision;
+Tera only removes construction boilerplate. Keep those columns when collecting posts, then
+unnest their array beside the same source row. Several preparation CTEs are fine; a fixed CTE
+count is not the contract. Each subsequent atom reads the preceding results, so the dependency
+graph can stay one query. SQL, ShellFS readers and network calls fit the same pattern without encoding.
+
 Execution is always the same lines, in the query, never hidden in a bash loop, a template
 or a macro tower:
 
 ```sql
 dispatched AS (
-    SELECT array_agg(selfdispatch(sql)) AS receipts FROM rendered
+    SELECT *, array_agg(selfdispatch(sql)) AS receipts FROM rendered GROUP BY ALL
 )
-SELECT r.* FROM dispatched CROSS JOIN UNNEST(receipts) AS t(r)
+SELECT source.* EXCLUDE(receipts), r.* FROM dispatched AS source CROSS JOIN UNNEST(receipts) AS t(r)
 ```
 
 A single command still goes through `array_agg` and `CROSS JOIN UNNEST` of a one-element

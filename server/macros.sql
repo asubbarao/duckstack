@@ -12,41 +12,17 @@ CREATE OR REPLACE MACRO selfdispatch(sql) AS
               'error': coalesce(p.error, CASE WHEN p.status IS DISTINCT FROM 200
                                               THEN coalesce(try_cast(p.body AS JSON) ->> 'detail', p.body::VARCHAR) END)})[1];
 
--- web_page: one structured curl receipt and whole-document webbed columns; callers choose what to project.
+-- web_page: one native HTTP response; webbed parses only HTML, and callers choose columns.
 CREATE OR REPLACE MACRO web_page(page_url) AS TABLE
 WITH fetched AS (
-    SELECT page_url AS requested_url, 16777216 AS max_body_bytes, f::JSON AS full_response, f.body_base64::VARCHAR AS body_base64,
-           f.headers::JSON AS headers, f.transfer AS transfer
-    FROM read_json(tera_render($curl$bash <<'WEB_REQUEST'
-work=$(mktemp -d)
-trap 'rm -f "$work/body"; rmdir "$work"' EXIT
-mkfifo "$work/body"
-{
-  exec 4<> "$work/body"
-  { { head -c 16777217; cat > /dev/null; } < "$work/body" | base64 | tr -d '\n' | jq -Rs '{body_base64: .}' >&3; } 4>&- &
-  body_pid=$!
-  metadata=$(curl -sL --compressed --max-time 30 --max-redirs 8 --max-filesize 16777216 --proto '=http,https' --proto-redir '=http,https' --output "$work/body" --config - --write-out '{"transfer":%{json},"headers":%{header_json}}\n' <<'CURL_REQUEST'
-url = {{ url | json_encode() }}
-CURL_REQUEST
-  )
-  exec 4>&-
-  wait "$body_pid"
-  printf '%s\n' "$metadata"
-} 3>&1 | jq -s add
-WEB_REQUEST
-|$curl$, {url: CASE WHEN starts_with(page_url, 'https://') THEN page_url WHEN starts_with(page_url, 'http://') THEN page_url ELSE '' END}::JSON, autoescape := false), maximum_object_size := 67108864) AS f
-), bytes AS (
-    SELECT *, from_base64(body_base64) AS raw_body FROM fetched
+    SELECT page_url AS requested_url, fetched AS response
+    FROM quackapi_fetch(page_url, timeout_ms := 30000, max_response_bytes := 16777216) AS fetched
 ), typed AS (
-    SELECT * EXCLUDE(transfer), transfer::JSON AS metadata,
-           CASE WHEN octet_length(raw_body) <= max_body_bytes THEN try(decode(raw_body)) END AS body,
-           coalesce(nullif(transfer.url_effective::VARCHAR, ''), requested_url) AS url, url_parse(url) AS url_parts,
-           transfer.content_type::VARCHAR AS content_type, coalesce(nullif(transfer.errormsg::VARCHAR, ''), CASE WHEN octet_length(raw_body) > max_body_bytes THEN 'Decoded body exceeds 16 MiB; raw_body retains a truncated prefix'
-                WHEN body IS NULL THEN 'Body is not UTF-8; raw_body retains its bytes' END) AS error,
-           CASE WHEN error IS NULL THEN transfer.response_code::INTEGER ELSE 0 END AS status,
-           CASE WHEN contains(lower(content_type), 'html') THEN body::HTML END AS html,
-           json_merge_patch(full_response, json_object('body', body, 'status', status, 'error', error, 'url', url, 'requested_url', requested_url)) AS response
-    FROM bytes
+    SELECT *, response.*, response AS full_response, encode(response.body) AS raw_body,
+           coalesce(response.url_effective, requested_url) AS url, url_parse(url) AS url_parts,
+           list_filter(map_entries(response.headers), h -> lower(h.key) = 'content-type')[1].value AS content_type,
+           CASE WHEN contains(lower(content_type), 'html') THEN response.body::HTML END AS html
+    FROM fetched
 )
 SELECT *, coalesce(html_to_duck_blocks(html), []) AS duckblocks,
        coalesce(html_extract_links(html), []) AS raw_links,

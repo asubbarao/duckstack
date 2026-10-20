@@ -7,6 +7,12 @@ writing SQL on this machine.
 
 ## Self-dispatch
 
+**Atom = control relation** (10-19). Source columns plus a readable executable SQL column;
+selecting the atom shows the programs before execution. Preserve those columns beside the
+array of self-posts. The molecule unnests that array on the source row. SQL owns the logic,
+Tera only substitutes. Preparation may use several CTEs; there is no fixed CTE count.
+Generated SQL can contain ShellFS commands or network calls. No encoding is needed.
+
 1. **Self-dispatch is unnesting an array of self-posts.** Build the statements in a CTE; the next CTE is
    `array_agg(selfdispatch(sql)) AS arr`; then `FROM prior CROSS JOIN UNNEST(arr)`. Always, even for one
    statement. "you never send a fucking post by itself … it's in an array that you un nested it's two CTE
