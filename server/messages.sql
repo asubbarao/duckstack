@@ -4,6 +4,9 @@
 -- and branch, its block_keys, and prompts, every typed prompt as its whole stream.blocks row in order, each with
 -- is_near_repeat (within rapidfuzz_ratio 90 of the one before); prompt_count, first_prompt and last_prompt skip
 -- those. Select the columns a reply needs.
+-- agent.tool_clusters: one row per run of tool calls in one transcript file with no gap over a minute, deduped by
+-- tool_use_id: tools, kinds (Bash verbs or the tool name), every full command, result bytes, took. A long run of
+-- small calls is a candidate for one query. Filter with WHERE (started, session_id, n_bash, kinds).
 WITH messages_step AS (
     SELECT array_agg(selfdispatch($m$
 CREATE OR REPLACE VIEW agent.messages AS
@@ -37,7 +40,41 @@ SELECT a.*, p.prompts, len(p.distinct_prompts) AS prompt_count,
 FROM activity a LEFT JOIN prompts p USING (session_id)
 $s$)) AS receipts
     FROM messages_step CROSS JOIN UNNEST(receipts) AS t(r) WHERE r.status = 200
+), tool_clusters_step AS (
+    SELECT array_agg(selfdispatch($c$
+CREATE OR REPLACE VIEW agent.tool_clusters AS
+WITH tool_calls AS (
+    SELECT tool_use_id, source, session_id, file_path, is_agent, model, tool_name, tool_command, min(timestamp) AS called_at
+    FROM stream.blocks WHERE block_type = 'tool_use' AND tool_use_id IS NOT NULL
+    GROUP BY ALL
+), tool_results AS (
+    SELECT tool_use_id, max(content_bytes) AS result_bytes, max(timestamp) AS result_at
+    FROM stream.blocks WHERE block_type = 'tool_result' GROUP BY ALL
+), calls AS (
+    SELECT c.*, r.result_bytes, r.result_at,
+           CASE WHEN c.tool_name = 'Bash'
+                THEN list_intersect(string_split(replace(c.tool_command, E'\n', ' '), ' '),
+                     ['git','gh','uv','npx','npm','ls','podman','cat','perl','duckdb','pytest','rm','printf','echo','curl',
+                      'python3','jq','find','grep','sed','awk','head','tail','mkdir','cp','mv','osascript'])
+                ELSE [c.tool_name] END AS kinds,
+           coalesce(c.called_at - lag(c.called_at) OVER (PARTITION BY c.file_path ORDER BY c.called_at) > INTERVAL 1 MINUTE, true)::INT AS starts_cluster
+    FROM tool_calls c LEFT JOIN tool_results r USING (tool_use_id)
+), clustered AS (
+    SELECT *, sum(starts_cluster) OVER (PARTITION BY file_path ORDER BY called_at) AS cluster_no FROM calls
+)
+SELECT source, session_id, file_path, is_agent, cluster_no,
+       min(called_at) AS started, max(coalesce(result_at, called_at)) AS ended, ended - started AS took,
+       array_agg(tool_name ORDER BY called_at) AS tools, len(tools) AS n_calls,
+       len(list_filter(tools, t -> t = 'Bash')) AS n_bash,
+       list_distinct(flatten(array_agg(kinds))) AS kinds,
+       array_agg(tool_command ORDER BY called_at) AS commands,
+       sum(result_bytes) AS result_bytes, list_distinct(array_agg(model)) AS models
+FROM clustered GROUP BY ALL
+$c$)) AS receipts
+    FROM messages_step CROSS JOIN UNNEST(receipts) AS t(r) WHERE r.status = 200
 )
 SELECT r.* FROM messages_step CROSS JOIN UNNEST(receipts) AS t(r)
 UNION ALL
-SELECT r.* FROM sessions_step CROSS JOIN UNNEST(receipts) AS t(r);
+SELECT r.* FROM sessions_step CROSS JOIN UNNEST(receipts) AS t(r)
+UNION ALL
+SELECT r.* FROM tool_clusters_step CROSS JOIN UNNEST(receipts) AS t(r);
