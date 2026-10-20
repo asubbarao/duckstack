@@ -115,7 +115,7 @@ jar gave `x=1` and `/cookies` echoed `{"x": "1"}`).
   session that already lives in Chrome. It is not needed just because a cookie is HttpOnly.
 - **A form that needs a CSRF token:** GET the form, read the hidden `<input>` value and POST it
   back with the jar. `html_to_duck_blocks` drops `<input>`. The attribute XPath reads it:
-  `html_extract_text(parse_html(body), '//input[@name=''authenticity_token'']/@value')`. Observed
+  `html_extract_text(parse_html(body), $x$//input[@name='authenticity_token']/@value$x$)`. Observed
   on github.com/login (2026-10-20): it returned an 88-char token. The POST back has not been tested.
 
 ## Step 2 — Look before parsing
@@ -145,12 +145,18 @@ Never return a page body to the conversation: lengths, heads, counts, and bounde
 
 ```sql
 WITH page AS (
-    SELECT parse_html(content) AS html FROM read_text('https://<site>/<page>')
+    SELECT url, parse_html(arg_max(response ->> 'body', fetched_at)) AS html
+    FROM lake.agents.ext_fetch WHERE url = 'https://<site>/<page>' GROUP BY url
 ), document_xpaths AS (
-    SELECT html, list_distinct(list_transform(xml_extract_attributes(html, '//*'), a -> a.element_path)) AS xpaths FROM page
+    SELECT url, html, list_distinct(list_transform(xml_extract_attributes(html, '//*'), a -> a.element_path)) AS xpaths
+    FROM page
 )
-SELECT xpath, html_extract_text(html, xpath) AS texts FROM document_xpaths CROSS JOIN UNNEST(xpaths) AS t(xpath);
+SELECT url, xpath, html_extract_text(html, xpath) AS texts
+FROM document_xpaths CROSS JOIN UNNEST(xpaths) AS t(xpath)
+WHERE starts_with(xpath, '/html/body/div/div/header/div/div/nav/ul/li/div/a');
 ```
+
+   Without the WHERE, every distinct path on the page is a row; look at them, then filter.
 
    What was observed on 2026-10-20, not a general rule:
 
@@ -175,8 +181,20 @@ WHERE b.kind = 'block' ORDER BY n;
 
 URLs are strings: `url_resolve`, `url_origin`, `urlpattern_test`, `starts_with`, not `LIKE`, not regex.
 
-Some sites ship tables inside HTML comments (`<!-- <table>… -->`), so every rung above misses them.
-`string_split(body, '<!--')` and parse each fragment as HTML.
+Some sites ship tables inside HTML comments (`<!-- <table>… -->`), so the rungs above miss them.
+Read the comments as nodes with the `//comment()` XPath, then parse each one. Observed on
+basketball-reference.com/teams/BOS/2024.html (2026-10-20): 110 comments, 10 with a `<table>`, and
+6,538 table rows inside them.
+
+```sql
+WITH page AS (
+    SELECT url, parse_html(arg_max(response ->> 'body', fetched_at)) AS html
+    FROM lake.agents.ext_fetch WHERE url = 'https://<site>/<page>' GROUP BY url
+)
+SELECT url, c AS fragment, html_extract_table_rows(c) AS table_rows
+FROM page CROSS JOIN UNNEST(html_extract_text(html, '//comment()')) AS t(c)
+WHERE contains(c, '<table');
+```
 
 ## The shape catalog — pick before writing
 

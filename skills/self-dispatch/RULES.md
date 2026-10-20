@@ -54,7 +54,7 @@ writing SQL on this machine.
     dispatch were both rejected; declare the parts as columns and render with Tera.
 13. **Banned:** `VALUES`, `COUNT(*)`, `LIMIT 1`, `OR` chains (use `IN`, `IS [NOT] DISTINCT FROM`, null
     checks), `WITH RECURSIVE`, scalar subqueries in SELECT lists, `any_value`, cross joins of singleton CTEs
-    (`JOIN ON true`, comma joins), `json_extract` ladders and hand-typed selector ladders in committed code (selectors are rows, rule 8; XPath itself is fine, 10-20) (except the single `->>` per receipt
+    (`JOIN ON true`, comma joins), `json_extract` ladders and hand-typed selector ladders in committed code (selectors are rows, rule 8: "its not that i dont want xpath. the point is why can't i SELECT DISTINCT xpaths FROM document and use them", 10-20) (except the single `->>` per receipt
     body field allowed by rule 5),
     regex on backend data, `generate_subscripts`, positional `split_part` surgery (09-22, 09-23, 10-10).
 14. **Descriptive names** for CTEs and aliases; "sd is not descriptive at all" (09-22).
