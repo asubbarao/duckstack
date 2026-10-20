@@ -73,11 +73,19 @@ Log one agent-log `verification` row with both sides (agent-dispatch §3 COPY sh
 | hook-rule work: reads + check (39 calls) | 23 / 164,958 | 3 turns (read, edit, verify) | 0.27× of the query part | — |
 | security review of a branch (37 calls, 33 Reads) | 9 / 179,027 | 4 turns: changed functions ⋈ call graph 2 hops | 0.63× | 85 s → 4.1 s |
 | 3 parallel rule-mining agents (49 calls) | 41 / 740,641 | 15 turns: dedupe, drop relays, page by bytes | 0.61× | — |
+| model + migration build, read side (27 of 65 calls) | 21 / 86,605 | 1 turn, 2 parallel calls | 0.89× tokens | 178 s → 3.8 s |
+| sync + 25 whole files + Linear sections, read side (51 of 112 calls) | 28 / 126,387 | 2 turns | 0.93× tokens | 180 s → 4.3 s |
 
-H held in all five. What kept it from one turn: the MCP result ceiling whenever the model must read the text
+H held in all seven. When most bytes are whole files the agent edits from verbatim, H wins through turns and
+time, not tokens (~0.9×). What kept it from one turn: the MCP result ceiling whenever the model must read the text
 itself (reviews, mining) — there turns ≈ bytes ÷ the ceiling for Read and SQL alike, so DuckDB wins by sending
 fewer bytes (diff-scope to changed functions, call-graph context, dedupe, drop relays and code fences); and a gate
 file that `.read`s other files instead of being one CTE query.
+
+Defects found (fix them; they are not reasons to prefer Bash): `read_ast` cannot read a shellfs pipe
+(DirectoryExists not implemented); `git://`/`git_tree` need a commit, so a mid-merge tree is rebuilt from the three
+trees plus `git merge-tree`; `read_csv` over a command with empty output fails sniffing; `git grep` through shellfs is
+hook-blocked while a full `read_text` scan of the tree read 34 MB in ~3 s.
 
 Cautions from these runs: a multi-stage pipeline that `TRY_CAST`s receipts must also select `receipt.status` and
 `receipt.error` (a hop returned nothing silently); a dispatched statement whose only column is `text` comes back as
