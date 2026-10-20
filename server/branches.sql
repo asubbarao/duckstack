@@ -4,8 +4,9 @@ FROM cd(getenv('HOME') || '/inframe');
 -- The branch views read the inframe git checkout (the working directory), which a machine without it (CI) lacks; they
 -- are posted once dev is serving, so a missing checkout fails this post and nothing else.
 -- branch_diff: what each local branch changed since it left origin/staging, and whether origin has it: the files a PR
--- shows, with no gh. branch_point = shared commits that no other shared commit has as a parent (git's
--- merge base). One row per branch and changed file; filter with WHERE branch_name = ….
+-- shows, with no gh. Git itself (for-each-ref, merge-base, diff --name-status) streams through shellfs: a WHERE on
+-- branch_name reaches for-each-ref, so only that branch runs git (0.08 s for one branch; the duck_tails history walk
+-- this replaced took 5.4 s and 6 M intermediate rows). One row per branch and changed file.
 -- branch_definition_changes: definitions each branch_diff file added, removed or modified: sitting_duck parses both
 -- ends; a declaration wrapping a same-named definition (TS `const x` around its declarator) is dropped so each name
 -- counts once, and the two ends join on qualified_name (scope path with per-name index), not on name. A file's blob
@@ -14,7 +15,9 @@ FROM cd(getenv('HOME') || '/inframe');
 -- git_changes and git_worktrees answer what agents ran git log/show/diff/status for (about 6,600 calls in the Claude
 -- transcripts), for both repos. git_changes: every file each commit on any branch changed against each parent, read
 -- live; a WHERE on commit_date diffs only those commits (2 days, both repos: 24 s, most of it walking the branches).
--- git_worktrees: every checkout of either repo with its branch and its uncommitted files (none: one row, NULL file).
+-- git_worktrees: every checkout of either repo with its branch and its uncommitted files (none: one row, NULL file),
+-- from git status --porcelain --branch per worktree; a WHERE on worktree runs git status in that one checkout only
+-- (0.13 s; git_status_each over all of them took 2.7 s).
 WITH program AS (
     SELECT $views$
 CREATE OR REPLACE VIEW git_changes AS
@@ -37,48 +40,48 @@ WITH repos AS (
   SELECT r.repo, rtrim(substr(l.content, 10), E'\n') AS worktree
   FROM repos r CROSS JOIN LATERAL read_lines_lateral(tera_render($c$git -C '{{ repo }}' worktree list --porcelain |$c$, r::JSON, autoescape := false)) l
   WHERE starts_with(l.content, 'worktree ')
+), status_lines AS (
+  SELECT w.repo, w.worktree, rtrim(s.content, E'\n') AS line
+  FROM worktrees w CROSS JOIN LATERAL read_lines_lateral(tera_render($c$git -C '{{ worktree }}' status --porcelain --branch |$c$, w::JSON, autoescape := false)) s
 ), branches AS (
-  SELECT w.*, rtrim(b.content, E'\n') AS branch
-  FROM worktrees w CROSS JOIN LATERAL read_lines_lateral(tera_render($c$git -C '{{ worktree }}' rev-parse --abbrev-ref HEAD |$c$, w::JSON, autoescape := false)) b
+  SELECT repo, worktree, string_split(string_split(substr(line, 4), '...')[1], ' ')[1] AS branch
+  FROM status_lines WHERE starts_with(line, '## ')
 ), changed AS (
-  SELECT b.repo, b.worktree, b.branch, s.file_path, s.file_ext, s.status, s.staged, s.unstaged, s.old_path
-  FROM branches b CROSS JOIN LATERAL git_status_each(b.worktree) s
+  SELECT repo, worktree, substr(line, 1, 2) AS xy, string_split(substr(line, 4), ' -> ') AS paths
+  FROM status_lines WHERE NOT starts_with(line, '## ')
 )
-SELECT * FROM changed
-UNION ALL BY NAME
-SELECT repo, worktree, branch FROM branches ANTI JOIN changed USING (worktree);
+SELECT branches.*, changed.paths[-1] AS file_path,
+       CASE WHEN len(changed.paths) > 1 THEN changed.paths[1] END AS old_path,
+       CASE WHEN changed.xy = '??' THEN 'untracked' WHEN contains(changed.xy, 'U') THEN 'conflicted'
+            WHEN contains(changed.xy, 'R') THEN 'renamed' WHEN contains(changed.xy, 'A') THEN 'added'
+            WHEN contains(changed.xy, 'D') THEN 'deleted' WHEN changed.xy IS NOT NULL THEN 'modified' END AS status,
+       changed.xy[1] NOT IN (' ', '?') AS staged, changed.xy[2] <> ' ' AS unstaged
+FROM branches LEFT JOIN changed USING (repo, worktree);
 CREATE OR REPLACE VIEW branch_diff AS
-WITH local_branches AS (
-    SELECT * FROM git_branches() WHERE NOT is_remote
-), remote_branches AS (
-    SELECT branch_name AS remote_branch_name, commit_hash AS remote_commit_hash FROM git_branches() WHERE is_remote
+WITH refs AS (
+    SELECT getenv('HOME') || '/inframe' AS repo_path, ref.*
+    FROM read_csv($c$git -C ~/inframe for-each-ref refs/heads refs/remotes/origin --format='%(refname:short)%09%(objectname)' |$c$,
+                  delim = E'\t', header = false, columns = {'ref_name': 'VARCHAR', 'commit_hash': 'VARCHAR'}) ref
 ), tracked_branches AS (
-    SELECT local_branches.*, remote_branches.remote_branch_name, remote_branches.remote_commit_hash,
-           remote_branches.remote_commit_hash IS NOT DISTINCT FROM local_branches.commit_hash AS is_pushed
-    FROM local_branches
-    LEFT JOIN remote_branches ON remote_branches.remote_branch_name = 'origin/' || local_branches.branch_name
-), staging_commits AS (
-    SELECT commit_hash FROM git_log('.', 'origin/staging')
-), staging_parent_edges AS (
-    SELECT commit_hash, parent_hash FROM git_parents('.', 'origin/staging')
-), branch_history AS (
-    SELECT tracked_branches.branch_name, history.commit_hash
-    FROM tracked_branches CROSS JOIN LATERAL git_log_each(tracked_branches.repo_path, tracked_branches.commit_hash) history
-), shared_history AS (
-    SELECT * FROM branch_history SEMI JOIN staging_commits USING (commit_hash)
-), shared_parents AS (
-    SELECT shared_history.branch_name, staging_parent_edges.parent_hash AS commit_hash
-    FROM shared_history JOIN staging_parent_edges USING (commit_hash)
+    SELECT local_ref.repo_path, local_ref.ref_name AS branch_name, local_ref.commit_hash,
+           remote_ref.ref_name AS remote_branch_name, remote_ref.commit_hash AS remote_commit_hash,
+           remote_ref.commit_hash IS NOT DISTINCT FROM local_ref.commit_hash AS is_pushed
+    FROM refs local_ref
+    LEFT JOIN refs remote_ref ON remote_ref.ref_name = 'origin/' || local_ref.ref_name
+    WHERE NOT starts_with(local_ref.ref_name, 'origin/')
 ), branch_points AS (
-    SELECT branch_name, commit_hash AS branch_point FROM shared_history
-    ANTI JOIN shared_parents USING (branch_name, commit_hash)
+    SELECT tracked_branches.*, rtrim(merge_base.content, E'\n') AS branch_point
+    FROM tracked_branches CROSS JOIN LATERAL read_lines_lateral(tera_render($c$git -C '{{ repo_path }}' merge-base origin/staging {{ commit_hash }} |$c$, tracked_branches::JSON, autoescape := false)) merge_base
+), changed_files AS (
+    SELECT branch_points.*, string_split(rtrim(name_status.content, E'\n'), E'\t') AS fields
+    FROM branch_points CROSS JOIN LATERAL read_lines_lateral(tera_render($c$git -C '{{ repo_path }}' diff --name-status {{ branch_point }} {{ commit_hash }} |$c$, branch_points::JSON, autoescape := false)) name_status
 )
-SELECT tracked_branches.*, branch_points.branch_point, changed_file.* EXCLUDE (repo_path),
-       git_uri(tracked_branches.repo_path, changed_file.file_path, branch_points.branch_point) AS before_uri,
-       git_uri(tracked_branches.repo_path, changed_file.file_path, tracked_branches.commit_hash) AS after_uri
-FROM tracked_branches
-JOIN branch_points USING (branch_name)
-CROSS JOIN LATERAL git_diff_tree_each(tracked_branches.repo_path, branch_points.branch_point, tracked_branches.commit_hash) changed_file;
+SELECT changed_files.* EXCLUDE (fields), fields[-1] AS file_path,
+       CASE WHEN len(fields) > 2 THEN fields[2] END AS old_path,
+       CASE fields[1][1] WHEN 'A' THEN 'added' WHEN 'D' THEN 'deleted' WHEN 'R' THEN 'renamed' WHEN 'C' THEN 'copied' ELSE 'modified' END AS status,
+       git_uri(repo_path, coalesce(CASE WHEN len(fields) > 2 THEN fields[2] END, fields[-1]), branch_point) AS before_uri,
+       git_uri(repo_path, fields[-1], commit_hash) AS after_uri
+FROM changed_files;
 CREATE OR REPLACE VIEW branch_definition_changes AS
 WITH file_sides AS (
     SELECT branch_diff.branch_name, branch_diff.file_path, 'before' AS side, file_read.text
