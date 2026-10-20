@@ -1,7 +1,9 @@
 {# 1. Commands or files, one reader, any number of sources in one statement.
    Row: reader (read_csv | read_json | read_text | read_blob),
         sources (list: a command ends with ' |', a file is its path),
-        options (text, may be empty).
+        options (text, may be empty). read_csv / read_json over commands carry ', hive_partitioning := false':
+        DuckDB reads hive key=value folders from the path text, which for a command is the command itself, so
+        'GREETING=hi cat /x' gains a column (and overwrites a real field of that name). Files keep detection.
    jq is a boolean in the first CTE: when on, SQL appends the fixed '| jq -c ''.[]''' to each command (splits an
    array into lines for read_json) and nothing else. Curl is a command like any other. #}
 SELECT * FROM {{ reader }}([$src${{ sources | join(sep="$src$, $src$") }}$src$]{{ options }})

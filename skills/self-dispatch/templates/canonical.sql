@@ -8,14 +8,16 @@
 -- Verified on dev 2026-10-17.
 
 -- 1. shell: one row per statement. A command ends with ' |', a file is its path; jq appends only '| jq -c ''.[]'''.
+--    read_csv / read_json over commands pass hive_partitioning := false: the path text is the command, and a
+--    key=value before a '/' in it ('GREETING=hi cat /x') would otherwise become a column. Files keep hive detection.
 WITH sources AS (
-    SELECT 'read_csv' AS reader, false AS jq, ', header := false' AS options,
+    SELECT 'read_csv' AS reader, false AS jq, ', header := false, hive_partitioning := false' AS options,
            ['find /private/tmp -maxdepth 1 -type d', 'find /Users/aloksubbarao/inframe -maxdepth 1 -type d'] AS commands, [] AS files
     UNION ALL
-    SELECT 'read_json', true, ', format := ''newline_delimited''',      -- gh --paginate prints arrays back to back
+    SELECT 'read_json', true, ', format := ''newline_delimited'', hive_partitioning := false',      -- gh --paginate prints arrays back to back
            ['gh api --paginate ''repos/duckdb/duckdb-quack/branches?per_page=100'''], []
     UNION ALL
-    SELECT 'read_json', false, '', ['curl -sS --fail --max-time 30 https://api.staging.inframerisk.net/api/v1/utils/health-check/'], []
+    SELECT 'read_json', false, ', hive_partitioning := false', ['curl -sS --fail --max-time 30 https://api.staging.inframerisk.net/api/v1/utils/health-check/'], []
     UNION ALL
     SELECT 'read_text', false, '', [], ['/Users/aloksubbarao/.duck/logs/server-exits.log', '/Users/aloksubbarao/.duck/logs/reload-events.log']
     UNION ALL

@@ -42,7 +42,9 @@ earns its keep, append it with one line saying when to reach for it.
   `CROSS JOIN UNNEST(arr)` is fine.
 - Same-query aliases, named CTEs, `SELECT * EXCLUDE/REPLACE`, `GROUP BY ALL`, `QUALIFY`, `DESCRIBE`,
   `SUMMARIZE`. Counts are a named column (`len(array_agg(id))`), never a star count. No scalar
-  subqueries in SELECT lists, no `LIMIT 1`, no recursive CTEs, no `AS MATERIALIZED`, no printf.
+  subqueries in SELECT lists, no `LIMIT 1` without `ORDER BY` (top n per group is `arg_max(x, v, n)` /
+  `max(v, n)`), no recursive CTEs, no `AS MATERIALIZED`, no printf. Friendly SQL and the GROUP BY ALL
+  pitfall: self-dispatch RULES.md 28-30.
   Prefer CTAS replacement and `INSERT BY NAME`.
 - NULL is meaningful: `nullif(col, '')`, never an empty string for a missing value.
 - Keep base and intermediate columns; return bounded previews and ids for drill-down.

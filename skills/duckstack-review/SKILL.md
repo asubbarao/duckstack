@@ -245,7 +245,8 @@ WITH targets AS (SELECT list(DISTINCT '-' || pgid) AS groups FROM host_processes
 ```
 
 **Rejected on 2026-10-17, each in one line** (the left side is a finding on sight):
-- `QUALIFY row_number() OVER (…) <= 3` to pick rows → `arg_max` / `max_by`, or a join on keys.
+- `QUALIFY row_number() OVER (…) <= 3` to pick rows → `arg_max(x, v, 3)` / `max(v, 3)` (top n as a list),
+  `arg_max` / `max_by` for one row, or a join on keys; over our own relations, fix the view upstream (RULES.md 28-29).
 - A whole command built in one `printf($s$…%s…$s$, id)` string → declare the parts as columns, render with Tera.
 - `json_object('schema', '[{"session":"VARCHAR","line_number":"BIGINT"}]')` or any typed key list → the reader infers.
 - `to_base64(encode(event::VARCHAR))` to carry content → the content is a column of the dispatched statement.
