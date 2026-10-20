@@ -13,7 +13,7 @@ WITH intent AS (
 CREATE OR REPLACE VIEW stream.main.parsed AS
 WITH line AS (
     SELECT ['text', 'thinking', 'output', 'content'] AS content_keys,
-           ['id', 'tool_use_id', 'call_id'] AS id_keys, ['command', 'cmd', 'sql', '$'] AS command_keys,
+           ['call_id', 'tool_use_id', 'id'] AS id_keys, ['command', 'cmd', 'sql', '$'] AS command_keys,
            ['<', '[Request interrupted', 'This session is being continued', 'Base directory for this skill',
             'Another Claude session sent a message', '# AGENTS.md', '[Cross-session delivery notice]',
             'Here is a note offered by a side agent'] AS harness_prefixes,
@@ -22,7 +22,8 @@ WITH line AS (
            (timestamp ->> '$')::TIMESTAMPTZ AS timestamp, type ->> '$' AS message_type, uuid ->> '$' AS uuid,
            parentUuid ->> '$' AS parent_uuid, cwd ->> '$' AS cwd, gitBranch ->> '$' AS git_branch, entrypoint ->> '$' AS entrypoint,
            CASE WHEN type ->> '$' IN ('user', 'assistant') THEN message
-                WHEN payload ->> 'type' IN ('message', 'agent_message', 'function_call', 'custom_tool_call', 'function_call_output') THEN payload END AS msg
+                WHEN payload ->> 'type' IN ('message', 'agent_message', 'function_call', 'custom_tool_call', 'function_call_output',
+                                            'custom_tool_call_output') THEN payload END AS msg
     FROM dev.agent.lines
 ), block AS (
     SELECT l.* EXCLUDE (msg), coalesce(msg ->> 'role', msg ->> 'type') AS message_role, msg ->> 'model' AS model,
@@ -33,17 +34,27 @@ WITH line AS (
     WHERE msg IS NOT NULL
 ), parsed AS (
     SELECT * EXCLUDE (b, content_keys, id_keys), coalesce(b ->> 'type', 'text') AS block_type,
-           coalesce(CASE WHEN json_type(b) = 'VARCHAR' THEN b ->> '$' END, [b ->> k FOR k IN content_keys IF b ->> k IS NOT NULL][1]) AS message_content,
+           -- a tool result's content (Claude) or output (Codex) can be a list of {type, text} parts
+           [parts FOR parts IN [b -> 'content', b -> 'output'] IF json_type(parts) = 'ARRAY'][1] AS part_array,
+           list_filter(list_transform(CAST(part_array AS JSON[]), lambda p: p ->> 'text'), lambda t: t IS NOT NULL) AS text_parts,
+           coalesce(CASE WHEN len(text_parts) > 0 THEN tera_render('{{ parts | join(sep="\n") }}', {'parts': text_parts}::JSON, autoescape := false) END,
+                    CASE WHEN json_type(b) = 'VARCHAR' THEN b ->> '$' END, [b ->> k FOR k IN content_keys IF b ->> k IS NOT NULL][1]) AS message_content,
            b ->> 'name' AS tool_name,
+           -- call_id first: a Codex call and its output share call_id, and each also has its own item id
            [b ->> k FOR k IN id_keys IF b ->> k IS NOT NULL][1] AS tool_use_id,
+           (b ->> 'is_error')::BOOLEAN AS is_error,
            coalesce(b -> 'input', try_cast(b ->> 'arguments' AS JSON)) AS tool_input, strlen(b::VARCHAR) AS content_bytes
     FROM block
+), commanded AS (
+    SELECT * EXCLUDE (part_array, text_parts),
+           coalesce([tool_input ->> k FOR k IN command_keys IF tool_input ->> k IS NOT NULL][1], tool_input::VARCHAR) AS tool_command
+    FROM parsed
 )
-SELECT * EXCLUDE (harness_prefixes, command_keys),
-       coalesce([tool_input ->> k FOR k IN command_keys IF tool_input ->> k IS NOT NULL][1], tool_input::VARCHAR) AS tool_command,
+-- a tool call's text is its command, so the BM25 index on message_content finds the SQL and commands agents ran
+SELECT * EXCLUDE (harness_prefixes, command_keys) REPLACE (coalesce(message_content, tool_command) AS message_content),
        message_role = 'user' AND block_type IN ('text', 'input_text') AND NOT is_agent
        AND NOT list_bool_or([starts_with(ltrim(message_content), p) FOR p IN harness_prefixes]) AS is_prompt
-FROM parsed
+FROM commanded
 $v$ AS parsed_sql
 ), parsed_step AS (
     SELECT array_agg(selfdispatch(parsed_sql)) AS receipts FROM intent
