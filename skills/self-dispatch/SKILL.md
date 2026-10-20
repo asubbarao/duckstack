@@ -29,6 +29,15 @@ Pick the template by what the statement does. `templates/canonical.sql` has a ve
 | `sql.tera` | in the database: SELECT, DDL, DML, PRAGMA, names from information_schema | table_schema, table_name, … |
 | `bash_loop_fallback_method.tera` | FALLBACK: a bash loop when no row source exists; the audit lists every use | items, body |
 
+**Words for `pipeline.tera`:** a list, with a flag and its value as one word and `'|'` as the pipe:
+
+```sql
+['curl', '-sS', '--max-time 30'] AS curl_base,
+list_concat(curl_base, ['-c -', '-o /dev/null', quote_literal(login_url)]) AS log_in,
+list_concat(curl_base, ['--fail', '-b -', quote_literal(page_url)]) AS get_page,
+list_concat(log_in, ['|'], get_page) AS log_in_then_get_page
+```
+
 Dependent stages in one query (each stage an atom that dispatches and a molecule that unnests; the next atom renders
 from the last molecule's rows): [references/five_stage_pipeline.sql](references/five_stage_pipeline.sql).
 
