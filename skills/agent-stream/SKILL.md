@@ -114,6 +114,40 @@ The words match anywhere in the tool input. A call that only mentions `gh pr cre
 a heredoc, also matches, so read `cmd`. Codex's `exec` tool takes JavaScript that calls
 `tools.exec_command({cmd: …})`, so its `cmd` is that script.
 
+## GitHub and agents in one timeline
+
+"What happened to PR X", "who merged it", "why has it no review": one query, every PR and every session.
+GitHub's actor is `asubbarao-ifr` for Alok and every agent on this Mac, so the agent `session` is the real who.
+Agent rows join their PR on `git_branch` = the PR's head branch. Change only the WHERE
+(`pr = 1685`, a `ts` window, `session = '…'`, `what = 'merged'`).
+
+```sql
+LOAD shellfs;
+WITH prs AS (
+  FROM read_json($c$gh pr list --repo inframe-risk/inframe --state all --limit 5000 --json number,headRefName,title |$c$)
+  SELECT number AS pr, headRefName AS branch, title
+),
+gh_events AS (
+  FROM read_json($c$gh api 'repos/inframe-risk/inframe/issues/events?per_page=100' --paginate --jq '.[] | {pr: .issue.number, ts: .created_at, what: .event, account: .actor.login, detail: (.commit_id // "")}' |$c$, format := 'newline_delimited')
+  SELECT 'github' AS src, pr, ts::TIMESTAMPTZ AS ts, account, NULL AS session, what, detail
+),
+gh_comments AS (
+  FROM read_json($c$gh api 'repos/inframe-risk/inframe/issues/comments?per_page=100' --paginate --jq '.[] | {pr: (.issue_url | split("/") | last | tonumber), ts: .created_at, account: .user.login, detail: .body[:160]}' |$c$, format := 'newline_delimited')
+  SELECT 'github' AS src, pr, ts::TIMESTAMPTZ AS ts, account, NULL AS session, 'comment' AS what, detail
+),
+agents AS (
+  FROM agent.messages JOIN prs ON agent.messages.git_branch = prs.branch
+  SELECT 'agent' AS src, pr, timestamp AS ts, 'asubbarao-ifr' AS account, session_id AS session,
+         coalesce(tool_name, message_role) AS what, coalesce(tool_command_head, head)[:160] AS detail
+)
+FROM (FROM gh_events UNION ALL BY NAME FROM gh_comments UNION ALL BY NAME FROM agents)
+SELECT ts, pr, src, account, session, what, detail
+WHERE account = 'asubbarao-ifr'
+ORDER BY ts;
+```
+
+`at` is a reserved word, so the time column is `ts`. `head` is null on tool_use rows; `tool_command_head` holds the command.
+
 ## Plans
 
 ```sql
