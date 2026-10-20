@@ -29,7 +29,7 @@ WITH intent AS (
                                         'properties': {'file': {'type': 'string'}, 'line': {'type': 'integer'}, 'rule': {'type': 'string'},
                                                        'problem': {'type': 'string'}, 'rewrite': {'type': 'string'}}}}}}::JSON::VARCHAR AS review_schema,
            $t$SELECT * FROM read_json($src${{ fetch_cmd | join(sep=" ") }} && {{ list_cmd | join(sep=" ") }} |$src$)$t$ AS listing_template,
-           -- the merge base is git's (duck_tails has none), taken by the program's own shell; env values hold no quote
+           -- the merge base is git's (duck_tails has none), taken by the program's own shell; env_words are sh-quoted
            $t$SELECT * FROM read_json($src$cd '{{ checkout }}' && PR_BASE=$({{ git_in_repo | join(sep=" ") }} merge-base origin/main {{ head_sha }}) {{ env_words | join(sep=" ") }} {{ duckdb_file | join(sep=" ") }} {{ program }} |$src$)$t$ AS program_template,
            $t$SELECT * FROM read_json('{{ result_path }}')$t$ AS result_template,
            MAP {'duckstack/rules': MAP {'failure': 'Blocking rule hits; see the PR comment', 'success': 'No blocking rule hits'},
@@ -71,7 +71,9 @@ _{{ signatures[context] }}_$t$ AS comment_template,
            MAP {'PR_REPO': repo, 'PR_GH_REPO': gh_repo, 'PR_NUMBER': pr_number::VARCHAR, 'PR_HEAD': head_sha,
                 'REVIEW_RESULT': result_path, 'REVIEW_CLAUDE': claude_line, 'REVIEW_SETTINGS': claude_settings,
                 'REVIEW_SCHEMA': review_schema} AS program_env,
-           list_transform(map_entries(program_env), lambda env: concat(env.key, '=', quote_literal(env.value))) AS env_words
+           -- NAME='value' for sh: a ' inside the value closes, escapes and reopens the quote
+           list_transform(map_entries(program_env),
+                          lambda env: concat(env.key, $q$='$q$, replace(env.value, $q$'$q$, $q$'\''$q$), $q$'$q$)) AS env_words
     FROM listed
 ), programs AS (
     SELECT *, 'programs' AS stage,
