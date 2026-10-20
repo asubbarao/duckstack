@@ -61,20 +61,18 @@ each a `JSON` column, for every session and subagent. Hook timings, denials and 
 
 ```sql
 WITH recent_lines AS (
-  SELECT transcript, toolDenialKind ->> '$' AS denial_kind, attachment ->> 'type' AS attachment_type,
-         attachment ->> 'hookEvent' AS hook_event, attachment ->> 'command' AS hook_command,
-         (attachment ->> 'durationMs')::DOUBLE AS hook_ms, attachment ->> 'timedOut' AS timed_out
-  FROM agent.lines
-  WHERE (timestamp ->> '$')::TIMESTAMPTZ > now() - INTERVAL 2 DAY
-), hook_runs AS (
-  SELECT 'hook' AS kind, hook_event AS what, hook_command AS detail, count(transcript) AS n,
-         median(hook_ms) AS p50_ms, max(hook_ms) AS max_ms, count(timed_out) AS timeouts
-  FROM recent_lines WHERE starts_with(attachment_type, 'hook_') AND hook_ms IS NOT NULL GROUP BY ALL
-), denials AS (
-  SELECT 'denial' AS kind, denial_kind AS what, count(transcript) AS n FROM recent_lines WHERE denial_kind IS NOT NULL GROUP BY ALL
+  SELECT CASE WHEN toolDenialKind IS NOT NULL THEN 'denial' WHEN starts_with(attachment ->> 'type', 'hook_') THEN 'hook' END AS kind,
+         coalesce(toolDenialKind ->> '$', attachment ->> 'hookEvent') AS what, attachment ->> 'command' AS detail,
+         (attachment ->> 'durationMs')::DOUBLE AS hook_ms, attachment ->> 'timedOut' = 'true' AS timed_out
+  FROM agent.lines WHERE (timestamp ->> '$')::TIMESTAMPTZ > now() - INTERVAL 2 DAY
 )
-SELECT * FROM hook_runs UNION ALL BY NAME SELECT * FROM denials ORDER BY kind, n DESC;
+SELECT kind, what, detail, count(kind) AS n, median(hook_ms) AS p50_ms, max(hook_ms) AS max_ms, sum(timed_out::INT) AS timeouts
+FROM recent_lines WHERE kind IS NOT NULL GROUP BY ALL ORDER BY kind, n DESC;
 ```
+
+Observed on dev 2026-10-20 (last two days): 1,272 `permission-rule` denials, 48 `user-rejected`, 11
+`automode-blocked`; 13,371 `PreToolUse` runs of hook_checks, median 1,064 ms, max 170 s, 2 timeouts.
+`timedOut` is `'true'` or `'false'` when present, so compare it to `'true'`; counting the field counts both.
 
 **Ways agents get this wrong** (each one seen, the last on 2026-10-20 in a `/doctor` run):
 - Reading `~/.claude/projects/*/*.jsonl` again with `read_ndjson_objects` or `read_json`. That redoes dev's work.
