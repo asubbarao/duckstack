@@ -36,8 +36,8 @@ answering and which results it actually used. The rewrite must answer those, not
 4. **Aggregate before returning.** Per file, per key, lists instead of rows when the question is "which/where".
 5. **Per-row commands are self-dispatched.** Atom `array_agg(selfdispatch(tera_render($t$…$t$, row::JSON,
    autoescape := false)))`, molecule `UNNEST(receipts) … UNNEST(TRY_CAST(receipt.body AS JSON[])) AS e(row)`.
-   Each statement selects its own keys. Never a LATERAL table function, never matching receipts to inputs by
-   array position.
+   Each statement selects its own keys. Never match receipts to inputs by array position. A LATERAL table
+   function is allowed but rarely better; keep one only when it measures faster than the self-dispatch form.
 6. **Stream.** `read_csv`/`read_json`/`read_lines` over a command; `read_text` only for an intended one-blob read.
    Never return `file_path` from a command reader, never `SELECT *`, never EXPLAIN output.
 7. **One turn.** Questions the cluster asked across turns go in one statement. Return each answer as

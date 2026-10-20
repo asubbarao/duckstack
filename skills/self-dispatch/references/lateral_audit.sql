@@ -3,7 +3,8 @@
 -- duckstack main. A statement is flagged for each LATERAL table function it invokes (sitting_duck `invocation`
 -- nodes joined to duckdb_functions: *_each, read_lines_lateral, json_each, json_tree) and, when it invokes none,
 -- for the bare LATERAL keyword. The sql_lateral_not_allowlisted hook warns at call time; this finds what got through.
--- Each use is rewritten as self-dispatch: ../SKILL.md. Window: 1 day (dev's 2-min deadline).
+-- LATERAL is allowed; each use is a candidate to measure against the self-dispatch form (../SKILL.md), which
+-- usually wins. Window: 1 day (dev's 2-min deadline).
 WITH lateral_functions AS (
   SELECT DISTINCT function_name FROM duckdb_functions()
   WHERE function_type = 'table' AND CASE WHEN ends_with(function_name, '_each') THEN true ELSE function_name IN ('read_lines_lateral', 'json_each', 'json_tree') END
