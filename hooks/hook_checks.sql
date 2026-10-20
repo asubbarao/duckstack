@@ -46,7 +46,7 @@ WITH primary_checks AS (SELECT unnest([
  'action': 'deferred', 'hook_event': 'PreToolUse + transcript (needs his yes after the last push)', 'hook_decision': 'ask', 'replaces_hooks': []::VARCHAR[]},
 {'check_id': 'git_read_cli', 'rule_id': '01a14840-ee81-7898-9c20-368cf0023631', 'tools': ['Bash'],
  'predicate_sql': $p$len(list_filter(bash_command_details, d -> CASE d.eff_exe WHEN 'git' THEN d.subcommand IN ('show', 'restore', 'diff') WHEN 'diff' THEN true ELSE false END)) > 0$p$,
- 'message': 'Run git through shellfs on dev (mcp__dev__query) and filter its rows in SQL: changed lines read_lines(''git -C <worktree> diff -U0 HEAD -- <file> |''), changed files read_csv(''git -C <worktree> diff --name-status origin/staging...HEAD |'', delim = E''\t'', header = false); every worktree or branch at once: git_worktrees, branch_diff, branch_definition_changes. No git show/restore/diff in Bash.',
+ 'message': 'Run git through shellfs on dev (mcp__dev__query) and filter its rows in SQL: changed lines read_lines(''git -C <worktree> diff -U0 HEAD -- <file> |''), changed files read_csv(''git -C <worktree> diff --name-status origin/staging...HEAD |'', delim := E''\t'', header := false, null_padding := true, names := [''status'', ''path'', ''renamed_to'']); every worktree or branch at once: git_worktrees, branch_diff, branch_definition_changes. No git show/restore/diff in Bash.',
  'action': 'block', 'hook_event': 'PreToolUse', 'hook_decision': 'deny', 'replaces_hooks': ['H8']},
 {'check_id': 'git_checkout_paths', 'rule_id': '01a14840-ee81-7898-9c20-368cf0023631', 'tools': ['Bash'],
  'predicate_sql': $p$len(list_filter(bash_command_details, d -> d.eff_exe = 'git' AND d.subcommand = 'checkout' AND list_contains(d.flags, '--'))) > 0$p$,

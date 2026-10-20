@@ -44,7 +44,7 @@ WITH repos AS (
   SELECT w.repo, w.worktree, rtrim(s.content, E'\n') AS line
   FROM worktrees w CROSS JOIN LATERAL read_lines_lateral(tera_render($c$git -C '{{ worktree }}' status --porcelain --branch |$c$, w::JSON, autoescape := false)) s
 ), branches AS (
-  SELECT repo, worktree, string_split(string_split(substr(line, 4), '...')[1], ' ')[1] AS branch
+  SELECT repo, worktree, string_split(substr(line, 4), '...')[1] AS branch
   FROM status_lines WHERE starts_with(line, '## ')
 ), changed AS (
   SELECT repo, worktree, substr(line, 1, 2) AS xy, string_split(substr(line, 4), ' -> ') AS paths
@@ -61,7 +61,7 @@ CREATE OR REPLACE VIEW branch_diff AS
 WITH refs AS (
     SELECT getenv('HOME') || '/inframe' AS repo_path, ref.*
     FROM read_csv($c$git -C ~/inframe for-each-ref refs/heads refs/remotes/origin --format='%(refname:short)%09%(objectname)' |$c$,
-                  delim = E'\t', header = false, columns = {'ref_name': 'VARCHAR', 'commit_hash': 'VARCHAR'}) ref
+                  delim := E'\t', header := false, names := ['ref_name', 'commit_hash']) ref
 ), tracked_branches AS (
     SELECT local_ref.repo_path, local_ref.ref_name AS branch_name, local_ref.commit_hash,
            remote_ref.ref_name AS remote_branch_name, remote_ref.commit_hash AS remote_commit_hash,
@@ -73,14 +73,14 @@ WITH refs AS (
     SELECT tracked_branches.*, rtrim(merge_base.content, E'\n') AS branch_point
     FROM tracked_branches CROSS JOIN LATERAL read_lines_lateral(tera_render($c$git -C '{{ repo_path }}' merge-base origin/staging {{ commit_hash }} |$c$, tracked_branches::JSON, autoescape := false)) merge_base
 ), changed_files AS (
-    SELECT branch_points.*, string_split(rtrim(name_status.content, E'\n'), E'\t') AS fields
+    SELECT branch_points.*, fields[1] AS status_code, fields[-1] AS file_path, CASE WHEN len(fields) > 2 THEN fields[2] END AS old_path
     FROM branch_points CROSS JOIN LATERAL read_lines_lateral(tera_render($c$git -C '{{ repo_path }}' diff --name-status {{ branch_point }} {{ commit_hash }} |$c$, branch_points::JSON, autoescape := false)) name_status
+    CROSS JOIN UNNEST([string_split(rtrim(name_status.content, E'\n'), E'\t')]) AS t(fields)
 )
-SELECT changed_files.* EXCLUDE (fields), fields[-1] AS file_path,
-       CASE WHEN len(fields) > 2 THEN fields[2] END AS old_path,
-       CASE fields[1][1] WHEN 'A' THEN 'added' WHEN 'D' THEN 'deleted' WHEN 'R' THEN 'renamed' WHEN 'C' THEN 'copied' ELSE 'modified' END AS status,
-       git_uri(repo_path, coalesce(CASE WHEN len(fields) > 2 THEN fields[2] END, fields[-1]), branch_point) AS before_uri,
-       git_uri(repo_path, fields[-1], commit_hash) AS after_uri
+SELECT changed_files.* EXCLUDE (status_code),
+       CASE status_code[1] WHEN 'A' THEN 'added' WHEN 'D' THEN 'deleted' WHEN 'R' THEN 'renamed' WHEN 'C' THEN 'copied' ELSE 'modified' END AS status,
+       git_uri(repo_path, coalesce(old_path, file_path), branch_point) AS before_uri,
+       git_uri(repo_path, file_path, commit_hash) AS after_uri
 FROM changed_files;
 CREATE OR REPLACE VIEW branch_definition_changes AS
 WITH file_sides AS (
