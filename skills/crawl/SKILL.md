@@ -101,13 +101,13 @@ jar gave `x=1` and `/cookies` echoed `{"x": "1"}`).
 
 - **Log in:** `curl -sS -L -b '' -c - -o /dev/null [-d 'user=…&pass=…'] '<login url>' |`. The `-b ''`
   turns on the cookie engine so cookies set during the redirects are kept.
-- **HttpOnly cookies are captured.** curl writes those lines with a `#HttpOnly_` prefix on the
-  domain, so `comment = '#'` silently drops the session cookie. Read with `null_padding = true` and
-  `WHERE name IS NOT NULL`, then `replace(domain, '#HttpOnly_', '')`. Verified on github.com/login:
-  `_gh_sess` came back.
-- **httpfs drops cookies set during a redirect**: `read_text('https://httpbin.org/cookies/set?x=1')`
-  returns `{"cookies": {}}`. To carry a cookie you already have through httpfs, set a secret in your
-  own `:memory:` client (never on dev):
+- **HttpOnly cookies.** Observed on github.com/login (2026-10-20, curl 8.7.1): curl kept the
+  HttpOnly `_gh_sess` cookie and wrote its line with a `#HttpOnly_` prefix on the domain. With
+  `comment = '#'` that line would be skipped. `null_padding = true`, then `WHERE name IS NOT NULL`,
+  then `replace(domain, '#HttpOnly_', '')` kept it.
+- **httpfs and a cookie set on a redirect.** Observed on 2026-10-20: `read_text('https://httpbin.org/cookies/set?x=1')`
+  (which sets `x` and redirects to `/cookies`) returned `{"cookies": {}}`. A cookie you already
+  have went through an httpfs secret, set in a `:memory:` client (never on dev):
   `CREATE SECRET (TYPE http, EXTRA_HTTP_HEADERS MAP {'Cookie': '<header>'}, SCOPE 'https://<site>')`.
 - **Expired session:** a 401, or a redirect back to the login page, means log in again. The jar's
   `expires` column says when.
@@ -115,8 +115,8 @@ jar gave `x=1` and `/cookies` echoed `{"x": "1"}`).
   session that already lives in Chrome. It is not needed just because a cookie is HttpOnly.
 - **A form that needs a CSRF token:** GET the form, read the hidden `<input>` value and POST it
   back with the jar. `html_to_duck_blocks` drops `<input>`. The attribute XPath reads it:
-  `html_extract_text(parse_html(body), '//input[@name=''authenticity_token'']/@value')`. On
-  github.com/login that returned the 88-char token (2026-10-20).
+  `html_extract_text(parse_html(body), '//input[@name=''authenticity_token'']/@value')`. Observed
+  on github.com/login (2026-10-20): it returned an 88-char token. The POST back has not been tested.
 
 ## Step 2 — Look before parsing
 
@@ -139,10 +139,9 @@ Never return a page body to the conversation: lengths, heads, counts, and bounde
    expanded once with `CROSS JOIN UNNEST`.
 4. **Tables**: `html_extract_tables(body::HTML)`; never walk `<tr>/<td>`.
 5. **XPath, with the paths as rows.** Take the page's own element paths, filter them with a WHERE,
-   and pass each one as a column. `html_extract_text(html, xpath)` takes a VARCHAR xpath, so no
-   dispatch is needed. Use `parse_html(body)`: on 2026-10-20 `body::HTML` gave 0 attribute rows
-   where `parse_html` gave 406. On nflbite this returned the 30 team names under
-   `/html/body/div/div/header/div/div/nav/ul/li/div/a`:
+   and pass each one as a column. `html_extract_text(html, xpath)` takes a VARCHAR xpath
+   (`duckdb_functions()`), so no dispatch is needed. On nflbite (2026-10-20) this returned the 30
+   team names under `/html/body/div/div/header/div/div/nav/ul/li/div/a`:
 
 ```sql
 WITH page AS (
@@ -153,10 +152,16 @@ WITH page AS (
 SELECT xpath, html_extract_text(html, xpath) AS texts FROM document_xpaths CROSS JOIN UNNEST(xpaths) AS t(xpath);
 ```
 
-   `xml_extract_attributes` lists only elements that have attributes. On github.com/login it
-   returned 0 rows while `html_extract_text` worked, so check `len(xpaths)` before you rely on it.
-   A hand-typed XPath for one known node is fine (`//input[@name='x']/@value`). A 40-line chain
-   of them is the failure.
+   What was observed on 2026-10-20, not a general rule:
+
+   | page | `xml_extract_attributes(parse_html(body), '//*')` | `xml_extract_attributes(body::HTML, '//*')` | `html_extract_text` |
+   |---|---|---|---|
+   | nflbite.is | 406 rows | 0 rows | worked |
+   | github.com/login | 0 rows | not tried | worked (`//title`, `//input/@name`) |
+
+   So check `len(xpaths)` on each page before relying on it. The cause of the github.com result is
+   not known; a namespace was ruled out (the page declares no `xmlns`). A hand-typed XPath for one
+   known node is fine (`//input[@name='x']/@value`). A 40-line chain of them is the failure.
 
 ```sql
 WITH page AS (
