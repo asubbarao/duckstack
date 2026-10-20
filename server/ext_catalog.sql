@@ -21,19 +21,26 @@ SELECT extension_name, yml, page, html_extract_tables_json(page) AS functions, r
 FROM yml FULL JOIN page USING (extension_name) LEFT JOIN readme ON ltrim(url_parse(readme.url).pathname, '/') = (yml ->> '$.repo.github')$v$ AS sql
     UNION ALL
     SELECT 'refresh', $r$INSERT INTO lake.agents.ext_fetch BY NAME
-WITH links AS (
-    SELECT l.*, 'https://duckdb.org/community_extensions/extensions/:name.html' AS page_pattern,
+WITH intent AS (
+    SELECT 'https://duckdb.org/community_extensions/extensions/:name.html' AS page_pattern,
            'https://raw.githubusercontent.com/duckdb/community-extensions/main/extensions/{{ name }}/description.yml' AS description_template,
-           urlpattern_extract(page_pattern, l.url, 'name') AS name
-    FROM web_page('https://duckdb.org/community_extensions/list_of_extensions') AS p CROSS JOIN UNNEST(p.links) AS t(l)
-    WHERE p.status = 200
+           links FROM web_page('https://duckdb.org/community_extensions/list_of_extensions') WHERE status = 200
+), links AS (
+    SELECT l.*, page_pattern, description_template, urlpattern_extract(page_pattern, l.url, 'name') AS name
+    FROM intent CROSS JOIN UNNEST(links) AS t(l)
 ), urls AS (
     SELECT unnest([url, tera_render(description_template, l::JSON, autoescape := false)]) AS url
     FROM links AS l WHERE name IS NOT NULL
     UNION ALL SELECT url FROM links WHERE text = 'GitHub'
+), atoms AS (
+    SELECT url, 'SELECT response FROM web_page(' || quote_literal(url) || ')' AS sql
+    FROM urls ANTI JOIN (FROM lake.agents.ext_fetch WHERE fetched_at > now() - INTERVAL 1 DAY) USING (url)
+), fetched AS (
+    SELECT url, array_agg(selfdispatch(sql)) AS arr FROM atoms GROUP BY url
 )
-SELECT url, now() AS fetched_at, to_json(quackapi_fetch(url)) AS response
-FROM urls ANTI JOIN (FROM lake.agents.ext_fetch WHERE fetched_at > now() - INTERVAL 1 DAY) USING (url)$r$
+SELECT url, now() AS fetched_at, coalesce(try_cast(page ->> 'response' AS JSON), to_json(receipt)) AS response
+FROM fetched CROSS JOIN UNNEST(arr) AS t(receipt)
+CROSS JOIN UNNEST(coalesce(try_cast(receipt.body AS JSON[]), [NULL])) AS p(page)$r$
 ), posted AS (
     SELECT step, sql, array_agg(selfdispatch(sql)) AS receipts FROM program GROUP BY ALL
 )

@@ -1,6 +1,6 @@
 ---
 name: web-read
-description: Cookbook for reading the web in DuckDB — fetch any page or API with curl through shellfs, cast the body (::HTML, ::JSON) and parse it with webbed (readable blocks, links), shape JSON with JSONata, compute with QuickJS, render with tera. Use when asked to read a docs page, a URL, a GitHub/REST API, or to turn fetched content into rows or text, without dumping raw HTML into context.
+description: Cookbook for reading the web in DuckDB — fetch any page with QuackAPI or curl through shellfs, cast the body (::HTML, ::JSON) and parse it with webbed (readable blocks, links), shape JSON with JSONata, compute with QuickJS, render with tera. Use when asked to read a docs page, a URL, a GitHub/REST API, or to turn fetched content into rows or text, without dumping raw HTML into context.
 allowed-tools: mcp__dev__query
 ---
 
@@ -13,7 +13,7 @@ first (the crawl skill), and is parsed from there.
 Raw HTML never goes into context: an 82,892-character docs page is 652 typed blocks; read those.
 
 Use the approved `web_page(url)` table macro in `server/macros.sql` for HTTP pages. It preserves
-the full curl response (status, final headers, body, error, transfer metadata and final URL) and adds whole-document webbed
+the complete curl response (final headers, transfer metadata, raw bytes, decoded body, status, error and final URL) and adds whole-document webbed
 columns: `html`, `duckblocks`, `links`, `images`, `tables`, `dom`, `attributes`, `document`,
 `urls`, and `frames`. Select the useful columns before returning results to an agent:
 
@@ -28,13 +28,17 @@ are discovered with netquack; remote scripts are never executed.
 Verified 2026-10-19 on NFLBite and the extension index; connection refusal remains a row with
 status 0, an error and empty link lists. HTTP 403 remains a row with status 403.
 
-Tested two-URL molecule, using the selected dev endpoint inside `selfdispatch`. The macro uses one
-ShellFS curl GET: 30-second timeout, eight redirects, 16 MiB body cap, HTTP(S) only. JSON-quoted
-URL configuration goes through a quoted heredoc. The final URL, rather than the requested URL,
-is the base for relative links; both URLs and the complete transfer metadata are retained.
-Keep the pipe source's final `|` directly against its dollar-quote delimiter; a trailing
-newline makes `read_text` treat it as a file pattern. Curl compression keeps large HTML
-responses within the time budget; decoded bodies are preserved exactly, including Unicode.
+The macro runs one ShellFS curl request into `read_json`, which infers the transfer structure.
+There is no footer splitting or JSON-path ladder. A temporary FIFO streams the body to a bounded
+base64 encoder while curl emits its own metadata JSON. The owned reader finishes before those
+records are merged; the FIFO is removed on exit. DuckDB decodes the original bytes, preserving
+Unicode. Header and response columns remain JSON so their types stay stable across sites.
+Limits: 30 seconds, eight redirects, 16 MiB transfer and decoded HTML limits, 64 MiB JSON reader
+limit; no retries, cache, delay or link following. Oversized decoded bodies remain status-0 error
+rows with a clearly labelled truncated raw prefix and are not parsed or followed. The final URL
+is the base for relative links; the requested URL remains alongside it.
+Verified on 2026-10-19: one HTTP request per macro call, exact 4 MB Unicode bytes, compressed
+20 MB response rejected, prepared URL parameters, redirects and refused connections.
 
 ```sql
 -- Existing dev workers; batch 2; no delay, cache, retries or link following; depth 0, limit 2.
@@ -56,7 +60,7 @@ FROM posted CROSS JOIN UNNEST(receipts) AS t(receipt);
 Verified 2026-10-19: both dispatch and HTTP statuses were 200; link lists contained 81 and 551
 items. Each source URL remained beside its receipt. Interactive navigation keeps the HTTP
 record as columns. A durable crawl instead renders an insert into the existing fetch history:
-`INSERT INTO lake.agents.ext_fetch BY NAME SELECT url, now() AS fetched_at, to_json(response)
+`INSERT INTO lake.agents.ext_fetch BY NAME SELECT url, now() AS fetched_at, response
 AS response FROM web_page(<quoted URL>)`, using the same post/unnest molecule.
 
 The casts are written out even where a function would accept VARCHAR: `(body)::HTML` makes the value a webbed
@@ -134,6 +138,6 @@ FROM releases_picked CROSS JOIN UNNEST(picked::JSON[]) WITH ORDINALITY AS t(rele
   before any selector; a hand-written xpath/css/jsonpath per column means the shape is not understood yet.
 - Many URLs: one literal `web_page(<quoted URL>)` call per source row through the tested molecule above.
   Durable crawls land its full response in `lake.agents.ext_fetch`; interactive navigation may keep it
-  unmaterialized. State the crawl limits in either case. ShellFS curl is the alternative transport.
+  unmaterialized. State the crawl limits in either case. The shared macro owns the curl transport.
 - A missing extension is `INSTALL x FROM community; LOAD x;`, then continue. `jsonata` and `quickjs` are
   installed on dev but not loaded at boot.
