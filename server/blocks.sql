@@ -18,7 +18,7 @@ CREATE OR REPLACE VIEW stream.main.parsed AS
 WITH line AS (
     SELECT ['text', 'thinking', 'output', 'content'] AS content_keys,
            ['call_id', 'tool_use_id', 'id'] AS id_keys, ['command', 'cmd', 'sql', '$'] AS command_keys,
-           ['content', 'output'] AS part_keys, ['message', 'agent_message'] AS message_types,
+           ['content', 'output'] AS part_keys, ['message', 'agent_message'] AS message_types, 'America/Los_Angeles' AS pacific_zone,
            ['tool_use', 'function_call', 'custom_tool_call'] AS call_types,
            ['tool_result', 'function_call_output', 'custom_tool_call_output'] AS result_types,
            ['<', '[Request interrupted', 'This session is being continued', 'Base directory for this skill',
@@ -28,15 +28,14 @@ WITH line AS (
            transcript AS file_path, file_row_number AS line, CASE WHEN contains(transcript, '/.codex/') THEN 'codex' ELSE 'claude' END AS source,
            contains(transcript, '/subagents/') AS is_agent,
            coalesce(sessionId ->> '$', codex_meta ->> 'id', parse_filename(transcript, true)) AS session_id,
-           (timestamp ->> '$')::TIMESTAMPTZ AS timestamp, (timestamp ->> '$')::TIMESTAMPTZ AT TIME ZONE 'America/Los_Angeles' AS ts_pst,
-           type ->> '$' AS message_type, uuid ->> '$' AS uuid,
+           (timestamp ->> '$')::TIMESTAMPTZ AS timestamp, type ->> '$' AS message_type, uuid ->> '$' AS uuid,
            parentUuid ->> '$' AS parent_uuid, coalesce(cwd ->> '$', codex_meta ->> 'cwd') AS cwd,
            coalesce(gitBranch ->> '$', codex_meta ->> '$.git.branch') AS git_branch, entrypoint ->> '$' AS entrypoint,
            CASE WHEN type ->> '$' IN ('user', 'assistant') THEN message
                 WHEN list_contains(message_types || call_types || result_types, payload ->> 'type') THEN payload END AS msg
     FROM dev.agent.lines
 ), block AS (
-    SELECT l.* EXCLUDE (msg, codex_meta), coalesce(msg ->> 'role', msg ->> 'type') AS message_role, msg ->> 'model' AS model,
+    SELECT l.* EXCLUDE (msg, codex_meta, pacific_zone), l.timestamp AT TIME ZONE l.pacific_zone AS ts_pst, coalesce(msg ->> 'role', msg ->> 'type') AS message_role, msg ->> 'model' AS model,
            t.b, t.block_index, concat_ws(':', file_path, line, t.block_index) AS block_key
     FROM line l
     CROSS JOIN UNNEST(CASE json_type(msg -> 'content') WHEN 'ARRAY' THEN (msg -> 'content')::JSON[] ELSE [coalesce(msg -> 'content', msg)] END)
