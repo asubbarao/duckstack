@@ -4,16 +4,19 @@
 --    fetched by curl through shellfs and parsed by webbed's html_to_duck_blocks, one dispatched statement per page;
 --    --fail turns a missing page into its row with the receipt error and no features.
 WITH pages AS (
-  SELECT unnest(['https://duckdb.org/docs/current/sql/query_syntax/select',
+  -- docs/current and docs/lts answer with a meta-refresh page (2026-10-21), so the docs pages are the versioned ones.
+  SELECT unnest(['https://duckdb.org/docs/2.0/sql/query_syntax/select.html',
                  'https://duckdb.org/2023/08/23/even-friendlier-sql',
-                 'https://duckdb.org/docs/current/sql/dialect/friendly_sql',
-                 'https://duckdb.org/docs/lts/sql/statements/pivot',
-                 'https://duckdb.org/docs/lts/sql/statements/unpivot']) AS url),
+                 'https://duckdb.org/docs/2.0/sql/dialect/friendly_sql.html',
+                 'https://duckdb.org/docs/2.0/sql/statements/pivot.html',
+                 'https://duckdb.org/docs/2.0/sql/statements/unpivot.html']) AS url),
 page_statements AS (
-  SELECT url, tera_render($t$SELECT list_distinct(array_agg(b.content ORDER BY b.element_order)) AS features
-FROM read_text('curl -sSL --fail --max-time 30 {{ url }} |')
-CROSS JOIN UNNEST(html_to_duck_blocks(content::HTML)) AS block(b)
-WHERE b.kind = 'inline' AND b.element_type = 'code'$t$, p::JSON, autoescape := false) AS executable_sql
+  SELECT url, tera_render($t$SELECT array_agg(content ORDER BY first_seen) AS features
+FROM (SELECT b.content, min(b.element_order) AS first_seen
+      FROM read_text('curl -sSL --fail --max-time 30 {{ url }} |')
+      CROSS JOIN UNNEST(html_to_duck_blocks(content::HTML)) AS block(b)
+      WHERE b.kind = 'inline' AND b.element_type = 'code' AND b.content IS NOT NULL
+      GROUP BY b.content)$t$, p::JSON, autoescape := false) AS executable_sql
   FROM pages AS p),
 dispatched AS (
   SELECT url, executable_sql, array_agg(selfdispatch(executable_sql)) AS receipts FROM page_statements GROUP BY ALL)
@@ -24,18 +27,17 @@ CROSS JOIN UNNEST(receipts) AS dispatch(receipt);
 
 -- 2. How many SQL tool calls in the last 7 days use each feature, read from each call's AST (json_serialize_sql
 --    takes SELECT-shaped statements; COPY, CREATE and a bare PIVOT statement are not counted). Each feature is a
---    marker row: an AST field with a value, a field that is present, or a function (by arity, or indexed by [n]).
-WITH value_markers AS (SELECT unnest([
+--    marker row: an AST field with a value, a field that is present (no value), or a function (by arity, or indexed by [n]).
+WITH field_markers AS (SELECT unnest([
   {'feature': 'GROUP BY ALL', 'field': 'aggregate_handling', 'value': 'FORCE_AGGREGATES'},
   {'feature': 'COLUMNS(...)', 'field': 'columns', 'value': 'true'},
   {'feature': 'SUMMARIZE', 'field': 'show_type', 'value': 'SUMMARY'},
   {'feature': 'DESCRIBE', 'field': 'show_type', 'value': 'DESCRIBE'},
   {'feature': 'LIMIT n%', 'field': 'type', 'value': 'LIMIT_PERCENT_MODIFIER'},
-  {'feature': 'UNION BY NAME', 'field': 'setop_type', 'value': 'UNION_BY_NAME'}], recursive := true)),
-key_markers AS (SELECT unnest([
-  {'feature': '* EXCLUDE', 'field': 'exclude_list'}, {'feature': '* REPLACE', 'field': 'replace_list'},
-  {'feature': '* RENAME', 'field': 'rename_list'}, {'feature': 'QUALIFY', 'field': 'qualify'},
-  {'feature': 'PIVOT', 'field': 'aggregates'}, {'feature': 'UNPIVOT', 'field': 'unpivot_names'}], recursive := true)),
+  {'feature': 'UNION BY NAME', 'field': 'setop_type', 'value': 'UNION_BY_NAME'},
+  {'feature': '* EXCLUDE', 'field': 'exclude_list', 'value': NULL}, {'feature': '* REPLACE', 'field': 'replace_list', 'value': NULL},
+  {'feature': '* RENAME', 'field': 'rename_list', 'value': NULL}, {'feature': 'QUALIFY', 'field': 'qualify', 'value': NULL},
+  {'feature': 'PIVOT', 'field': 'aggregates', 'value': NULL}, {'feature': 'UNPIVOT', 'field': 'unpivot_names', 'value': NULL}], recursive := true)),
 function_markers AS (SELECT unnest([
   {'feature': 'top-n max(v, n) / arg_max(x, v, n)', 'functions': ['max', 'min'], 'arity': 2, 'indexed': false},
   {'feature': 'top-n max(v, n) / arg_max(x, v, n)', 'functions': ['arg_max', 'arg_min', 'max_by', 'min_by'], 'arity': 3, 'indexed': false},
@@ -57,9 +59,8 @@ nodes AS (
   FROM parsed AS p CROSS JOIN LATERAL json_tree(p.ast) AS node
   WHERE (p.ast ->> 'error') = 'false'),
 hits AS (
-  SELECT m.feature, n.tool_use_id FROM nodes AS n JOIN value_markers AS m ON (n.key, n.scalar) = (m.field, m.value)
-  UNION ALL
-  SELECT m.feature, n.tool_use_id FROM nodes AS n JOIN key_markers AS m ON n.key = m.field
+  SELECT m.feature, n.tool_use_id FROM nodes AS n JOIN field_markers AS m
+    ON n.key = m.field AND n.scalar IS NOT DISTINCT FROM coalesce(m.value, n.scalar)
   UNION ALL
   SELECT m.feature, n.tool_use_id FROM nodes AS n JOIN function_markers AS m
     ON list_contains(m.functions, CASE WHEN m.indexed THEN n.indexed_function ELSE n.function_name END)

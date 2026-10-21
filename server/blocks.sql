@@ -40,7 +40,7 @@ WITH line AS (
     FROM block
 )
 SELECT * EXCLUDE (harness_prefixes, command_keys),
-       coalesce([tool_input ->> k FOR k IN command_keys IF tool_input ->> k IS NOT NULL][1], tool_input::VARCHAR) AS tool_command,
+       [tool_input ->> k FOR k IN command_keys IF tool_input ->> k IS NOT NULL][1] AS tool_command,
        message_role = 'user' AND block_type IN ('text', 'input_text') AND NOT is_agent
        AND NOT list_bool_or([starts_with(ltrim(message_content), p) FOR p IN harness_prefixes]) AS is_prompt
 FROM parsed

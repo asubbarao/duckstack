@@ -121,7 +121,8 @@ writing SQL on this machine.
     rarely an excuse for them: fix the relation upstream so every reader stays simple; on a personal machine that is
     a luxury we have (10-20). Example: Codex tool calls never paired because `stream.parsed` read the item id before
     `call_id`; the fix went into the parse (duckstack PR #87), not into every reader. Once the house rules are met,
-    QUALIFY and the like are fine (10-20).
+    QUALIFY and `json_extract` are fine (both are warns); `any_value` and an unordered `LIMIT 1` stay blocked
+    everywhere (rule 13) (10-20).
 29. **The inline replacements the hooks name** (10-20). Top n per group: `arg_max(x, v, n)` / `max(v, n)` return
     lists (`arg_max(label, val, 2)` gives `['five', 'three']`, `max(val, 2)` gives `[5, 3]`); `arg_max(x, v)` /
     `max_by` the single row. One ordered row: first `arg_max(s, started)` over the row struct (`FROM sessions AS s`),
