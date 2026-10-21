@@ -32,13 +32,18 @@ SELECT call_id, file_path,
        parse_path(file_path) AS file_path_parts
 FROM tc_input WHERE file_path IS NOT NULL;
 
+-- The MCP tools whose input is SQL; hook_checks.sql expands tools ['@sql'] from this relation.
+CREATE OR REPLACE VIEW sql_tools AS
+SELECT unnest(['mcp__dev__query', 'mcp__dev__query_full', 'mcp__dev__execute', 'mcp__dev__query_no_limit',
+               'mcp__dev__query_with_limit', 'mcp__dev__sql', 'mcp__dev__self_dispatch',
+               'mcp__duck__query', 'mcp__duck__execute']) AS tool_name;
+
 -- Every SQL text a call carries.
 CREATE OR REPLACE VIEW sql_texts AS
 SELECT call_id, 'tool' AS sql_source, 0::BIGINT AS program_index,
        coalesce(input_json ->> 'sql', input_json ->> 'statement', input_json ->> 'query', input_json ->> 'rows_sql') AS sql_text
 FROM tc_input
-WHERE tool_name IN ('mcp__dev__query', 'mcp__dev__execute', 'mcp__dev__query_no_limit', 'mcp__dev__query_with_limit',
-                    'mcp__dev__sql', 'mcp__dev__self_dispatch', 'mcp__duck__query', 'mcp__duck__execute')
+WHERE tool_name IN (FROM sql_tools)
 UNION ALL
 SELECT b.call_id, 'embedded', e.idx, e.prog.program
 FROM bash_src b CROSS JOIN UNNEST(b.embedded_programs) WITH ORDINALITY AS e(prog, idx)
@@ -95,7 +100,8 @@ SELECT call_id, sql_source, program_index, n.type AS statement_kind, n.peek AS s
        json_serialize_sql(CASE WHEN n.type = 'select_statement' THEN n.peek
                                WHEN n.type = 'create_view' THEN substr(n.peek, instr(upper(translate(n.peek, E'\n\t\r', '   ')), ' AS ') + 4)
                                WHEN n.type = 'sql_statement' AND starts_with(n.peek, 'COPY (')
-                               THEN substr(tera_render($t${{ parts | join(sep=") TO ") }}$t$, json_object('parts', string_split(n.peek, ') TO ')[:-2]), autoescape := false), length('COPY (') + 1) END,
+                               THEN substr(n.peek, length('COPY (') + 1,
+                                           length(n.peek) - instr(reverse(n.peek), reverse(') TO ')) - length('COPY (') - length(') TO ') + 1) END,
                           skip_null := true, skip_empty := true, skip_default := true) -> 'statements' -> 0 AS ast,
        row_number() OVER (PARTITION BY call_id, sql_source, program_index ORDER BY piece_no, n.node_id) AS statement_no
 FROM nodes WHERE n.depth = 1;

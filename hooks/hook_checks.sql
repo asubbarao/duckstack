@@ -4,7 +4,7 @@
 -- Existing hooks in ~/.claude/settings.json PreToolUse, by order: H1 inframe flow gate, H2 Bash duckdb (-init,
 -- regexp, OR of LIKE), H3 mcp__dev__ (regexp, OR of LIKE), H4 Bash text readers, H5 mcp__dev__ recursive glob,
 -- H6 new TABLE ask, H7 quote chars / variable hand-off / text joining / star count, H8 git show/restore/diff.
--- tools ['@sql'] means every tool that carries SQL: the dev SQL tools, Bash (embedded duckdb) and .sql Write/Edit.
+-- tools ['@sql'] means every tool that carries SQL: sql_tools (toolcall_facts.sql), Bash (embedded duckdb) and .sql Write/Edit.
 CREATE OR REPLACE VIEW hook_checks AS
 WITH primary_checks AS (SELECT unnest([
 -- ── Bash: git and gh ──────────────────────────────────────────────────────────────────────────────
@@ -546,8 +546,9 @@ all_checks AS (
          r.canonical_rule AS message, 'deferred' AS action, 'Stop (reads the final reply and the turn''s tool results)' AS hook_event,
          'block' AS hook_decision, []::VARCHAR[] AS replaces_hooks
   FROM stop_rules s
-  JOIN read_parquet('/Users/aloksubbarao/.duck/hook_data/rules_ranked.parquet') AS r USING (rule_id))
-SELECT * REPLACE (CASE WHEN tools = ['@sql'] THEN ['mcp__dev__query', 'mcp__dev__execute', 'mcp__dev__query_no_limit',
-         'mcp__dev__query_with_limit', 'mcp__dev__sql', 'mcp__dev__self_dispatch', 'mcp__duck__query', 'mcp__duck__execute',
-         'Bash', 'Write', 'Edit'] ELSE tools END AS tools)
-FROM all_checks;
+  JOIN read_parquet('/Users/aloksubbarao/.duck/hook_data/rules_ranked.parquet') AS r USING (rule_id)),
+sql_tool_names AS (
+  -- sql_tools is declared in toolcall_facts.sql, which every caller reads before this file.
+  SELECT list(tool_name ORDER BY tool_name) AS names FROM sql_tools)
+SELECT all_checks.* REPLACE (CASE WHEN all_checks.tools = ['@sql'] THEN list_concat(st.names, ['Bash', 'Write', 'Edit']) ELSE all_checks.tools END AS tools)
+FROM all_checks LEFT JOIN sql_tool_names AS st ON all_checks.tools = ['@sql'];

@@ -1,44 +1,259 @@
 [
-  {"case_id": "split_index", "tool_name": "mcp__dev__query", "fires": ["sql_split_index"], "quiet": [],
-   "input": {"sql": "SELECT string_split(path, '/')[2] AS second_part FROM files"}},
-  {"case_id": "split_index_negative", "tool_name": "mcp__dev__query", "fires": ["sql_split_index"], "quiet": [],
-   "input": {"sql": "SELECT str_split(path, '/')[-1] AS last_part FROM files"}},
-  {"case_id": "split_kept_array", "tool_name": "mcp__dev__query", "fires": [], "quiet": ["sql_split_index"],
-   "input": {"sql": "SELECT string_split(path, '/') AS parts FROM files"}},
-  {"case_id": "limit_one_unordered", "tool_name": "mcp__dev__query", "fires": ["sql_limit_one"], "quiet": [],
-   "input": {"sql": "SELECT session_id FROM sessions LIMIT 1"}},
-  {"case_id": "limit_one_ordered", "tool_name": "mcp__dev__query", "fires": [], "quiet": ["sql_limit_one"],
-   "input": {"sql": "SELECT session_id FROM sessions ORDER BY started DESC LIMIT 1"}},
-  {"case_id": "limit_one_unordered_subquery", "tool_name": "mcp__dev__query", "fires": ["sql_limit_one"], "quiet": [],
-   "input": {"sql": "SELECT session_id FROM (SELECT session_id FROM sessions LIMIT 1) AS one_session ORDER BY session_id"}},
-  {"case_id": "qualify_pick", "tool_name": "mcp__dev__query", "fires": ["sql_row_number_pick"], "quiet": [],
-   "input": {"sql": "SELECT session_id, started FROM sessions QUALIFY row_number() OVER (PARTITION BY source ORDER BY started DESC) <= 2"}},
-  {"case_id": "top_n_aggregate", "tool_name": "mcp__dev__query", "fires": [], "quiet": ["sql_row_number_pick", "sql_limit_one", "sql_any_value"],
-   "input": {"sql": "SELECT source, arg_max(session_id, started, 2) AS latest_sessions, max(started, 2) AS latest_starts FROM sessions GROUP BY source"}},
-  {"case_id": "any_value_pick", "tool_name": "mcp__dev__query", "fires": ["sql_any_value"], "quiet": [],
-   "input": {"sql": "SELECT source, any_value(model) AS model FROM sessions GROUP BY source"}},
-  {"case_id": "json_extract_dev", "tool_name": "mcp__dev__query", "fires": ["sql_json_extract"], "quiet": [],
-   "input": {"sql": "SELECT json_extract(message, '$.content[*]') AS blocks FROM lines"}},
-  {"case_id": "json_extract_duck", "tool_name": "mcp__duck__query", "fires": ["sql_json_extract"], "quiet": [],
-   "input": {"sql": "SELECT json_extract(message, '$.content[*]') AS blocks FROM lines"}},
-  {"case_id": "json_extract_duck_execute", "tool_name": "mcp__duck__execute", "fires": ["sql_json_extract"], "quiet": [],
-   "input": {"statement": "CREATE OR REPLACE VIEW blocks AS SELECT json_extract(message, '$.content[*]') AS blocks FROM lines"}},
-  {"case_id": "json_extract_in_copy", "tool_name": "mcp__dev__query", "fires": ["sql_json_extract", "sql_limit_one"], "quiet": [],
-   "input": {"sql": "COPY (SELECT json_extract(message, '$.content[*]') AS blocks FROM lines LIMIT 1) TO '/tmp/blocks.json' (FORMAT json)"}},
-  {"case_id": "copy_table_quiet", "tool_name": "mcp__dev__query", "fires": [], "quiet": ["sql_json_extract", "sql_limit_one"],
-   "input": {"sql": "COPY lines TO '/tmp/lines.parquet' (FORMAT parquet)"}},
-  {"case_id": "hive_command_json", "tool_name": "mcp__dev__query", "fires": ["sql_shellfs_hive_columns"], "quiet": [],
-   "input": {"sql": "SELECT * FROM read_json($cmd$a=hi printf '{\"a\":1}\\n' |$cmd$)"}},
-  {"case_id": "hive_command_csv", "tool_name": "mcp__duck__query", "fires": ["sql_shellfs_hive_columns"], "quiet": [],
-   "input": {"sql": "SELECT * FROM read_csv($cmd$GREETING=hi cat /tmp/greeting.csv |$cmd$)"}},
-  {"case_id": "hive_command_equals_in_last_part", "tool_name": "mcp__dev__query", "fires": [], "quiet": ["sql_shellfs_hive_columns"],
-   "input": {"sql": "SELECT * FROM read_json($cmd$curl -sS 'https://api.github.com/repos/o/r/branches?per_page=100' |$cmd$)"}},
-  {"case_id": "hive_command_option_set", "tool_name": "mcp__dev__query", "fires": [], "quiet": ["sql_shellfs_hive_columns"],
-   "input": {"sql": "SELECT * FROM read_json($cmd$a=hi printf '{\"a\":1}\\n' |$cmd$, hive_partitioning := false)"}},
-  {"case_id": "hive_file_path", "tool_name": "mcp__dev__query", "fires": [], "quiet": ["sql_shellfs_hive_columns"],
-   "input": {"sql": "SELECT * FROM read_json('/data/events/year=2026/part-0.json')"}},
-  {"case_id": "hive_command_without_equals", "tool_name": "mcp__dev__query", "fires": [], "quiet": ["sql_shellfs_hive_columns"],
-   "input": {"sql": "SELECT * FROM read_json($cmd$gh pr list --json number |$cmd$)"}},
-  {"case_id": "json_extract_in_view_cte", "tool_name": "mcp__dev__query", "fires": ["sql_json_extract"], "quiet": [],
-   "input": {"sql": "CREATE OR REPLACE VIEW agent.messages AS\nWITH line AS (\n    SELECT transcript AS file_path, message AS msg FROM agent.lines\n), block AS (\n    SELECT * EXCLUDE (msg), unnest(CASE json_type(msg -> 'content') WHEN 'ARRAY' THEN json_extract(msg, '$.content[*]') ELSE [msg -> 'content'] END) AS b\n    FROM line WHERE msg IS NOT NULL\n)\nSELECT file_path, b ->> 'type' AS block_type FROM block"}}
+  {
+    "case_id": "split_index",
+    "tool_name": "mcp__dev__query",
+    "fires": [
+      "sql_split_index"
+    ],
+    "quiet": [],
+    "input": {
+      "sql": "SELECT string_split(path, '/')[2] AS second_part FROM files"
+    }
+  },
+  {
+    "case_id": "split_index_negative",
+    "tool_name": "mcp__dev__query",
+    "fires": [
+      "sql_split_index"
+    ],
+    "quiet": [],
+    "input": {
+      "sql": "SELECT str_split(path, '/')[-1] AS last_part FROM files"
+    }
+  },
+  {
+    "case_id": "split_kept_array",
+    "tool_name": "mcp__dev__query",
+    "fires": [],
+    "quiet": [
+      "sql_split_index"
+    ],
+    "input": {
+      "sql": "SELECT string_split(path, '/') AS parts FROM files"
+    }
+  },
+  {
+    "case_id": "limit_one_unordered",
+    "tool_name": "mcp__dev__query",
+    "fires": [
+      "sql_limit_one"
+    ],
+    "quiet": [],
+    "input": {
+      "sql": "SELECT session_id FROM sessions LIMIT 1"
+    }
+  },
+  {
+    "case_id": "limit_one_ordered",
+    "tool_name": "mcp__dev__query",
+    "fires": [],
+    "quiet": [
+      "sql_limit_one"
+    ],
+    "input": {
+      "sql": "SELECT session_id FROM sessions ORDER BY started DESC LIMIT 1"
+    }
+  },
+  {
+    "case_id": "limit_one_unordered_subquery",
+    "tool_name": "mcp__dev__query",
+    "fires": [
+      "sql_limit_one"
+    ],
+    "quiet": [],
+    "input": {
+      "sql": "SELECT session_id FROM (SELECT session_id FROM sessions LIMIT 1) AS one_session ORDER BY session_id"
+    }
+  },
+  {
+    "case_id": "qualify_pick",
+    "tool_name": "mcp__dev__query",
+    "fires": [
+      "sql_row_number_pick"
+    ],
+    "quiet": [],
+    "input": {
+      "sql": "SELECT session_id, started FROM sessions QUALIFY row_number() OVER (PARTITION BY source ORDER BY started DESC) <= 2"
+    }
+  },
+  {
+    "case_id": "top_n_aggregate",
+    "tool_name": "mcp__dev__query",
+    "fires": [],
+    "quiet": [
+      "sql_row_number_pick",
+      "sql_limit_one",
+      "sql_any_value"
+    ],
+    "input": {
+      "sql": "SELECT source, arg_max(session_id, started, 2) AS latest_sessions, max(started, 2) AS latest_starts FROM sessions GROUP BY source"
+    }
+  },
+  {
+    "case_id": "any_value_pick",
+    "tool_name": "mcp__dev__query",
+    "fires": [
+      "sql_any_value"
+    ],
+    "quiet": [],
+    "input": {
+      "sql": "SELECT source, any_value(model) AS model FROM sessions GROUP BY source"
+    }
+  },
+  {
+    "case_id": "json_extract_dev",
+    "tool_name": "mcp__dev__query",
+    "fires": [
+      "sql_json_extract"
+    ],
+    "quiet": [],
+    "input": {
+      "sql": "SELECT json_extract(message, '$.content[*]') AS blocks FROM lines"
+    }
+  },
+  {
+    "case_id": "json_extract_dev_query_full",
+    "tool_name": "mcp__dev__query_full",
+    "fires": [
+      "sql_json_extract"
+    ],
+    "quiet": [],
+    "input": {
+      "sql": "SELECT json_extract(message, '$.content[*]') AS blocks FROM lines"
+    }
+  },
+  {
+    "case_id": "json_extract_in_copy_with_to_in_a_string",
+    "tool_name": "mcp__dev__query",
+    "fires": [
+      "sql_json_extract"
+    ],
+    "quiet": [],
+    "input": {
+      "sql": "COPY (SELECT json_extract(message, '$.a') AS a, ') TO ' AS b FROM lines) TO '/tmp/a.json' (FORMAT json)"
+    }
+  },
+  {
+    "case_id": "json_extract_duck",
+    "tool_name": "mcp__duck__query",
+    "fires": [
+      "sql_json_extract"
+    ],
+    "quiet": [],
+    "input": {
+      "sql": "SELECT json_extract(message, '$.content[*]') AS blocks FROM lines"
+    }
+  },
+  {
+    "case_id": "json_extract_duck_execute",
+    "tool_name": "mcp__duck__execute",
+    "fires": [
+      "sql_json_extract"
+    ],
+    "quiet": [],
+    "input": {
+      "statement": "CREATE OR REPLACE VIEW blocks AS SELECT json_extract(message, '$.content[*]') AS blocks FROM lines"
+    }
+  },
+  {
+    "case_id": "json_extract_in_copy",
+    "tool_name": "mcp__dev__query",
+    "fires": [
+      "sql_json_extract",
+      "sql_limit_one"
+    ],
+    "quiet": [],
+    "input": {
+      "sql": "COPY (SELECT json_extract(message, '$.content[*]') AS blocks FROM lines LIMIT 1) TO '/tmp/blocks.json' (FORMAT json)"
+    }
+  },
+  {
+    "case_id": "copy_table_quiet",
+    "tool_name": "mcp__dev__query",
+    "fires": [],
+    "quiet": [
+      "sql_json_extract",
+      "sql_limit_one"
+    ],
+    "input": {
+      "sql": "COPY lines TO '/tmp/lines.parquet' (FORMAT parquet)"
+    }
+  },
+  {
+    "case_id": "hive_command_json",
+    "tool_name": "mcp__dev__query",
+    "fires": [
+      "sql_shellfs_hive_columns"
+    ],
+    "quiet": [],
+    "input": {
+      "sql": "SELECT * FROM read_json($cmd$a=hi printf '{\"a\":1}\\n' |$cmd$)"
+    }
+  },
+  {
+    "case_id": "hive_command_csv",
+    "tool_name": "mcp__duck__query",
+    "fires": [
+      "sql_shellfs_hive_columns"
+    ],
+    "quiet": [],
+    "input": {
+      "sql": "SELECT * FROM read_csv($cmd$GREETING=hi cat /tmp/greeting.csv |$cmd$)"
+    }
+  },
+  {
+    "case_id": "hive_command_equals_in_last_part",
+    "tool_name": "mcp__dev__query",
+    "fires": [],
+    "quiet": [
+      "sql_shellfs_hive_columns"
+    ],
+    "input": {
+      "sql": "SELECT * FROM read_json($cmd$curl -sS 'https://api.github.com/repos/o/r/branches?per_page=100' |$cmd$)"
+    }
+  },
+  {
+    "case_id": "hive_command_option_set",
+    "tool_name": "mcp__dev__query",
+    "fires": [],
+    "quiet": [
+      "sql_shellfs_hive_columns"
+    ],
+    "input": {
+      "sql": "SELECT * FROM read_json($cmd$a=hi printf '{\"a\":1}\\n' |$cmd$, hive_partitioning := false)"
+    }
+  },
+  {
+    "case_id": "hive_file_path",
+    "tool_name": "mcp__dev__query",
+    "fires": [],
+    "quiet": [
+      "sql_shellfs_hive_columns"
+    ],
+    "input": {
+      "sql": "SELECT * FROM read_json('/data/events/year=2026/part-0.json')"
+    }
+  },
+  {
+    "case_id": "hive_command_without_equals",
+    "tool_name": "mcp__dev__query",
+    "fires": [],
+    "quiet": [
+      "sql_shellfs_hive_columns"
+    ],
+    "input": {
+      "sql": "SELECT * FROM read_json($cmd$gh pr list --json number |$cmd$)"
+    }
+  },
+  {
+    "case_id": "json_extract_in_view_cte",
+    "tool_name": "mcp__dev__query",
+    "fires": [
+      "sql_json_extract"
+    ],
+    "quiet": [],
+    "input": {
+      "sql": "CREATE OR REPLACE VIEW agent.messages AS\nWITH line AS (\n    SELECT transcript AS file_path, message AS msg FROM agent.lines\n), block AS (\n    SELECT * EXCLUDE (msg), unnest(CASE json_type(msg -> 'content') WHEN 'ARRAY' THEN json_extract(msg, '$.content[*]') ELSE [msg -> 'content'] END) AS b\n    FROM line WHERE msg IS NOT NULL\n)\nSELECT file_path, b ->> 'type' AS block_type FROM block"
+    }
+  }
 ]
