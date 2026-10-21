@@ -130,7 +130,7 @@ $views$ AS sql
 )
 SELECT receipt.status FROM dispatched CROSS JOIN UNNEST(receipts) AS t(receipt);
 -- issue_work: where each InFrame issue's work stands, one row per inf-NNNN worktree: its Linear state (linctl, issues
--- updated in 6 weeks), commits behind and ahead of origin/staging, its upstream, uncommitted files, PRs on its branch
+-- updated in 6 weeks), commits behind and ahead of origin/staging, whether origin has its head, uncommitted files, PRs on its branch
 -- and the agent sessions in it over 3 days with their last prompt. Status comes from here, not from commits or Linear
 -- alone: written work often sits uncommitted. Binding it runs gh and linctl, so it is its own post: a machine without
 -- them loses this view and nothing else.
@@ -138,21 +138,26 @@ WITH program AS (
     SELECT $view$
 CREATE OR REPLACE VIEW issue_work AS
 WITH issue_worktrees AS (
-  SELECT DISTINCT split_part(split_part(branch, '/', 2), '-', 1) || '-' || split_part(split_part(branch, '/', 2), '-', 2) AS issue, worktree, branch
+  SELECT DISTINCT regexp_extract(branch, 'inf-[0-9]+') AS issue, worktree, branch
   FROM git_worktrees
-  WHERE repo = getenv('HOME') || '/inframe' AND starts_with(split_part(branch, '/', 2), 'inf-')
+  WHERE repo = getenv('HOME') || '/inframe' AND regexp_extract(branch, 'inf-[0-9]+') <> ''
 ), uncommitted AS (
   SELECT worktree, list({status: status, file_path: file_path} ORDER BY file_path) AS uncommitted_files
   FROM git_worktrees WHERE file_path IS NOT NULL GROUP BY worktree
+), pushed_branches AS (
+  SELECT l.branch_name AS branch, r.commit_hash IS NOT DISTINCT FROM l.commit_hash AS pushed
+  FROM git_branches() l LEFT JOIN git_branches() r ON r.is_remote AND r.branch_name = 'origin/' || l.branch_name
+  WHERE NOT l.is_remote
 ), position_statements AS (
   SELECT worktree,
-         tera_render($tpl$SELECT list(rtrim(content, E'\n') ORDER BY line_number) AS lines FROM read_lines($c$git -C '{{ worktree }}' rev-list --left-right --count origin/staging...HEAD; git -C '{{ worktree }}' for-each-ref --format='%(upstream:short) %(upstream:track)' 'refs/heads/{{ branch }}' |$c$)$tpl$,
-                     json_object('worktree', worktree, 'branch', branch), autoescape := false) AS executable_sql
+         tera_render($tpl$SELECT * FROM read_csv($c$git -C '{{ worktree }}' rev-list --left-right --count origin/staging...HEAD |$c$, header := false, delim := E'\t', names := ['behind_staging', 'ahead_of_staging'])$tpl$,
+                     json_object('worktree', worktree), autoescape := false) AS executable_sql
   FROM issue_worktrees
 ), positions_posted AS (
   SELECT array_agg({worktree: worktree, receipt: selfdispatch(executable_sql)}) AS arr FROM position_statements
 ), positions AS (
-  SELECT t.r.worktree AS worktree, (t.r.receipt.body::JSON -> '$[0].lines')::VARCHAR[] AS lines, t.r.receipt.error AS git_error
+  SELECT t.r.worktree AS worktree, (t.r.receipt.body ->> '$[0].behind_staging')::INT AS behind_staging,
+         (t.r.receipt.body ->> '$[0].ahead_of_staging')::INT AS ahead_of_staging, t.r.receipt.error AS git_error
   FROM positions_posted CROSS JOIN UNNEST(arr) AS t(r)
 ), prs AS (
   SELECT number, title, state, headRefName
@@ -160,28 +165,28 @@ WITH issue_worktrees AS (
 ), issue_prs AS (
   SELECT w.worktree, list({number: p.number, state: p.state, title: p.title} ORDER BY p.number DESC) AS prs
   FROM issue_worktrees w JOIN prs p ON p.headRefName = w.branch GROUP BY w.worktree
+), window_messages AS (
+  SELECT session_id, timestamp, is_prompt, head, git_branch, cwd FROM agent.messages WHERE timestamp > now() - INTERVAL 3 DAY
 ), recent AS (
-  SELECT w.worktree, m.session_id, m.timestamp, m.is_prompt, m.head
-  FROM agent.messages m
-  JOIN issue_worktrees w ON string_contains_any(concat_ws(' ', m.git_branch, m.cwd), [w.branch, w.worktree])
-  WHERE m.timestamp > now() - INTERVAL 3 DAY
-), session_prompts AS (
-  SELECT worktree, session_id, arg_max(left(head, 120), timestamp) AS last_prompt FROM recent WHERE is_prompt GROUP BY ALL
+  SELECT w.worktree, m.session_id, m.timestamp, m.is_prompt, m.head FROM window_messages m JOIN issue_worktrees w ON m.git_branch = w.branch
+  UNION
+  SELECT w.worktree, m.session_id, m.timestamp, m.is_prompt, m.head FROM window_messages m JOIN issue_worktrees w ON m.cwd = w.worktree
 ), session_activity AS (
-  SELECT worktree, session_id, max(timestamp) AS last_seen FROM recent GROUP BY ALL
+  SELECT worktree, session_id, max(timestamp) AS last_seen,
+         arg_max(CASE WHEN is_prompt THEN left(head, 120) END, CASE WHEN is_prompt THEN timestamp END) AS last_prompt
+  FROM recent GROUP BY ALL
 ), sessions AS (
   SELECT worktree, max(last_seen) AS last_seen,
          list({session_id: session_id, last_seen: last_seen, last_prompt: last_prompt} ORDER BY last_seen DESC) AS sessions
-  FROM session_activity LEFT JOIN session_prompts USING (worktree, session_id) GROUP BY worktree
+  FROM session_activity GROUP BY worktree
 ), linear_issues AS (
   SELECT lower(identifier) AS issue, state.name AS linear_state, title AS linear_title
   FROM read_json($c$linctl issue list --team INF --include-completed --newer-than 6_weeks_ago --limit 250 --json |$c$)
 )
-SELECT w.issue, l.linear_state, l.linear_title, w.worktree, w.branch,
-       string_split(p.lines[1], E'\t')[1]::INT AS behind_staging, string_split(p.lines[1], E'\t')[2]::INT AS ahead_of_staging,
-       nullif(trim(p.lines[2]), '') AS upstream, len(c.uncommitted_files) AS uncommitted, s.last_seen,
-       r.prs, c.uncommitted_files, s.sessions, p.git_error
+SELECT w.issue, l.linear_state, l.linear_title, w.worktree, w.branch, p.behind_staging, p.ahead_of_staging, b.pushed,
+       len(c.uncommitted_files) AS uncommitted, s.last_seen, r.prs, c.uncommitted_files, s.sessions, p.git_error
 FROM issue_worktrees w
+LEFT JOIN pushed_branches b USING (branch)
 LEFT JOIN positions p USING (worktree)
 LEFT JOIN uncommitted c USING (worktree)
 LEFT JOIN issue_prs r USING (worktree)
