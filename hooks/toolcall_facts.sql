@@ -123,7 +123,10 @@ SELECT s.call_id, s.sql_source, s.program_index, s.statement_no, t.id AS node_id
                           FOR a IN CASE WHEN (t.value ->> 'type') = 'TABLE_FUNCTION' THEN json_extract(t.value, '$.function.children[*]') ELSE json_extract(t.value, '$.children[*]') END])
         IF (c ->> 'class') = 'CONSTANT'] AS literal_args,
        -- Operators that read like functions (COALESCE, IN, NOT) keep their AST type as a name.
-       CASE WHEN (t.value ->> 'class') = 'OPERATOR' THEN lower(t.value ->> 'type') END AS op
+       CASE WHEN (t.value ->> 'class') = 'OPERATOR' THEN lower(t.value ->> 'type') END AS op,
+       -- DuckDB flattens a OR b OR (c OR d) into one CONJUNCTION_OR, so its pattern children are the chain's length.
+       CASE WHEN (t.value ->> 'type') = 'CONJUNCTION_OR'
+            THEN len(list_filter(arg_kinds, k -> k IN ('~~', '!~~', '~~*', '!~~*', 'contains', 'glob', 'starts_with', 'ends_with', 'prefix', 'suffix', 'like_escape', 'ilike_escape'))) END AS or_pattern_children
 FROM sql_statements s CROSS JOIN LATERAL json_tree(s.ast) AS t
 WHERE s.ast IS NOT NULL AND t.type = 'OBJECT';
 
@@ -149,8 +152,7 @@ WITH node_facts AS (
          bool_or(typ = 'RECURSIVE_CTE_NODE') AS has_recursive_cte,
          bool_or(key = 'cte_map' AND list_contains([(e -> 'value' ->> 'materialized') FOR e IN json_extract(v, '$.map[*]')], 'CTE_MATERIALIZE_ALWAYS')) AS has_materialized_cte,
          count(CASE WHEN typ = 'CONJUNCTION_OR' THEN 1 END) AS or_node_count,
-         -- DuckDB flattens a OR b OR (c OR d) into one CONJUNCTION_OR, so its pattern children are the chain's length.
-         max(CASE WHEN typ = 'CONJUNCTION_OR' THEN len(list_filter(arg_kinds, k -> k IN ('~~', '!~~', '~~*', '!~~*', 'contains', 'glob', 'starts_with', 'ends_with', 'prefix', 'suffix', 'like_escape', 'ilike_escape'))) END) AS or_pattern_max,
+         max(or_pattern_children) AS or_pattern_max,
          list_filter(list(CASE WHEN typ = 'LIMIT_MODIFIER' THEN (v -> 'limit' -> 'value' ->> 'value')::BIGINT END), x -> x IS NOT NULL) AS limit_values,
          list_sort(list_distinct(list(join_kind))) AS join_types,
          bool_or(join_kind = 'COMMA') AS has_comma_join,

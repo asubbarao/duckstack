@@ -202,7 +202,7 @@ WITH primary_checks AS (SELECT unnest([
  'message': 'Two ORed patterns are fine. string_contains_any(col, [''a'', ''b'']) (or _i to ignore case) says the same as one list; LIKE reads _ and % as wildcards, string_contains_any does not.',
  'action': 'warn', 'hook_event': 'PreToolUse', 'hook_decision': 'context', 'replaces_hooks': []::VARCHAR[]},
 {'check_id': 'sql_or_predicate', 'rule_id': '01a14840-dca3-7b8c-93f5-262b0dd56044', 'tools': ['@sql'],
- 'predicate_sql': $p$sql_or_node_count > 0 AND sql_or_pattern_max = 0$p$,
+ 'predicate_sql': $p$sql_or_node_count > 0 AND sql_or_pattern_max < 2$p$,
  'message': 'Write alternatives with IN / NOT IN, IS [NOT] DISTINCT FROM, null tests or CASE WHEN instead of OR.',
  'action': 'warn', 'hook_event': 'PreToolUse', 'hook_decision': 'context', 'replaces_hooks': []::VARCHAR[]},
 {'check_id': 'sql_comma_join', 'rule_id': '01a14840-dca3-7101-b2d4-b58d40395d4a', 'tools': ['@sql'],
