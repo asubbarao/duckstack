@@ -14,11 +14,11 @@ relational execution of it and it still loses. A loss with a move left untried i
 ## 1. Cluster first (calls, not single calls)
 
 Episodes per transcript: a new episode after a gap > 2 min or when the arm changes (DuckDB/MCP vs not). Signature
-per call with sitting_duck: Bash `parse_ast_list(cmd, 'bash')` `command` nodes (program + git subcommand); SQL
-`parse_ast_list(cmd, 'sql')` `invocation` nodes (readers, git_*, selfdispatch), plus the shell commands inside its
-`'… |'` literals parsed as bash. Real cost per call: the next assistant line's `message.usage` in agent.lines
-(ASOF JOIN on transcript, `file_row_number >= result line + 1`). Ids repeat in the stream: one row per
-tool_use_id with `arg_min(…, line)`. The query: [references/clusters.sql](references/clusters.sql).
+per call with sitting_duck: the `command_name` node of each Bash command from `parse_ast_list(cmd, 'bash')` (git
+with the word after it); SQL `parse_ast_list(cmd, 'sql')` `invocation` nodes (readers, git_*, selfdispatch), plus
+the shell commands inside its `'… |'` literals parsed as bash. Real cost per call: the next assistant line's
+`message.usage` in agent.lines (ASOF JOIN on transcript, `file_row_number > result line`). Ids repeat in the
+stream: one row per tool_use_id with `arg_min(…, line)`. The query: [references/clusters.sql](references/clusters.sql).
 
 ## 2. Reverse-engineer the questions
 
@@ -37,16 +37,15 @@ answering and which results it actually used. The rewrite must answer those, not
 5. **Per-row commands are self-dispatched.** Render each statement into its own `sql` column first
    (`tera_render($t$…$t$, row::JSON, autoescape := false) AS sql`) so it can be selected and read, then
    `SELECT key_cols, array_agg(selfdispatch(sql)) AS receipts … GROUP BY ALL` and
-   `CROSS JOIN UNNEST(receipts) AS r(receipt)`, `UNNEST(TRY_CAST(receipt.body AS JSON[])) AS e(row)` for its rows.
-   Each statement selects its own keys. Never match receipts to inputs by array position. A LATERAL table
+   `CROSS JOIN UNNEST(receipts) AS r(receipt)`, `UNNEST(TRY_CAST(receipt.body AS JSON[])) AS e(row)` for its rows,
+   each field named once with one `->>` in that CTE. Each statement selects its own keys. Never match receipts to inputs by array position. A LATERAL table
    function is allowed but rarely better; keep one only when it measures faster than the self-dispatch form.
 6. **Stream.** `read_csv`/`read_json`/`read_lines` over a command; `read_text` only for an intended one-blob read.
    In what comes back to the agent, never return `file_path` from a command reader, never `SELECT *`, never
    EXPLAIN output; the dispatched statement itself may be `SELECT * FROM <reader>(…)`.
-7. **One turn.** Questions the cluster asked across turns go in one statement. Return each answer as
-   `(question, lines[])` rows from UNION ALL; a wide UNION ALL BY NAME pads every row with NULL columns. When the
-   answer is long text, split it near 49 KB per call and send the calls in parallel in the same turn (the MCP result
-   ceiling is 25k tokens).
+7. **One turn.** Questions the cluster asked across turns are rows of the first CTE, `(question, sql)`; self-dispatch
+   them (move 5) and return `question` beside the columns each receipt names. When the answer is long text, split
+   it near 49 KB per call and send the calls in parallel in the same turn (the MCP result ceiling is 25k tokens).
 8. **Same inputs.** Pin code to commit shas (`git://…@sha`, `git_tree`) taken from the episode's own output; a
    `--before` date can pick a merged-in commit.
 

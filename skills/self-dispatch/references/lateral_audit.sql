@@ -1,33 +1,44 @@
--- Where is LATERAL still used? One relation over three sources: agents' SQL tool calls (stream.blocks), every
--- statement dev itself ran (meta.query_metrics, including self-dispatched ones, with latency), and the .sql files on
--- duckstack main. A statement is flagged for each LATERAL table function it invokes (sitting_duck `invocation`
--- nodes joined to duckdb_functions: *_each, read_lines_lateral, json_each, json_tree) and, when it invokes none,
--- for the bare LATERAL keyword. The sql_lateral_not_allowlisted hook warns at call time; this finds what got through.
--- LATERAL is allowed; each use is a candidate to measure against the self-dispatch form (../SKILL.md), which
--- usually wins. Window: 1 day (dev's 2-min deadline).
+-- Where is LATERAL still used? One relation over three sources: agents' SQL tool calls (stream.blocks) and every
+-- statement dev itself ran (meta.query_metrics, including self-dispatched ones, with latency) over the last day, and
+-- the .sql files on duckstack main, read one glob per self-dispatched statement. A statement is flagged for each
+-- LATERAL table function it invokes (sitting_duck `invocation` nodes joined to duckdb_functions: *_each,
+-- read_lines_lateral, json_tree) and, when it invokes none, for the bare LATERAL keyword. The
+-- sql_lateral_not_allowlisted hook warns at call time; this finds what got through. LATERAL is allowed; each use is a
+-- candidate to measure against the self-dispatch form (../SKILL.md), which usually wins.
 WITH lateral_functions AS (
   SELECT DISTINCT function_name FROM duckdb_functions()
-  WHERE function_type = 'table' AND CASE WHEN ends_with(function_name, '_each') THEN true ELSE function_name IN ('read_lines_lateral', 'json_each', 'json_tree') END
-), tool_calls AS (
-  SELECT 'tool_call' AS source, left(session_id, 8) AS place, tool_command AS sql, NULL::DOUBLE AS latency_s
-  FROM stream.blocks WHERE block_type = 'tool_use' AND NOT is_repeat AND timestamp > now() - INTERVAL 1 DAY AND contains(tool_name, '__query')
-), server_queries AS (
-  SELECT 'server_query' AS source, connection_id::VARCHAR AS place, query AS sql, latency_s
-  FROM meta.query_metrics WHERE timestamp > now() - INTERVAL 1 DAY
-), repo_files AS (
-  SELECT 'duckstack_main' AS source, replace(filename, 'git:///Users/aloksubbarao/duckdb-skills/', '') AS place, content AS sql, NULL::DOUBLE AS latency_s
-  FROM read_text(['git:///Users/aloksubbarao/duckdb-skills/server/*.sql@origin/main', 'git:///Users/aloksubbarao/duckdb-skills/hooks/*.sql@origin/main', 'git:///Users/aloksubbarao/duckdb-skills/skills/*/references/*.sql@origin/main'])
+  WHERE function_type = 'table' AND list_bool_or([ends_with(function_name, '_each'), list_contains(['read_lines_lateral', 'json_tree'], function_name)])
+), repo_globs AS (
+  SELECT 'git:///Users/aloksubbarao/duckdb-skills/' AS repo, '@origin/main' AS ref, pattern
+  FROM UNNEST(['server/*.sql', 'hooks/*.sql', 'skills/*/references/*.sql']) AS t(pattern)
+), repo_statements AS (
+  SELECT pattern, tera_render($t$SELECT replace(filename, '{{ repo }}', '') AS place, content AS sql FROM read_text('{{ repo }}{{ pattern }}{{ ref }}')$t$,
+                           repo_globs::JSON, autoescape := false) AS sql
+  FROM repo_globs
+), repo_reads AS (
+  SELECT array_agg(selfdispatch(sql)) AS receipts FROM repo_statements
+), logged_sql AS (
+  SELECT * EXCLUDE (timestamp) FROM (
+    SELECT 'tool_call' AS source, left(session_id, 8) AS place, tool_command AS sql, timestamp
+    FROM stream.blocks WHERE block_type = 'tool_use' AND NOT is_repeat AND contains(tool_name, '__query')
+    UNION ALL BY NAME
+    SELECT 'server_query' AS source, connection_id::VARCHAR AS place, query AS sql, latency_s, timestamp FROM meta.query_metrics
+  ) WHERE timestamp > now() - INTERVAL 1 DAY
 ), statements AS (
-  SELECT *, md5(source || place || sql) AS statement_id, contains(upper(sql), 'LATERAL') AS has_lateral_keyword
-  FROM (FROM tool_calls UNION ALL BY NAME FROM server_queries UNION ALL BY NAME FROM repo_files)
-  WHERE len(list_filter(['LATERAL', '_EACH('], p -> contains(upper(sql), p))) > 0
+  SELECT *, hash(source, place, sql) AS statement_id, contains(upper(sql), 'LATERAL') AS has_lateral_keyword
+  FROM (FROM logged_sql
+        UNION ALL BY NAME
+        SELECT 'duckstack_main' AS source, row ->> 'place' AS place, row ->> 'sql' AS sql
+        FROM repo_reads CROSS JOIN UNNEST(receipts) AS t(receipt) CROSS JOIN UNNEST(TRY_CAST(receipt.body AS JSON[])) AS e(row))
+  WHERE string_contains_any(upper(sql), ['LATERAL', '_EACH('])
 ), invocations AS (
-  SELECT statement_id, unnest(list_distinct([n.name FOR n IN parse_ast_list(sql, 'sql') IF n.type = 'invocation'])) AS invoked FROM statements
+  SELECT statements.* EXCLUDE (sql), invoked
+  FROM statements CROSS JOIN UNNEST(list_distinct([n.name FOR n IN parse_ast_list(sql, 'sql') IF n.type = 'invocation'])) AS t(invoked)
 ), function_uses AS (
-  SELECT statements.source, statements.place, statements.latency_s, invocations.invoked AS lateral_use, statements.statement_id
-  FROM invocations JOIN lateral_functions ON lateral_functions.function_name = invocations.invoked JOIN statements USING (statement_id)
+  SELECT invocations.* EXCLUDE (invoked), invoked AS lateral_use
+  FROM invocations SEMI JOIN lateral_functions ON lateral_functions.function_name = invocations.invoked
 ), keyword_uses AS (
-  SELECT source, place, latency_s, 'LATERAL keyword' AS lateral_use, statement_id
+  SELECT statements.* EXCLUDE (sql), 'LATERAL keyword' AS lateral_use
   FROM statements ANTI JOIN function_uses USING (statement_id) WHERE has_lateral_keyword
 )
 SELECT source, lateral_use, len(list(DISTINCT place)) AS places, len(list(DISTINCT statement_id)) AS statements,

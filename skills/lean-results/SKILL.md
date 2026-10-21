@@ -35,7 +35,8 @@ median 912 new tokens, a Bash turn 810 (+13%); p90 4,027 vs 2,637 (+53%). Writin
   that; project in the outer SELECT over the receipts.
 - When you do want the text, take it as one row (`read_text`, a batch read you intend) instead of one JSON row per
   line (+29–57%).
-- `EXPLAIN ANALYZE` returns 10–90 KB: read the `latency` only, or don't run it.
+- `EXPLAIN ANALYZE` returns 10–90 KB of plan text: self-dispatch it and return only its `Total Time` from the
+  receipt, never the plan.
 - Bound the query before it runs; a result over the MCP's 25k-token limit fails after running, and the retry is
   another full turn.
 - Do not re-read an image: four PNGs read 25–27 times each were 154 MB of the Read tool's 244 MB.
@@ -46,38 +47,39 @@ median 912 new tokens, a Bash turn 810 (+13%); p90 4,027 vs 2,637 (+53%). Writin
 ## Measure a turn's real tokens
 
 `agent.messages` has no usage columns; the API's `cache_creation_input_tokens + input_tokens` on the next
-assistant line is what a result (plus the call that asked for it) added. Count each `tool_use_id` once:
-agent.messages still repeats some ids 2–5× in one transcript.
+assistant line is what a result (plus the call that asked for it) added. Only assistant lines carry
+`message.usage`, so a non-NULL sum is the line-type test. The window is stated once, in the first CTE, and reaches
+agent.lines through the join on transcript. Count each `tool_use_id` once: agent.messages still repeats some ids
+2–5× in one transcript. A turn counts when exactly one result fed it.
 
 ```sql
-WITH uses AS (
-  SELECT tool_use_id, arg_min(tool_name, line) AS tool_name FROM agent.messages
-  WHERE block_type = 'tool_use' AND timestamp > now() - INTERVAL 3 DAY GROUP BY tool_use_id
-), first_results AS (
-  SELECT tool_use_id, arg_min({'file_path': file_path, 'line': line, 'content_bytes': content_bytes}, line) AS first_result
-  FROM agent.messages
-  WHERE block_type = 'tool_result' AND timestamp > now() - INTERVAL 3 DAY AND NOT contains(head, '"type":"image"')
-  GROUP BY tool_use_id
-), results AS (
-  SELECT tool_use_id, first_result.* FROM first_results
+WITH tool_blocks AS (
+  SELECT tool_use_id, block_type, now() - INTERVAL 3 DAY AS since,
+         arg_min({'tool_name': tool_name, 'file_path': file_path, 'line': line, 'content_bytes': content_bytes, 'is_image': contains(head, '"type":"image"')}, line) AS block
+  FROM agent.messages WHERE block_type IN ('tool_use', 'tool_result') AND timestamp > since AND source = 'claude' GROUP BY ALL
+), transcripts AS (
+  SELECT DISTINCT block.file_path AS transcript, since FROM tool_blocks
 ), usage AS (
   SELECT transcript, file_row_number,
-         (message -> 'usage' ->> 'cache_creation_input_tokens')::BIGINT + (message -> 'usage' ->> 'input_tokens')::BIGINT AS new_tokens
-  FROM agent.lines
-  WHERE type ->> '$' = 'assistant' AND (timestamp ->> '$')::TIMESTAMPTZ > now() - INTERVAL 3 DAY AND NOT contains(transcript, '/.codex/')
+         list_sum(json_extract_string(message, ['$.usage.cache_creation_input_tokens', '$.usage.input_tokens'])::BIGINT[]) AS new_tokens
+  FROM agent.lines JOIN transcripts USING (transcript) WHERE new_tokens IS NOT NULL AND timestamp::TIMESTAMPTZ > since
 ), turns AS (
-  SELECT results.*, usage.file_row_number AS next_turn, usage.new_tokens
-  FROM results ASOF JOIN usage ON results.file_path = usage.transcript AND usage.file_row_number >= results.line + 1
-), single AS (
-  SELECT file_path, next_turn, array_agg(tool_use_id) AS ids FROM turns GROUP BY ALL HAVING len(ids) = 1
+  SELECT tool_use_id, block.*, usage.new_tokens,
+         len(array_agg(tool_use_id) OVER (PARTITION BY block.file_path, usage.file_row_number)) AS results_in_turn
+  FROM tool_blocks ASOF JOIN usage ON block.file_path = usage.transcript AND usage.file_row_number > block.line
+  WHERE block_type = 'tool_result' AND NOT block.is_image
 )
-SELECT uses.tool_name, len(array_agg(turns.tool_use_id)) AS turns, quantile_cont(turns.new_tokens, 0.5)::INT AS p50_tokens,
-       quantile_cont(turns.new_tokens, 0.9)::INT AS p90_tokens, sum(turns.content_bytes) AS result_bytes
-FROM turns SEMI JOIN single USING (file_path, next_turn) JOIN uses USING (tool_use_id)
+SELECT uses.block.tool_name, len(array_agg(turns.tool_use_id)) AS turns, quantile_cont(turns.new_tokens, 0.5)::INT AS p50_tokens,
+       quantile_cont(turns.new_tokens, 0.9)::INT AS p90_tokens, sum(turns.content_bytes)::BIGINT AS result_bytes
+FROM turns JOIN tool_blocks AS uses USING (tool_use_id)
+WHERE turns.results_in_turn = 1 AND uses.block_type = 'tool_use'
 GROUP BY ALL ORDER BY turns DESC LIMIT 7
 ```
 
-Verified on dev 2026-10-19 (Bash 3,132 turns, dev SQL 5,369). `agent.messages` repeating tool_use_ids is a view
-defect to fix in server/messages.sql; until then the `arg_min` per id above is required.
+Verified on dev 2026-10-21: the same 76 rows as the 2026-10-19 version (duck_diff, window pinned), 9.5 s → 6.4 s.
+`sum` is cast to BIGINT because a HUGEINT result does not cross the Quack transport. Reading each session's parquet
+by self-dispatch instead of agent.lines was measured slower (43 s: one post per session, every row back as JSON).
+`agent.messages` repeating tool_use_ids is a view defect to fix in server/messages.sql; until then the `arg_min`
+per id above is required.
 
 A head-to-head is one agent-log `verification` row with both sides on the same inputs (agent-dispatch §3).
