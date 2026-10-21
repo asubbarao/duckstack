@@ -5,7 +5,10 @@
 -- DuckDB in ~/.duck/deploy and CI in its checkout (.read expands no ~).
 SET GLOBAL extension_directory = '~/.duck/extensions';
 SET GLOBAL secret_directory = '~/.duck/secrets';
-SET GLOBAL temp_directory = '~/.duck/tmp';
+-- One temp directory per server instance: a crashed instance's spill files must not be read by the next one
+-- (DuckDB refuses to boot on a block whose header disagrees with its size). DuckDB removes the directory on a
+-- clean exit; a crash leaves it behind under ~/.duck/tmp/<instance id>.
+SET GLOBAL temp_directory = '~/.duck/tmp/' || coalesce(getenv('QUACK_INSTANCE_ID'), 'local');
 -- DuckDB's performance guide: 1-4 GB per thread. 10 threads x 1.6 GB; RSS runs 1.5-2.5 GB above this
 -- (reader/JSON allocations are untracked), and the 48 GB machine keeps ~30 GB for everything else.
 SET GLOBAL memory_limit = '16GB';
