@@ -20,27 +20,29 @@ come from the perceptual hash moving; the model only ever looks at one settled f
 ## 1. Frames and scenes
 
 `~/duckdb-skills/skills/tera/references/video_frames.sql` runs on dev: set the video path and frames
-directory literals, then run its one query through the dev MCP `query` tool. The knobs are literals in the file:
+directory in its first CTE, then run its one query through the dev MCP `query` tool. Every knob is a column of
+that CTE:
 
-| Literal | Default | Meaning |
+| Column | Default | Meaning |
 |---|---|---|
 | `fps` | 2 | frames sampled per second; 2 catches every screen change in a demo, 0.5 is enough for slides |
 | `width` | 1400 | frame width in pixels; 1400 keeps UI text readable for the Read tool |
-| `engine` | avfoundation | macOS built-in, nothing to install; `ffmpeg` if ffmpeg is on PATH (branch written, not yet run) |
-| scene threshold | 10 bits | a scene starts when the perceptual hash moves this many bits; 4 is sensitive, 16 coarse |
-| busy threshold | 16 bits | a scene whose hash moved this much gets a second pass |
-| busy `fps` | 10 | the rate of that second pass, so fast motion inside a busy scene is not lost |
-| busy scenes | 20 | how many busy scenes get the second pass, most movement first |
+| `scene_bits` | 10 | a scene starts when the perceptual hash moves this many bits; 4 is sensitive, 16 coarse |
+| `busy_bits` | 16 | a scene whose hash moved this much gets a second pass |
+| `busy_fps` | 10 | the rate of that second pass, so fast motion inside a busy scene is not lost |
+| `busy_scenes` | 20 | how many busy scenes get the second pass, most movement first |
 
 Two passes: the whole video at `fps`, then each busy scene re-rendered from the same template with `start`,
-`end` and the busy `fps` (one rendered statement per scene, built from pass one's receipts and run by `array_agg(selfdispatch(sql))`). Verified: the second pass
+`end` and the busy `fps` (one rendered statement per scene, built from pass one's receipts and run by
+`array_agg(selfdispatch(sql))`). The template's context is the row: `video`, `out_dir`, `fps`, `start`, `end`,
+`width`, `quality`, `sql_tag`; a different slice or rate is a different row, never a different program. Verified: the second pass
 at 10 fps over the 5 busiest scenes added 330 frames in 25 s, same 75 scenes.
 
 The template is `~/duckdb-skills/skills/tera/references/video_frames.tera`. It renders a `read_csv` over a
 pipe: the frame writer prints `second,path` per frame as it writes it, `read_csv` consumes the stream, and
 `pic_phash(path)` runs per row as it arrives. A slice (`start`, `end`) at any `fps` is the same template. The
 frames come back in the receipts and nothing is stored but the JPEGs: the query returns
-`scene, starts, ends, seconds_on_screen, frames, most_bits_changed, settled_frame`, one row per scene.
+`scene, starts, ends, seconds_on_screen, frame_paths, frames, most_bits_changed, settled_frame`, one row per scene.
 
 ## 2. Read the settled frames, longest scenes first
 
@@ -88,5 +90,3 @@ scene detection and is 20x cheaper.
 - Frames are scratch: write them under the session scratchpad or next to the video, never into a repo.
 - A screen recording of client data is client data: counts and names in anything written, no values.
 - No `.sh` and no Python in the path: the frame writer is a heredoc inside the Tera template, run by `read_csv`.
-- The ffmpeg branch of the template is written but unverified; the first run with `engine = 'ffmpeg'`
-  should be checked against the avfoundation frame count and then noted here.
