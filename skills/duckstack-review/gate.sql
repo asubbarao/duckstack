@@ -31,7 +31,8 @@ WITH wanted AS (
     SELECT file_path, status, side, (e.row->>'is_text')::BOOLEAN AS is_text, e.row->>'text' AS content,
            CASE WHEN e.row IS NULL THEN coalesce(left(receipt.body, 300), receipt.error) END AS read_error
     FROM read_dispatch CROSS JOIN UNNEST(receipts) AS r(receipt)
-    CROSS JOIN UNNEST(coalesce(TRY_CAST(receipt.body AS JSON[]), [NULL::JSON])) AS e(row)
+    -- a file that exists reads as one row, so no rows is a failure too
+    CROSS JOIN UNNEST(coalesce(nullif(TRY_CAST(receipt.body AS JSON[]), []), [NULL::JSON])) AS e(row)
 )
 SELECT file_path, status, side, content, read_error FROM blobs WHERE is_text IS NOT false;
 CREATE OR REPLACE VIEW pr_files AS
