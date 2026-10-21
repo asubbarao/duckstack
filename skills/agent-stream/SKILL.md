@@ -65,13 +65,13 @@ each a `JSON` column, for every session and subagent. Hook timings, denials and 
 ```sql
 WITH hook_runs AS (
     PIVOT (FROM agent.attachment_fields WHERE starts_with(attachment_type, 'hook_') AND ts > now() - INTERVAL 2 DAY)
-    ON key USING first(value) GROUP BY transcript, file_row_number
+    ON key USING max(value) GROUP BY transcript, file_row_number   -- one value per (line, key), so max loses nothing
 )
-SELECT hookEvent, command, len(list(file_row_number)) AS runs, median(durationMs::DOUBLE) AS p50_ms,
+SELECT hookEvent, command, count(file_row_number) AS runs, median(durationMs::DOUBLE) AS p50_ms,
        max(durationMs::DOUBLE) AS max_ms, count_if(timedOut = 'true') AS timeouts
 FROM hook_runs GROUP BY ALL ORDER BY runs DESC;
 
-SELECT toolDenialKind ->> '$' AS denial_kind, len(list(file_row_number)) AS denials
+SELECT toolDenialKind ->> '$' AS denial_kind, count(file_row_number) AS denials
 FROM agent.lines WHERE toolDenialKind IS NOT NULL AND (timestamp ->> '$')::TIMESTAMPTZ > now() - INTERVAL 2 DAY
 GROUP BY ALL ORDER BY denials DESC;
 ```
