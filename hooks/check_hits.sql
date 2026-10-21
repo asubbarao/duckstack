@@ -176,9 +176,11 @@ SELECT 'sql_new_table' AS check_id, call_id, tool_name, coalesce(next_prompt_cor
 UNION ALL
 SELECT 'sql_new_table_in_file' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((list_contains(sql_statement_kinds, 'create_table') AND list_contains(sql_sources, 'file')), false)
 UNION ALL
-SELECT 'sql_or_of_patterns' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((sql_has_or_of_patterns), false)
+SELECT 'sql_or_of_patterns' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((sql_or_pattern_max >= 3), false)
 UNION ALL
-SELECT 'sql_or_predicate' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((sql_or_node_count > 0 AND NOT sql_has_or_of_patterns), false)
+SELECT 'sql_or_of_two_patterns' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((sql_or_pattern_max = 2), false)
+UNION ALL
+SELECT 'sql_or_predicate' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((sql_or_node_count > 0 AND sql_or_pattern_max < 2), false)
 UNION ALL
 SELECT 'sql_pattern_functions' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((list_has_any(sql_functions, ['regexp_matches', 'regexp_full_match', 'regexp_replace', 'regexp_extract', 'regexp_extract_all', 'regexp_split_to_array', 'regexp_split_to_table', 'string_split_regex', 'str_split_regex', 'regexp_escape'])), false)
 UNION ALL

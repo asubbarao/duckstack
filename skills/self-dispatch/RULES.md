@@ -58,8 +58,10 @@ writing SQL on this machine.
     regex on backend data, `generate_subscripts`, positional `split_part` surgery (09-22, 09-23, 10-10).
     **`OR` is discouraged, not banned** (10-20): "there is not actually anything wrong with the or likes honestly, but
     OR statement in where clauses is a 'risk' at least when humans write sql"; "ors like are fine for one off queries
-    occasionally". Prefer `IN`, `IS [NOT] DISTINCT FROM`, null checks; a list of patterns is
-    `string_contains_any(col, [terms])`; include/exclude rules are `WHERE CASE WHEN … THEN true WHEN … THEN false …
+    occasionally". Prefer `IN`, `IS [NOT] DISTINCT FROM`, null checks. One or two ORed patterns are fine; a chain of
+    three or more is blocked by the hook: "chains are not great you can block it". A list of patterns is
+    `string_contains_any(col, [terms])` (sitting_duck, literal, case-sensitive), or `string_contains_any_i` / `lower(col)`
+    to ignore case; include/exclude rules are `WHERE CASE WHEN … THEN true WHEN … THEN false …
     ELSE false END`. In a `WHERE`, `ELSE NULL` and `ELSE false` drop the same rows; under `NOT` they differ.
 14. **Descriptive names** for CTEs and aliases; "sd is not descriptive at all" (09-22). A soft rule for aliases
     (10-20): a CTE gets a full name (`comment_html`); a table alias in a join may be 2–4 letters (`users u`,
