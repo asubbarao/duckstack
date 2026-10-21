@@ -195,7 +195,7 @@ WITH primary_checks AS (SELECT unnest([
  'action': 'block', 'hook_event': 'PreToolUse', 'hook_decision': 'deny', 'replaces_hooks': []::VARCHAR[]},
 {'check_id': 'sql_or_of_patterns', 'rule_id': '01a14840-dca3-7b8c-93f5-262b0dd56044', 'tools': ['@sql'],
  'predicate_sql': $p$sql_or_pattern_max >= 3$p$,
- 'message': 'An OR chain of 3+ LIKE / ILIKE / contains patterns: write string_contains_any(col, [''a'', ''b'', ''c'']) (sitting_duck; literal, case-sensitive), or string_contains_any_i(col, [...]) to ignore case (or lower(col) with lowercase terms). Anchored or inner-wildcard patterns (''abc%'', ''%a%b%''), mixed case rules or several columns: WHERE CASE WHEN … THEN true WHEN … THEN false … ELSE false END. LIKE and ILIKE read _ and % as wildcards: ILIKE ''%policy_number%'' also matched ''Policy number''; string_contains_any is literal.',
+ 'message': 'An OR chain of 3+ LIKE / ILIKE / contains patterns: string_contains_any(col, [''a'', ''b'', ''c'']) (sitting_duck; literal, case-sensitive) or string_contains_any_i to ignore case. Anchored or inner-wildcard patterns, or several columns: WHERE CASE WHEN … THEN true … ELSE false END. LIKE reads _ and % as wildcards; string_contains_any does not.',
  'action': 'block', 'hook_event': 'PreToolUse', 'hook_decision': 'deny', 'replaces_hooks': ['H2', 'H3']},
 {'check_id': 'sql_or_of_two_patterns', 'rule_id': 'or-of-two-patterns-2026-10-20', 'tools': ['@sql'],
  'predicate_sql': $p$sql_or_pattern_max = 2$p$,
