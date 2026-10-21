@@ -267,7 +267,7 @@ A live view straight over a CLI reader is fine and readable:
 
 ## How to run it
 
-Every PR on asubbarao/duckstack goes through the review queue ([queue.sql](queue.sql), launchd every minute), and
+Every PR on asubbarao/duckstack goes through the review queue ([queue.sql](queue.sql), launchd every three minutes), and
 main accepts only PRs with both of its statuses green:
 - `duckstack/rules`: [gate.sql](gate.sql) runs the hook's own checks (`hooks/hook_checks.sql`) on every changed
   `.sql` file and ```sql block, exactly as on an agent's tool call. A new antipattern the owner names is one more
