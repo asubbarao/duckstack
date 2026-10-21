@@ -30,7 +30,8 @@ WITH intent AS (
                                                        'problem': {'type': 'string'}, 'rewrite': {'type': 'string'}}}}}}::JSON::VARCHAR AS review_schema,
            $t$SELECT * FROM read_json($src${{ fetch_cmd | join(sep=" ") }} && {{ list_cmd | join(sep=" ") }} |$src$)$t$ AS listing_template,
            -- the merge base is git's (duck_tails has none), taken by the program's own shell; env_words are sh-quoted
-           $t$SELECT * FROM read_json($src$cd '{{ checkout }}' && PR_BASE=$({{ git_in_repo | join(sep=" ") }} merge-base origin/main {{ head_sha }}) {{ env_words | join(sep=" ") }} {{ duckdb_file | join(sep=" ") }} {{ program }} |$src$)$t$ AS program_template,
+           quote_literal(checkout) AS checkout_literal,
+           $t$SELECT * FROM read_json($src$cd {{ checkout_literal }} && PR_BASE=$({{ git_in_repo | join(sep=" ") }} merge-base origin/main {{ head_sha }}) {{ env_words | join(sep=" ") }} {{ duckdb_file | join(sep=" ") }} {{ program }} |$src$)$t$ AS program_template,
            '{{ results_dir }}/{{ pr_number }}-{{ head_sha | truncate(length=12, end="") }}.json' AS result_path_template,
            -- read as text and parsed once, one selector per field: a file that is not claude's JSON still reads, with no
            -- verdict, and its text is the answer

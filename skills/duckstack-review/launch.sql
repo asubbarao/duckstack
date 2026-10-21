@@ -18,10 +18,12 @@ COPY (
         FROM rubric GROUP BY ALL
     ), pr_view AS (       -- title and body come from gh here, not through the queue's shell, so free text is never quoted
         FROM read_json($cmd$"$PR_GH" pr view "$PR_NUMBER" --repo "$PR_GH_REPO" --json number,title,body |$cmd$)
+    ), versions AS (      -- the PR's file versions, read from dev once: DuckDB materializes a CTE referenced twice
+        FROM pr_versions
     ), line_copies AS (   -- each line's copies in order; the PR adds the head's copies past the base's count
         SELECT file_path, side, split.line, split.line_number,
                row_number() OVER (PARTITION BY file_path, side, split.line ORDER BY split.line_number) AS copy
-        FROM pr_versions CROSS JOIN UNNEST(string_split(content, E'\n')) WITH ORDINALITY AS split(line, line_number)
+        FROM versions CROSS JOIN UNNEST(string_split(content, E'\n')) WITH ORDINALITY AS split(line, line_number)
     ), added_by_file AS (
         SELECT new.file_path, string_agg(concat_ws(': ', new.line_number, new.line), E'\n' ORDER BY new.line_number) AS added
         FROM line_copies AS new
@@ -31,7 +33,7 @@ COPY (
         SELECT pr_changes.file_path, pr_changes.status, coalesce(added_by_file.added, '(none)') AS added,
                coalesce(head.content, '(the file is deleted)') AS content
         FROM pr_changes LEFT JOIN added_by_file USING (file_path)
-        LEFT JOIN pr_versions AS head ON head.side = 'head' AND head.read_error IS NULL AND head.file_path = pr_changes.file_path
+        LEFT JOIN versions AS head ON head.side = 'head' AND head.read_error IS NULL AND head.file_path = pr_changes.file_path
     ), pr_parts AS (      -- the gate's warnings and one section per changed file
         SELECT file_path, line AS warning FROM pr_rule_hits WHERE action = 'warn'
         UNION ALL BY NAME
