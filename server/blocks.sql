@@ -45,7 +45,8 @@ WITH line AS (
     SELECT * EXCLUDE (b, content_keys, id_keys, part_keys, message_types), coalesce(b ->> 'type', 'text') AS block_type,
            CASE WHEN list_contains(call_types, block_type) THEN 'call' WHEN list_contains(result_types, block_type) THEN 'result' END AS tool_part,
            -- a tool result's content (Claude) or output (Codex) can be a list of {type, text} parts, joined by newlines;
-           -- string_agg skips parts without text and is NULL when none has any, so coalesce moves on
+           -- string_agg skips parts without text and is NULL when none has any, so coalesce moves on. Not tera_render:
+           -- a result can hold a NUL byte, and tera aborts the whole server on one (19 boots in a row on 2026-10-21).
            [b -> k FOR k IN part_keys IF json_type(b -> k) = 'ARRAY'][1] AS part_array,
            coalesce(list_aggregate([p ->> 'text' FOR p IN CAST(part_array AS JSON[])], 'string_agg', E'\n'),
                     CASE WHEN json_type(b) = 'VARCHAR' THEN b ->> '$' END, [b ->> k FOR k IN content_keys IF b ->> k IS NOT NULL][1]) AS message_content,
