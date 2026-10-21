@@ -54,7 +54,7 @@ WITH line AS (
            [b ->> k FOR k IN id_keys IF b ->> k IS NOT NULL][1] AS tool_use_id,
            (b ->> 'is_error')::BOOLEAN AS is_error,
            coalesce(b -> 'input', try_cast(b ->> 'arguments' AS JSON)) AS tool_input, strlen(b::VARCHAR) AS content_bytes,
-           coalesce([tool_input ->> k FOR k IN command_keys IF tool_input ->> k IS NOT NULL][1], tool_input::VARCHAR) AS tool_command
+           [tool_input ->> k FOR k IN command_keys IF tool_input ->> k IS NOT NULL][1] AS tool_command
     FROM block
 )
 -- a tool call's text is its command, so the BM25 index on message_content finds the SQL and commands agents ran

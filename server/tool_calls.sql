@@ -5,8 +5,8 @@
 -- message_content is its command. block_key matches stream.blocks, so BM25 (fts_main_blocks.match_bm25(block_key,
 -- '...')) scores both.
 -- agent.tool_calls: the call rows of agent.conversation, posted from its receipt.
-WITH conversation_step AS (
-    SELECT array_agg(selfdispatch($v$
+WITH intent AS (
+    SELECT $v$
 CREATE OR REPLACE VIEW agent.conversation AS
 WITH live AS (
     SELECT * FROM stream.blocks WHERE NOT is_repeat
@@ -18,9 +18,12 @@ WITH live AS (
 SELECT live.* EXCLUDE (is_error), results.* EXCLUDE (file_path, tool_use_id), returned_at - timestamp AS took
 FROM live LEFT JOIN results USING (file_path, tool_use_id)
 WHERE tool_part IS DISTINCT FROM 'result'
-$v$)) AS receipts
+$v$ AS conversation_sql,
+           $c$CREATE OR REPLACE VIEW agent.tool_calls AS SELECT * FROM agent.conversation WHERE tool_part = 'call'$c$ AS tool_calls_sql
+), conversation_step AS (
+    SELECT tool_calls_sql, array_agg(selfdispatch(conversation_sql)) AS receipts FROM intent GROUP BY ALL
 ), tool_calls_step AS (
-    SELECT array_agg(selfdispatch($c$CREATE OR REPLACE VIEW agent.tool_calls AS SELECT * FROM agent.conversation WHERE tool_part = 'call'$c$)) AS receipts
+    SELECT array_agg(selfdispatch(tool_calls_sql)) AS receipts
     FROM conversation_step CROSS JOIN UNNEST(receipts) AS t(r) WHERE r.status = 200
 )
 SELECT r.* FROM conversation_step CROSS JOIN UNNEST(receipts) AS t(r)
