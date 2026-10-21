@@ -1,0 +1,4 @@
+{# 2. One shell command or pipeline, written as words. A '|' word pipes; a flag and its value may be one word
+   ('--max-time 30'). The template joins the words with spaces and ends the reader's command with ' |'.
+   Row: reader (read_csv | read_json | read_text | read_lines), words (list), options (text, may be empty). #}
+SELECT * FROM {{ reader }}($src${{ words | join(sep=" ") }} |$src${{ options }})

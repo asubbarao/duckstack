@@ -46,6 +46,50 @@ cmd or sql, else the whole input). The raw store below is for fields neither car
 - If a filter on several `payload` fields fails with `Failed to cast value to numerical`, project them as columns
   in one CTE and filter in the next.
 
+## Fields only `agent.lines` has
+
+The transcripts are already read: `agent.lines` has every top-level field of every line (192 columns), auto-read,
+each a `JSON` column, for every session and subagent. Hook timings, denials and attribution live only here.
+`SELECT column_name FROM duckdb_columns() WHERE schema_name = 'agent' AND table_name = 'lines'` lists them.
+
+| Question | Columns |
+|---|---|
+| Hook runs and their time | `agent.attachment_fields` where `attachment_type` starts with `hook_` (`hook_success`, `hook_cancelled`, …); keys `hookEvent`, `hookName`, `command`, `durationMs`, `timedOut`, `timeoutMs`, `exitCode` |
+| Any other attachment | `agent.attachment_fields`: one (`key`, `value`) row per field, found with `json_keys`, so no field list is typed |
+| Denied tool calls | `toolDenialKind` (`permission-rule`, `user-rejected`, `automode-blocked`; `cancelled`/`interrupted` are aborts) |
+| Which skill, MCP server or plugin | `attributionSkill`, `attributionMcpServer`, `attributionMcpTool`, `attributionPlugin` |
+| Cost and turn time | `totalCostUSD`, `modelUsage`, `durationMs`, `totalToolDuration` |
+
+`PIVOT … ON key` turns one kind of attachment back into columns, whatever keys it has:
+
+```sql
+WITH hook_runs AS (
+    PIVOT (FROM agent.attachment_fields WHERE starts_with(attachment_type, 'hook_') AND ts > now() - INTERVAL 2 DAY)
+    ON key USING max(value) GROUP BY transcript, file_row_number   -- one value per (line, key), so max loses nothing
+)
+SELECT hookEvent, command, count(file_row_number) AS runs, median(durationMs::DOUBLE) AS p50_ms,
+       max(durationMs::DOUBLE) AS max_ms, count_if(timedOut = 'true') AS timeouts
+FROM hook_runs GROUP BY ALL ORDER BY runs DESC;
+
+SELECT toolDenialKind ->> '$' AS denial_kind, count(file_row_number) AS denials
+FROM agent.lines WHERE toolDenialKind IS NOT NULL AND (timestamp ->> '$')::TIMESTAMPTZ > now() - INTERVAL 2 DAY
+GROUP BY ALL ORDER BY denials DESC;
+```
+
+Observed on dev 2026-10-20 (last two days): 13,533 `PreToolUse` runs of hook_checks, median 1,057 ms, max
+170 s, 2 timeouts; 1,272 `permission-rule` denials, 48 `user-rejected`, 11 `automode-blocked`. `timedOut` is
+`'true'` or `'false'` when present, so compare it to `'true'`; counting the field counts both.
+
+**Ways agents get this wrong** (each one seen, the last on 2026-10-20 in a `/doctor` run):
+- Reading `~/.claude/projects/*/*.jsonl` again with `read_ndjson_objects` or `read_json`. That redoes dev's work.
+  It covers a sample of files, not the store, and it skips subagent files. On the whole glob it runs past dev's
+  2-minute budget, or falls back to one `MAP(VARCHAR, JSON)` column.
+- Copying fields out to a scratch parquet or a `.duckdb` file to "save re-parsing". The parsed copy is
+  already on dev.
+- Using `json_extract_string`, regexp or `split_part` on raw line text for a field that is already a column here.
+- Writing the query before checking `duckdb_views()`. A transcript question starts with `agent.messages`,
+  `stream.blocks` or `agent.lines`.
+
 ## Rules
 
 - **One statement covers every session.** Filter by a time window, `file_path IN (…)` or `session_id IN (…)`.
