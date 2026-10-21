@@ -4,6 +4,7 @@
 -- resumed session's copy of a line: same uuid, not the earliest (timestamp, file, line) holding it; computed at each build.
 -- The line matters because Claude Desktop re-appends its history into the same file after each bridge-session line.
 -- tool_part is 'call' or 'result' for a tool call's two blocks, NULL for a message; a call's message_content is its command.
+-- timestamp is UTC, the truth; ts_pst is the same instant on the Pacific wall clock, the one readers group and show by.
 -- stream.parsed: the parse of agent.lines (fields are JSON there, hence ->> '$'); the build's input only. A view in the
 -- stream catalog resolves names inside stream, so it names dev.agent.lines.
 -- Boot posts the view, then the empty table from that receipt (a post binds alone), and returns every receipt.
@@ -17,7 +18,7 @@ CREATE OR REPLACE VIEW stream.main.parsed AS
 WITH line AS (
     SELECT ['text', 'thinking', 'output', 'content'] AS content_keys,
            ['call_id', 'tool_use_id', 'id'] AS id_keys, ['command', 'cmd', 'sql', '$'] AS command_keys,
-           ['content', 'output'] AS part_keys, ['message', 'agent_message'] AS message_types,
+           ['content', 'output'] AS part_keys, ['message', 'agent_message'] AS message_types, 'America/Los_Angeles' AS pacific_zone,
            ['tool_use', 'function_call', 'custom_tool_call'] AS call_types,
            ['tool_result', 'function_call_output', 'custom_tool_call_output'] AS result_types,
            ['<', '[Request interrupted', 'This session is being continued', 'Base directory for this skill',
@@ -34,7 +35,7 @@ WITH line AS (
                 WHEN list_contains(message_types || call_types || result_types, payload ->> 'type') THEN payload END AS msg
     FROM dev.agent.lines
 ), block AS (
-    SELECT l.* EXCLUDE (msg, codex_meta), coalesce(msg ->> 'role', msg ->> 'type') AS message_role, msg ->> 'model' AS model,
+    SELECT l.* EXCLUDE (msg, codex_meta, pacific_zone), l.timestamp AT TIME ZONE l.pacific_zone AS ts_pst, coalesce(msg ->> 'role', msg ->> 'type') AS message_role, msg ->> 'model' AS model,
            t.b, t.block_index, concat_ws(':', file_path, line, t.block_index) AS block_key
     FROM line l
     CROSS JOIN UNNEST(CASE json_type(msg -> 'content') WHEN 'ARRAY' THEN (msg -> 'content')::JSON[] ELSE [coalesce(msg -> 'content', msg)] END)
@@ -43,12 +44,11 @@ WITH line AS (
 ), parsed AS (
     SELECT * EXCLUDE (b, content_keys, id_keys, part_keys, message_types), coalesce(b ->> 'type', 'text') AS block_type,
            CASE WHEN list_contains(call_types, block_type) THEN 'call' WHEN list_contains(result_types, block_type) THEN 'result' END AS tool_part,
-           -- a tool result's content (Claude) or output (Codex) can be a list of {type, text} parts, joined by
-           -- newlines. string_agg, not tera_render: a result can hold a NUL byte, and tera aborts the whole
-           -- server on one (CString unwrap, src/lib.rs:135; 19 boots in a row on 2026-10-21).
+           -- a tool result's content (Claude) or output (Codex) can be a list of {type, text} parts, joined by newlines;
+           -- string_agg skips parts without text and is NULL when none has any, so coalesce moves on. Not tera_render:
+           -- a result can hold a NUL byte, and tera aborts the whole server on one (19 boots in a row on 2026-10-21).
            [b -> k FOR k IN part_keys IF json_type(b -> k) = 'ARRAY'][1] AS part_array,
-           [p ->> 'text' FOR p IN CAST(part_array AS JSON[]) IF p ->> 'text' IS NOT NULL] AS text_parts,
-           coalesce(list_aggregate(text_parts, 'string_agg', E'\n'),
+           coalesce(list_aggregate([p ->> 'text' FOR p IN CAST(part_array AS JSON[])], 'string_agg', E'\n'),
                     CASE WHEN json_type(b) = 'VARCHAR' THEN b ->> '$' END, [b ->> k FOR k IN content_keys IF b ->> k IS NOT NULL][1]) AS message_content,
            b ->> 'name' AS tool_name,
            -- call_id first: a Codex call and its output share call_id, and each also has its own item id
@@ -59,7 +59,7 @@ WITH line AS (
     FROM block
 )
 -- a tool call's text is its command, so the BM25 index on message_content finds the SQL and commands agents ran
-SELECT * EXCLUDE (harness_prefixes, command_keys, call_types, result_types, part_array, text_parts)
+SELECT * EXCLUDE (harness_prefixes, command_keys, call_types, result_types, part_array)
          REPLACE (coalesce(message_content, tool_command) AS message_content),
        message_role = 'user' AND block_type IN ('text', 'input_text') AND NOT is_agent
        AND NOT list_bool_or([starts_with(ltrim(message_content), p) FOR p IN harness_prefixes]) AS is_prompt
