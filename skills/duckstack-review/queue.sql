@@ -10,11 +10,11 @@
 -- The state is the statuses on GitHub and the files in ~/.duck/review; a new push is a new head and is checked again.
 WITH intent AS (
     SELECT getenv('HOME') AS home, concat(home, '/duckdb-skills') AS repo, getenv('PWD') AS checkout,
-           concat(home, '/.duck/review/results') AS results_dir, 'asubbarao/duckstack' AS gh_repo,
+           concat(home, '/.duck/review/results') AS results_dir, 'asubbarao/duckstack' AS gh_repo, '/opt/homebrew/bin/gh' AS gh,
            ['git', '-C', repo] AS git_in_repo,
            list_concat(git_in_repo, ['fetch', '-q', 'origin', '+refs/heads/main:refs/remotes/origin/main',
                                      quote_literal('+refs/pull/*/head:refs/remotes/origin/pr/*')]) AS fetch_cmd,
-           ['/opt/homebrew/bin/gh', 'pr', 'list', '--repo', gh_repo, '--state', 'open', '--author', 'asubbarao', '--draft=false',
+           [gh, 'pr', 'list', '--repo', gh_repo, '--state', 'open', '--author', 'asubbarao', '--draft=false',
             '--json', 'number,id,headRefOid,autoMergeRequest,statusCheckRollup'] AS list_cmd,
            ['/opt/homebrew/bin/duckdb', ':memory:', '-json', '-f'] AS duckdb_file,
            'skills/duckstack-review/gate.sql' AS gate_program, 'skills/duckstack-review/launch.sql' AS launch_program,
@@ -31,6 +31,7 @@ WITH intent AS (
            $t$SELECT * FROM read_json($src${{ fetch_cmd | join(sep=" ") }} && {{ list_cmd | join(sep=" ") }} |$src$)$t$ AS listing_template,
            -- the merge base is git's (duck_tails has none), taken by the program's own shell; env_words are sh-quoted
            $t$SELECT * FROM read_json($src$cd '{{ checkout }}' && PR_BASE=$({{ git_in_repo | join(sep=" ") }} merge-base origin/main {{ head_sha }}) {{ env_words | join(sep=" ") }} {{ duckdb_file | join(sep=" ") }} {{ program }} |$src$)$t$ AS program_template,
+           '{{ results_dir }}/{{ pr_number }}-{{ head_sha | truncate(length=12, end="") }}.json' AS result_path_template,
            -- read as text: a file that is not claude's JSON still reads, and is an 'error' with its text
            $t$SELECT content FROM read_text('{{ result_path }}')$t$ AS result_template,
            MAP {'duckstack/rules': MAP {'failure': 'Blocking rule hits; see the PR comment', 'success': 'No blocking rule hits'},
@@ -60,7 +61,8 @@ _{{ signatures[context] }}_$t$ AS comment_template,
            map_from_entries([{k: s ->> 'context', v: upper(s ->> 'state')}
                              FOR s IN ((pr -> 'statusCheckRollup')::JSON[]) IF (s ->> 'context') IS NOT NULL]) AS statuses,
            statuses['duckstack/rules'] AS rules_state, statuses['duckstack/review'] AS review_state,
-           concat(results_dir, '/', pr_number, '-', left(head_sha, 12), '.json') AS result_path
+           tera_render(result_path_template, {'results_dir': results_dir, 'pr_number': pr_number, 'head_sha': head_sha}::JSON,
+                       autoescape := false) AS result_path
     FROM listing CROSS JOIN UNNEST(receipts) AS t(receipt) CROSS JOIN UNNEST(TRY_CAST(receipt.body AS JSON[])) AS e(pr)
 ), planned AS (        -- the step each PR has due, and the env its program runs with
     SELECT *, path_exists(result_path) AS has_result,
@@ -69,12 +71,11 @@ _{{ signatures[context] }}_$t$ AS comment_template,
            CASE WHEN review_due THEN launch_program WHEN rules_state IS NULL THEN gate_program END AS program,
            CASE WHEN review_due THEN 'duckstack/review' ELSE 'duckstack/rules' END AS program_status,
            review_state = 'PENDING' AND has_result AS result_due,
-           MAP {'PR_REPO': repo, 'PR_GH_REPO': gh_repo, 'PR_NUMBER': pr_number::VARCHAR, 'PR_HEAD': head_sha,
+           MAP {'PR_REPO': repo, 'PR_GH': gh, 'PR_GH_REPO': gh_repo, 'PR_NUMBER': pr_number::VARCHAR, 'PR_HEAD': head_sha,
                 'REVIEW_RESULT': result_path, 'REVIEW_CLAUDE': claude_line, 'REVIEW_SETTINGS': claude_settings,
                 'REVIEW_SCHEMA': review_schema} AS program_env,
-           -- NAME='value' for sh: a ' inside the value closes, escapes and reopens the quote
-           list_transform(map_entries(program_env),
-                          lambda env: concat(env.key, $q$='$q$, replace(env.value, $q$'$q$, $q$'\''$q$), $q$'$q$)) AS env_words
+           -- NAME='value' for sh; no value holds a ' (paths, SHAs, the number, the claude line, quote-free JSON)
+           list_transform(map_entries(program_env), lambda env: concat_ws('=', env.key, quote_literal(env.value))) AS env_words
     FROM listed
 ), programs AS (
     SELECT *, 'programs' AS stage,
@@ -87,17 +88,17 @@ _{{ signatures[context] }}_$t$ AS comment_template,
     SELECT *, 'resulting' AS stage,
            array_agg(selfdispatch(tera_render(result_template, planned::JSON, autoescape := false))) AS receipts
     FROM planned WHERE result_due GROUP BY ALL
-), result_files AS (   -- a failed read (dev unreachable or erroring) has no row, posts nothing, and is read again next tick
-    SELECT resulting.* EXCLUDE (receipts, stage), TRY_CAST(file_row ->> 'content' AS JSON) AS result_json, file_row ->> 'content' AS content
+), reviews AS (        -- the verdict is claude's structured_output; with none, what the file says is the answer.
+    -- A failed read (dev unreachable or erroring) has no row, posts nothing, and is read again next tick.
+    SELECT resulting.* EXCLUDE (receipts, stage), file_row ->> 'content' AS content, TRY_CAST(content AS JSON) AS result_json,
+           result_json -> 'structured_output' AS review, review ->> 'verdict' AS verdict,
+           TRY_CAST(review -> 'findings' AS JSON[]) AS findings, left(coalesce(result_json ->> 'result', content), 3000) AS answer
     FROM resulting CROSS JOIN UNNEST(receipts) AS t(receipt) CROSS JOIN UNNEST(TRY_CAST(receipt.body AS JSON[])) AS e(file_row)
     WHERE receipt.status BETWEEN 200 AND 299
-), reviews AS (        -- the verdict is claude's structured_output; with none, what the file says is the answer
-    SELECT *, result_json -> 'structured_output' AS review, left(coalesce(result_json ->> 'result', content), 3000) AS answer
-    FROM result_files
 ), finding_lines AS (
     SELECT pr_number, string_agg(tera_render($t$- `{{ file }}:{{ line }}` **{{ rule }}**: {{ problem }}
-  Rewrite: {{ rewrite }}$t$, finding, autoescape := false), E'\n') AS lines
-    FROM reviews CROSS JOIN UNNEST(TRY_CAST(review -> 'findings' AS JSON[])) AS f(finding)
+  Rewrite: {{ rewrite }}$t$, finding, autoescape := false), E'\n' ORDER BY finding_number) AS lines
+    FROM reviews CROSS JOIN UNNEST(findings) WITH ORDINALITY AS f(finding, finding_number)
     GROUP BY pr_number
 ), outcomes AS (       -- one row per PR and status to post this tick; a row with lines also gets a comment
     SELECT *, program_status AS context,
@@ -106,7 +107,7 @@ _{{ signatures[context] }}_$t$ AS comment_template,
     FROM gated
     UNION ALL BY NAME
     SELECT reviews.*, 'duckstack/review' AS context,
-           CASE review ->> 'verdict' WHEN 'clean' THEN 'success' WHEN 'changes' THEN 'failure' ELSE 'error' END AS state,
+           CASE verdict WHEN 'clean' THEN 'success' WHEN 'changes' THEN 'failure' ELSE 'error' END AS state,
            -- no verdict came back: show what the reviewer wrote, so the error says why
            CASE WHEN review IS NULL THEN tera_render($t$The reviewer gave no verdict. Its answer, cut at 3000 characters:
 

@@ -35,23 +35,6 @@ WITH wanted AS (
     CROSS JOIN UNNEST(coalesce(nullif(TRY_CAST(receipt.body AS JSON[]), []), [NULL::JSON])) AS e(row)
 )
 SELECT file_path, status, side, content, read_error FROM blobs WHERE is_text IS NOT false;
-CREATE OR REPLACE VIEW pr_files AS
-SELECT * EXCLUDE (side, read_error) FROM pr_versions WHERE side = 'head' AND read_error IS NULL;
-
--- The lines a PR adds: of a line's numbers in the new file, those past the old file's copies of it.
-CREATE OR REPLACE VIEW pr_added_lines AS
-WITH new_lines AS (
-    SELECT file_path, split.line, list(split.line_number ORDER BY split.line_number) AS line_numbers
-    FROM pr_files CROSS JOIN UNNEST(string_split(content, E'\n')) WITH ORDINALITY AS split(line, line_number)
-    GROUP BY ALL
-), old_lines AS (
-    SELECT file_path, old.line, count(old.line) AS copies
-    FROM pr_versions CROSS JOIN UNNEST(string_split(content, E'\n')) AS old(line)
-    WHERE side = 'base' GROUP BY ALL
-)
-SELECT new_lines.file_path, added.line_number, new_lines.line
-FROM new_lines LEFT JOIN old_lines USING (file_path, line)
-CROSS JOIN UNNEST(new_lines.line_numbers[coalesce(old_lines.copies, 0) + 1:]) AS added(line_number);
 
 -- A ```sql block whose first line is '-- BAD' is a deliberate counter-example: its hits are reported as 'example'.
 CREATE OR REPLACE VIEW pr_sql AS
@@ -94,28 +77,7 @@ SELECT file_path, action,
        tera_render($t$- **{{ action }}** `{{ check_id }}` in {{ file_path }}: {{ message }}$t$, hit::JSON, autoescape := false) AS line
 FROM hits AS hit;
 
--- Every changed file as a prompt section, deletions included, so a PR that only deletes still has one.
-CREATE OR REPLACE VIEW pr_sections AS
-WITH added_by_file AS (
-    SELECT file_path, string_agg(concat_ws(': ', line_number, line), E'\n' ORDER BY line_number) AS added
-    FROM pr_added_lines GROUP BY file_path
-), section_rows AS (
-    SELECT pr_changes.file_path, pr_changes.status, coalesce(added_by_file.added, '(none)') AS added,
-           coalesce(pr_files.content, '(the file is deleted)') AS content
-    FROM pr_changes LEFT JOIN pr_files USING (file_path) LEFT JOIN added_by_file USING (file_path)
-    WHERE pr_changes.file_path <> 'hooks/check_hits.sql'   -- generated from hook_checks.sql by render_hits.sql
-)
-SELECT file_path, tera_render($t$## {{ file_path }} ({{ status }})
-
-Lines this PR adds, as line: text
-{{ added }}
-
-The whole file after the PR
-{{ content }}
-$t$, section_row::JSON, autoescape := false) AS section
-FROM section_rows AS section_row;
-
--- The PR as one row: the rule lines for its comment, the warnings and file sections for the reviewer's prompt.
+-- The PR as one row: whether it is blocked, and the rule lines for its comment.
 CREATE OR REPLACE VIEW pr_review AS
 WITH parts AS (
     SELECT file_path, action, line FROM pr_rule_hits
@@ -123,14 +85,10 @@ WITH parts AS (
     SELECT file_path, 'block', tera_render($t$- **block** `read_failed` in {{ file_path }} ({{ side }}): {{ read_error }}$t$,
                                            failed::JSON, autoescape := false)
     FROM pr_versions AS failed WHERE read_error IS NOT NULL
-    UNION ALL BY NAME
-    SELECT file_path, section FROM pr_sections
 )
 SELECT getenv('PR_NUMBER')::INTEGER AS pr_number, getenv('PR_BASE') AS base_sha,
        coalesce(bool_or(action = 'block'), false) AS blocked,
-       string_agg(line, E'\n' ORDER BY action, file_path, line) AS rule_lines,
-       coalesce(string_agg(CASE WHEN action = 'warn' THEN line END, E'\n' ORDER BY file_path, line), 'none') AS warnings,
-       string_agg(section, E'\n' ORDER BY file_path) AS files
+       string_agg(line, E'\n' ORDER BY action, file_path, line) AS rule_lines
 FROM parts;
 .output stdout
 .mode json
