@@ -102,6 +102,33 @@ Observed on dev 2026-10-20 (last two days): 13,533 `PreToolUse` runs of hook_che
 - **agent_data:** `read_conversations` is only for one file the store doesn't hold yet, with
   `path := '<that file>'`. Never point it at `~/.claude` or `~/.codex`.
 
+## Now: what every session is doing
+
+Start here when asked about "the chat", "a session" or anything happening right now. Concurrent sessions
+include other terminals, Claude Desktop and Codex. One row per session active in the last hour from `agent.sessions`
+(every column but the big `prompts` and `block_keys`; `last_prompt` says what it was asked), its minutes idle, and
+the other live sessions on its branch. Two sessions on one branch are about to collide.
+
+```sql
+WITH live AS (
+  SELECT * EXCLUDE (prompts, block_keys), date_diff('minute', last_active, now()) AS idle_min,
+         ['staging'] AS shared_checkout_branches
+  FROM agent.sessions WHERE last_active > now() - INTERVAL 1 HOUR
+), shared AS (
+  SELECT a.session_id, array_agg(b.session_id) AS shares_branch_with
+  FROM live a JOIN live b ON a.git_branch = b.git_branch AND a.session_id <> b.session_id
+  WHERE NOT list_contains(a.shared_checkout_branches, a.git_branch) GROUP BY a.session_id
+)
+SELECT * EXCLUDE (shared_checkout_branches) FROM live LEFT JOIN shared USING (session_id) ORDER BY last_active DESC;
+```
+
+- `agent.sessions` sits on `stream.blocks`, so a session shows up to ~20 minutes late and `idle_min` counts from
+  its last stored block.
+- `shared_checkout_branches` are branches every session in the main checkout reports (`staging`), so they aren't
+  counted as an overlap.
+- A Codex session's `git_branch` and `cwd` are NULL, so it never shows an overlap, until asubbarao/duckstack#97
+  (Codex session fields from `session_meta`) is merged.
+
 ## Turns: each prompt and the reply that closed it
 
 Each prompt pairs with the last assistant text before the next prompt. `reply IS NULL` means no reply yet.
