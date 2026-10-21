@@ -187,37 +187,50 @@ a heredoc, also matches, so read `cmd`. Codex's `exec` tool takes JavaScript tha
 
 ## GitHub and agents in one timeline
 
-"What happened to PR X", "who merged it", "why has it no review": one query, every PR and every session.
-GitHub's actor is `asubbarao-ifr` for Alok and every agent on this Mac, so the agent `session` is the real who.
-Agent rows join their PR on `git_branch` = the PR's head branch. Change only the WHERE
-(`pr = 1685`, a `ts` window, `session = '…'`, `what = 'merged'`).
+"What happened to PR X", "who merged it", "why has it no review": one query over the PRs you pick and every
+session on their branches. GitHub's actor is `asubbarao-ifr` for Alok and every agent on this Mac, so the agent
+`session` is the real who. Agent rows join their PR on `git_branch` = the PR's head branch. Pick PRs in `picked`
+(`pr = 1685`, `pr IN (…)`); narrow rows in the last WHERE (a `ts` window, `session = '…'`, `what = 'merged'`).
 
 ```sql
 LOAD shellfs;
 WITH prs AS (
   FROM read_json($c$gh pr list --repo inframe-risk/inframe --state all --limit 5000 --json number,headRefName,title |$c$)
-  SELECT number AS pr, headRefName AS branch, title
-),
-gh_events AS (
-  FROM read_json($c$gh api 'repos/inframe-risk/inframe/issues/events?per_page=100' --paginate --jq '.[] | {pr: .issue.number, ts: .created_at, what: .event, account: .actor.login, detail: (.commit_id // "")}' |$c$, format := 'newline_delimited')
-  SELECT 'github' AS src, pr, ts::TIMESTAMPTZ AS ts, account, NULL AS session, what, detail
-),
-gh_comments AS (
-  FROM read_json($c$gh api 'repos/inframe-risk/inframe/issues/comments?per_page=100' --paginate --jq '.[] | {pr: (.issue_url | split("/") | last | tonumber), ts: .created_at, account: .user.login, detail: .body[:160]}' |$c$, format := 'newline_delimited')
-  SELECT 'github' AS src, pr, ts::TIMESTAMPTZ AS ts, account, NULL AS session, 'comment' AS what, detail
-),
-agents AS (
-  FROM agent.messages JOIN prs ON agent.messages.git_branch = prs.branch
-  SELECT 'agent' AS src, pr, timestamp AS ts, 'asubbarao-ifr' AS account, session_id AS session,
-         coalesce(tool_name, message_role) AS what, coalesce(tool_command_head, head)[:160] AS detail
+  SELECT 'inframe-risk/inframe' AS repo, number AS pr, headRefName AS branch, title
+), picked AS (
+  FROM prs WHERE pr = 1685
+), github_statements AS (
+  SELECT tera_render($t$
+    SELECT {{ pr }} AS pr, coalesce(created_at, submitted_at, author.date)::TIMESTAMPTZ AS ts,
+           coalesce(actor.login, user.login) AS account, event AS what, coalesce(body, commit_id, sha) AS detail
+    FROM read_json($c$gh api 'repos/{{ repo }}/issues/{{ pr }}/timeline?per_page=100' --paginate --jq '.[]' |$c$, format := 'newline_delimited')
+  $t$, picked::JSON, autoescape := false) AS sql
+  FROM picked
+), github_dispatched AS (
+  SELECT array_agg(selfdispatch(sql)) AS receipts FROM github_statements
+), github AS (
+  SELECT 'github' AS src, (event ->> 'pr')::INTEGER AS pr, (event ->> 'ts')::TIMESTAMPTZ AS ts,
+         event ->> 'account' AS account, event ->> 'what' AS what, event ->> 'detail' AS detail
+  FROM github_dispatched CROSS JOIN UNNEST(receipts) AS r(receipt) CROSS JOIN UNNEST(receipt.body::JSON[]) AS e(event)
+), agents AS (
+  FROM agent.messages AS m JOIN picked ON m.git_branch = picked.branch
+  SELECT 'agent' AS src, pr, m.timestamp AS ts, 'asubbarao-ifr' AS account, m.session_id AS session,
+         coalesce(m.tool_name, m.message_role) AS what, coalesce(m.tool_command_head, m.head) AS detail
+  WHERE NOT m.is_repeat
 )
-FROM (FROM gh_events UNION ALL BY NAME FROM gh_comments UNION ALL BY NAME FROM agents)
+FROM (FROM github UNION ALL BY NAME FROM agents)
 SELECT ts, pr, src, account, session, what, detail
 WHERE account = 'asubbarao-ifr'
 ORDER BY ts;
 ```
 
-`at` is a reserved word, so the time column is `ts`. `head` is null on tool_use rows; `tool_command_head` holds the command.
+Each picked PR is one `issues/<pr>/timeline` call (comments, reviews, commits, merged, closed), so nothing pages
+through the whole repo. `what` is GitHub's own event name (`commented`, `reviewed`, `merged`); a commit has no
+login, so drop the last WHERE to see commits. `at` is a reserved word, so the time column is `ts`. `head` is null
+on tool_use rows; `tool_command_head` holds the command.
+
+Ran on dev 2026-10-21 for PR #1685: 14 GitHub rows and 5,708 agent rows in 10 s; the two repo-wide scans this
+replaces took 72 s and returned 1,257 resumed-session copies on top.
 
 ## Plans
 
