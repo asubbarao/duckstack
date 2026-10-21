@@ -44,10 +44,6 @@ CREATE OR REPLACE VIEW due_prs AS
 SELECT * FROM open_prs WHERE list_contains([rules_state IS NULL, review_due], true);
 
 -- What each PR changes since it left main: base = the newest commit of the PR's history that main also has.
--- pr_changes and pr_versions keep LATERAL (2026-10-20, 11 open PRs, same rows from every form): LATERAL 0.12 s; a
--- three-stage self-dispatch 0.12–0.13 s; joins first (bases from gh's commits joined to git_parents(all_refs := true)
--- and git_log of main, files from gh's files, one read_text dispatch) 0.065 s, but asking gh for files and commits
--- makes the gh call 0.83 → 1.19 s (median of 3), and GitHub caps both lists per PR.
 CREATE OR REPLACE VIEW pr_changes AS
 WITH main_history AS (
     SELECT main_log.commit_hash

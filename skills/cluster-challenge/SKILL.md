@@ -34,12 +34,15 @@ answering and which results it actually used. The rewrite must answer those, not
    `fs.files` for find/ls, `fts` BM25 for search, `rapidfuzz` for near-duplicates.
 3. **Filter at the source.** Pathspecs, `--json` field lists, per-depth globs, WHERE before the reader returns.
 4. **Aggregate before returning.** Per file, per key, lists instead of rows when the question is "which/where".
-5. **Per-row commands are self-dispatched.** Atom `array_agg(selfdispatch(tera_render($t$…$t$, row::JSON,
-   autoescape := false)))`, molecule `UNNEST(receipts) … UNNEST(TRY_CAST(receipt.body AS JSON[])) AS e(row)`.
+5. **Per-row commands are self-dispatched.** Render each statement into its own `sql` column first
+   (`tera_render($t$…$t$, row::JSON, autoescape := false) AS sql`) so it can be selected and read, then
+   `SELECT key_cols, array_agg(selfdispatch(sql)) AS receipts … GROUP BY ALL` and
+   `CROSS JOIN UNNEST(receipts) AS r(receipt)`, `UNNEST(TRY_CAST(receipt.body AS JSON[])) AS e(row)` for its rows.
    Each statement selects its own keys. Never match receipts to inputs by array position. A LATERAL table
    function is allowed but rarely better; keep one only when it measures faster than the self-dispatch form.
 6. **Stream.** `read_csv`/`read_json`/`read_lines` over a command; `read_text` only for an intended one-blob read.
-   Never return `file_path` from a command reader, never `SELECT *`, never EXPLAIN output.
+   In what comes back to the agent, never return `file_path` from a command reader, never `SELECT *`, never
+   EXPLAIN output; the dispatched statement itself may be `SELECT * FROM <reader>(…)`.
 7. **One turn.** Questions the cluster asked across turns go in one statement. Return each answer as
    `(question, lines[])` rows from UNION ALL; a wide UNION ALL BY NAME pads every row with NULL columns. When the
    answer is long text, split it near 49 KB per call and send the calls in parallel in the same turn (the MCP result

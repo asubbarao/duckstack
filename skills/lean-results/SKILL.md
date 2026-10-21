@@ -30,7 +30,9 @@ median 912 new tokens, a Bash turn 810 (+13%); p90 4,027 vs 2,637 (+53%). Writin
 - Ask the structural question: parse (`read_ast`, `parse_ast_list`, `parser_tools`), aggregate per file or per
   key, project the 2–4 columns the next step needs. That is where the savings are.
 - Never return `file_path` from `read_lines`/`read_csv` over a command: it repeats the whole command on every row.
-  Select `content` (or named columns) only. Never `SELECT *` from a reader or `git_log`.
+  Select `content` (or named columns) only in what comes back to you: `SELECT *` from a reader returned to the
+  agent cost 1.86–4.5×. The dispatched statement inside a self-dispatch (`SELECT * FROM <reader>(…)`) is not
+  that; project in the outer SELECT over the receipts.
 - When you do want the text, take it as one row (`read_text`, a batch read you intend) instead of one JSON row per
   line (+29–57%).
 - `EXPLAIN ANALYZE` returns 10–90 KB: read the `latency` only, or don't run it.
