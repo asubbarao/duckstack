@@ -33,9 +33,7 @@ directory literals, then run its one query through the dev MCP `query` tool. The
 | busy scenes | 20 | how many busy scenes get the second pass, most movement first |
 
 Two passes: the whole video at `fps`, then each busy scene re-rendered from the same template with `start`,
-`end` and the busy `fps` (one rendered statement per scene, built from pass one's receipts and run by `array_agg(selfdispatch(sql))`). Every bash flag is a
-context value of the template: `ffmpeg_input_flags`, `ffmpeg_filters`, `ffmpeg_output_flags`, `quality`,
-`width`, so a different capture is a different context, never a different program. Verified: the second pass
+`end` and the busy `fps` (one rendered statement per scene, built from pass one's receipts and run by `array_agg(selfdispatch(sql))`). Verified: the second pass
 at 10 fps over the 5 busiest scenes added 330 frames in 25 s, same 75 scenes.
 
 The template is `~/duckdb-skills/skills/tera/references/video_frames.tera`. It renders a `read_csv` over a
@@ -46,7 +44,11 @@ frames come back in the receipts and nothing is stored but the JPEGs: the query 
 
 ## 2. Read the settled frames, longest scenes first
 
-Add `WHERE ends - starts >= 3` to the query's last `SELECT … FROM scenes`, ordered by `starts`.
+The query's last `SELECT` groups `numbered` by scene, so filter it with a `HAVING`, not a `WHERE`:
+
+```sql
+FROM numbered GROUP BY scene HAVING max(second) - min(second) >= 3 ORDER BY starts;
+```
 
 Read each `settled_frame` with the Read tool. A scene that stayed up for seconds is content; half-second
 scenes are transitions, scrolls and typing. For a 9-minute demo that is 15 to 25 images.
