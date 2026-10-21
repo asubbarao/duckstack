@@ -197,30 +197,30 @@ LOAD shellfs;
 WITH picked AS (
   SELECT 'inframe-risk/inframe' AS repo, unnest([1685]) AS pr, 'asubbarao-ifr' AS account
 ), pr_statements AS (
-  SELECT tera_render($t$
-    SELECT '{{ repo }}' AS repo, {{ pr }} AS pr, '{{ account }}' AS account, headRefName AS branch, title
+  SELECT p.*, tera_render($t$
+    SELECT headRefName AS branch, title
     FROM read_json($c$gh pr view {{ pr }} --repo {{ repo }} --json headRefName,title |$c$)
   $t$, p::JSON, autoescape := false) AS sql
   FROM picked AS p
 ), pr_dispatched AS (
-  SELECT array_agg(selfdispatch(sql)) AS receipts FROM pr_statements
+  SELECT repo, pr, account, array_agg(selfdispatch(sql)) AS receipts FROM pr_statements GROUP BY ALL
 ), prs AS (
-  SELECT r ->> 'repo' AS repo, (r ->> 'pr')::INTEGER AS pr, r ->> 'account' AS account, r ->> 'branch' AS branch, r ->> 'title' AS title
-  FROM pr_dispatched CROSS JOIN UNNEST(receipts) AS d(receipt) CROSS JOIN UNNEST(receipt.body::JSON[]) AS b(r)
+  SELECT d.repo, d.pr, d.account, r ->> 'branch' AS branch, r ->> 'title' AS title
+  FROM pr_dispatched AS d CROSS JOIN UNNEST(receipts) AS t(receipt) CROSS JOIN UNNEST(receipt.body::JSON[]) AS b(r)
 ), github_statements AS (
-  SELECT tera_render($t$
-    SELECT {{ pr }} AS pr, coalesce(json ->> 'created_at', json ->> 'submitted_at', json ->> '$.author.date')::TIMESTAMPTZ AS ts,
+  SELECT p.pr, p.account AS picked_account, tera_render($t$
+    SELECT coalesce(json ->> 'created_at', json ->> 'submitted_at', json ->> '$.author.date') AS ts,
            coalesce(json ->> '$.actor.login', json ->> '$.user.login') AS account, json ->> 'event' AS what,
-           coalesce(json ->> 'body', json ->> 'commit_id', json ->> 'sha') AS detail, account IS NOT DISTINCT FROM '{{ account }}' AS ours
+           coalesce(json ->> 'body', json ->> 'commit_id', json ->> 'sha') AS detail
     FROM read_ndjson_objects($c$gh api 'repos/{{ repo }}/issues/{{ pr }}/timeline?per_page=100' --paginate --jq '.[]' |$c$)
   $t$, p::JSON, autoescape := false) AS sql
   FROM prs AS p
 ), github_dispatched AS (
-  SELECT array_agg(selfdispatch(sql)) AS receipts FROM github_statements
+  SELECT pr, picked_account, array_agg(selfdispatch(sql)) AS receipts FROM github_statements GROUP BY ALL
 ), github AS (
-  SELECT 'github' AS src, (event ->> 'pr')::INTEGER AS pr, (event ->> 'ts')::TIMESTAMPTZ AS ts,
-         event ->> 'account' AS account, event ->> 'what' AS what, event ->> 'detail' AS detail, (event ->> 'ours')::BOOLEAN AS ours
-  FROM github_dispatched CROSS JOIN UNNEST(receipts) AS r(receipt) CROSS JOIN UNNEST(receipt.body::JSON[]) AS e(event)
+  SELECT 'github' AS src, g.pr, (event ->> 'ts')::TIMESTAMPTZ AS ts, event ->> 'account' AS account,
+         event ->> 'what' AS what, event ->> 'detail' AS detail, event ->> 'account' IS NOT DISTINCT FROM g.picked_account AS ours
+  FROM github_dispatched AS g CROSS JOIN UNNEST(receipts) AS r(receipt) CROSS JOIN UNNEST(receipt.body::JSON[]) AS e(event)
 ), agents AS (
   FROM agent.messages AS m JOIN prs ON m.git_branch = prs.branch
   SELECT 'agent' AS src, prs.pr, m.timestamp AS ts, prs.account, true AS ours, m.session_id AS session,
