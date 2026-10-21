@@ -185,6 +185,64 @@ The words match anywhere in the tool input. A call that only mentions `gh pr cre
 a heredoc, also matches, so read `cmd`. Codex's `exec` tool takes JavaScript that calls
 `tools.exec_command({cmd: …})`, so its `cmd` is that script.
 
+## GitHub and agents in one timeline
+
+"What happened to PR X", "who merged it", "why has it no review": one query over the PRs you pick and every
+session on their branches. GitHub's actor is `asubbarao-ifr` for Alok and every agent on this Mac, so the agent
+`session` is the real who. Agent rows join their PR on `git_branch` = the PR's head branch. `picked` declares the
+repo, the PRs and the account; every row is kept, and `ours` marks the account's rows.
+
+```sql
+LOAD shellfs;
+WITH picked AS (
+  SELECT 'inframe-risk/inframe' AS repo, unnest([1685]) AS pr, 'asubbarao-ifr' AS account
+), pr_statements AS (
+  SELECT p.*, tera_render($t$
+    SELECT headRefName AS branch, title
+    FROM read_json($c$gh pr view {{ pr }} --repo {{ repo }} --json headRefName,title |$c$)
+  $t$, p::JSON, autoescape := false) AS sql
+  FROM picked AS p
+), pr_dispatched AS (
+  SELECT repo, pr, account, array_agg(selfdispatch(sql)) AS receipts FROM pr_statements GROUP BY ALL
+), prs AS (
+  SELECT d.repo, d.pr, d.account, r ->> 'branch' AS branch, r ->> 'title' AS title
+  FROM pr_dispatched AS d CROSS JOIN UNNEST(receipts) AS t(receipt) CROSS JOIN UNNEST(receipt.body::JSON[]) AS b(r)
+), github_statements AS (
+  SELECT p.pr, p.account AS picked_account, tera_render($t$
+    SELECT coalesce(json ->> 'created_at', json ->> 'submitted_at', json ->> '$.author.date') AS ts,
+           coalesce(json ->> '$.actor.login', json ->> '$.user.login') AS account, json ->> 'event' AS what,
+           coalesce(json ->> 'body', json ->> 'commit_id', json ->> 'sha') AS detail
+    FROM read_ndjson_objects($c$gh api 'repos/{{ repo }}/issues/{{ pr }}/timeline?per_page=100' --paginate --jq '.[]' |$c$)
+  $t$, p::JSON, autoescape := false) AS sql
+  FROM picked AS p
+), github_dispatched AS (
+  SELECT pr, picked_account, array_agg(selfdispatch(sql)) AS receipts FROM github_statements GROUP BY ALL
+), github_events AS (
+  SELECT 'github' AS src, g.pr, g.picked_account, (event ->> 'ts')::TIMESTAMPTZ AS ts, event ->> 'account' AS account,
+         event ->> 'what' AS what, event ->> 'detail' AS detail
+  FROM github_dispatched AS g CROSS JOIN UNNEST(receipts) AS r(receipt) CROSS JOIN UNNEST(receipt.body::JSON[]) AS e(event)
+), github AS (
+  SELECT * EXCLUDE (picked_account), account IS NOT DISTINCT FROM picked_account AS ours FROM github_events
+), agents AS (
+  FROM agent.messages AS m JOIN prs ON m.git_branch = prs.branch
+  SELECT 'agent' AS src, prs.pr, m.timestamp AS ts, prs.account, true AS ours, m.session_id AS session,
+         coalesce(m.tool_name, m.message_role) AS what, coalesce(m.tool_command_head, m.head) AS detail
+  WHERE NOT m.is_repeat
+)
+FROM (FROM github UNION ALL BY NAME FROM agents)
+SELECT ts, pr, src, account, ours, session, what, detail
+ORDER BY ts;
+```
+
+Each picked PR is one `gh pr view` and one `issues/<pr>/timeline` call (comments, reviews, commits, merged,
+closed), both built from `picked`, so nothing pages through the whole repo. The timeline is read as raw objects (`read_ndjson_objects`), so a
+PR with no review or no commit still binds. `what` is GitHub's own event name (`commented`, `reviewed`, `merged`);
+commits have no login, so `ours` is false on them. `at` is a reserved word, so the time column is `ts`. `head` is
+null on tool_use rows; `tool_command_head` holds the command.
+
+Ran on dev 2026-10-21 for PR #1685 in 2 s: 50 GitHub rows (14 ours, 36 from others and commits) and 5,708 agent
+rows. The two repo-wide scans this replaces took 72 s and returned 1,257 resumed-session copies on top.
+
 ## Plans
 
 ```sql
