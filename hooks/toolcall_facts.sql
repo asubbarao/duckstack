@@ -149,7 +149,6 @@ WITH node_facts AS (
          bool_or(typ = 'RECURSIVE_CTE_NODE') AS has_recursive_cte,
          bool_or(key = 'cte_map' AND list_contains([(e -> 'value' ->> 'materialized') FOR e IN json_extract(v, '$.map[*]')], 'CTE_MATERIALIZE_ALWAYS')) AS has_materialized_cte,
          count(CASE WHEN typ = 'CONJUNCTION_OR' THEN 1 END) AS or_node_count,
-         bool_or(typ = 'CONJUNCTION_OR' AND list_has_any(arg_kinds, ['~~', '!~~', '~~*', '!~~*', 'contains', 'glob', 'starts_with', 'ends_with', 'prefix', 'suffix', 'like_escape', 'ilike_escape'])) AS has_or_of_patterns,
          -- DuckDB flattens a OR b OR (c OR d) into one CONJUNCTION_OR, so its pattern children are the chain's length.
          max(CASE WHEN typ = 'CONJUNCTION_OR' THEN len(list_filter(arg_kinds, k -> k IN ('~~', '!~~', '~~*', '!~~*', 'contains', 'glob', 'starts_with', 'ends_with', 'prefix', 'suffix', 'like_escape', 'ilike_escape'))) END) AS or_pattern_max,
          list_filter(list(CASE WHEN typ = 'LIMIT_MODIFIER' THEN (v -> 'limit' -> 'value' ->> 'value')::BIGINT END), x -> x IS NOT NULL) AS limit_values,
@@ -177,7 +176,6 @@ SELECT s.call_id, s.sql_source, s.program_index, s.statement_no, s.statement_kin
        coalesce(f.has_recursive_cte, false) AS has_recursive_cte,
        coalesce(f.has_materialized_cte, false) AS has_materialized_cte,
        coalesce(f.or_node_count, 0) AS or_node_count,
-       coalesce(f.has_or_of_patterns, false) AS has_or_of_patterns,
        coalesce(f.or_pattern_max, 0) AS or_pattern_max,
        coalesce(f.limit_values, []) AS limit_values,
        coalesce(f.join_types, []) AS join_types,
@@ -220,7 +218,6 @@ stmts AS (
          bool_or(has_recursive_cte) AS sql_has_recursive_cte,
          bool_or(has_materialized_cte) AS sql_has_materialized_cte,
          sum(or_node_count) AS sql_or_node_count,
-         bool_or(has_or_of_patterns) AS sql_has_or_of_patterns,
          max(or_pattern_max) AS sql_or_pattern_max,
          bool_or(has_comma_join) AS sql_has_comma_join,
          bool_or(has_cross_join_not_unnest) AS sql_has_cross_join_not_unnest,
