@@ -11,20 +11,27 @@ ATTACH IF NOT EXISTS ':memory:' AS stream;
 WITH intent AS (
     SELECT $v$
 CREATE OR REPLACE VIEW stream.main.parsed AS
-WITH line AS (
+-- Codex writes its session id, cwd and branch once, in session_meta; the file's own is its first (later ones are copied parents).
+WITH codex_meta AS (
+    SELECT transcript, arg_min(payload ->> 'id', file_row_number) AS meta_session_id,
+           arg_min(payload ->> 'cwd', file_row_number) AS meta_cwd, arg_min(payload -> 'git' ->> 'branch', file_row_number) AS meta_branch
+    FROM dev.agent.lines WHERE type ->> '$' = 'session_meta' GROUP BY transcript
+), line AS (
     SELECT ['text', 'thinking', 'output', 'content'] AS content_keys,
            ['call_id', 'tool_use_id', 'id'] AS id_keys, ['command', 'cmd', 'sql', '$'] AS command_keys,
            ['<', '[Request interrupted', 'This session is being continued', 'Base directory for this skill',
             'Another Claude session sent a message', '# AGENTS.md', '[Cross-session delivery notice]',
             'Here is a note offered by a side agent'] AS harness_prefixes,
            transcript AS file_path, file_row_number AS line, CASE WHEN contains(transcript, '/.codex/') THEN 'codex' ELSE 'claude' END AS source,
-           contains(transcript, '/subagents/') AS is_agent, coalesce(sessionId ->> '$', parse_filename(transcript, true)) AS session_id,
+           contains(transcript, '/subagents/') AS is_agent,
+           coalesce(sessionId ->> '$', meta_session_id, parse_filename(transcript, true)) AS session_id,
            (timestamp ->> '$')::TIMESTAMPTZ AS timestamp, type ->> '$' AS message_type, uuid ->> '$' AS uuid,
-           parentUuid ->> '$' AS parent_uuid, cwd ->> '$' AS cwd, gitBranch ->> '$' AS git_branch, entrypoint ->> '$' AS entrypoint,
+           parentUuid ->> '$' AS parent_uuid, coalesce(cwd ->> '$', meta_cwd) AS cwd, coalesce(gitBranch ->> '$', meta_branch) AS git_branch,
+           entrypoint ->> '$' AS entrypoint,
            CASE WHEN type ->> '$' IN ('user', 'assistant') THEN message
                 WHEN payload ->> 'type' IN ('message', 'agent_message', 'function_call', 'custom_tool_call', 'function_call_output',
                                             'custom_tool_call_output') THEN payload END AS msg
-    FROM dev.agent.lines
+    FROM dev.agent.lines LEFT JOIN codex_meta USING (transcript)
 ), block AS (
     SELECT l.* EXCLUDE (msg), coalesce(msg ->> 'role', msg ->> 'type') AS message_role, msg ->> 'model' AS model,
            t.b, t.block_index, concat_ws(':', file_path, line, t.block_index) AS block_key
