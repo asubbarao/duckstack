@@ -25,49 +25,13 @@ This is a style and efficiency review. Correctness bugs go to `/code-review`; he
 that works but is ugly, slow or unreusable is a finding. The contract is
 [SQL-MANIFESTO.md](../../SQL-MANIFESTO.md); read it first.
 
-## The checklist: what Alok said (737 of his messages, 09-14 → 10-18)
-
-Answer every question for every query in the change. A "no" is a finding, fixed in the same PR.
-
-1. **Is per-row work a self-dispatch?** Rows → one statement per row → `array_agg` of each row with its receipt →
-   `CROSS JOIN UNNEST`. "The selfdispatch is unnest(arr)… the arr is an arrayagg of the selfdispatch(sql statement)"
-   (10-17). No array, no unnest = not a self-dispatch. A binder error or "only takes a literal" means it wasn't used.
-2. **Does each receipt stay beside its row?** Aggregate the row's columns with its receipt and group by them; never
-   pull the row out and match it back by position.
-3. **Does the first CTE declare everything** (commands, arguments, paths, arrays) so a reader knows what the query
-   does before reading the rest? (10-17)
-4. **Is Tera only a constructor?** One of the named templates via `template_path :=` when the statement has that
-   shape, an inline template otherwise; no `{% for %}` / `{% if %}`; a new template file only for a new shape. "tera is just to make code readable… a helper" (10-17).
-5. **Is SQL text built readably?** No `||` chains, `chr(39)`, nested or tripled quotes; arrays of words joined once,
-   dollar quotes. "PUT IT IN ARRAY SO ITS LEGIBLE INSTEAD OF INFINITE CONCATS" (09-22).
-6. **Does every reader bring its own schema?** `read_json` / `read_csv` with their `:=` options; no `from_json`
-   structure strings, `columns := {…}`, `->>` ladders. Unknown shape stays raw in `read_lines` (10-17). Results are
-   `receipt.*`. Until quackapi returns typed replies, a receipt body field is read with one `->>`, once, in the CTE
-   right after the unnest, and the receipt itself is kept (RULES.md 5).
-7. **Is it the shortest query for the same output?** Fewer keywords and commas for the same rows. "all the sql is too
-   long and complex… the SAME output can be achieved with a better query" (10-18).
-8. **Is it general, not bespoke?** No table per question ("North Dakota revenue"), no parameter or macro where a
-   WHERE on a view works, raw data kept, nothing aggregated away (09-24, 10-15).
-9. **Views first, nothing written to read back?** Raw objects and derived state are views; a table only with his
-   yes (CTAS replacement when it earns one). No COPY to a file the next step reads; the receipts carry the rows
-   (10-18). New macros only with his yes.
-10. **Shell through shellfs, the right extension for each job?** `read_csv('cmd |')`, git via `duck_tails`, files via
-    hostfs/`fs.files`, HTML via webbed, URLs via netquack/urlpattern, CI logs via `duck_hunt`. No `.sh`, no Python
-    files, no sed/awk/grep in a pipe.
-11. **Nothing banned:** VALUES, `COUNT(*)`, LIMIT 1, OR chains, FILTER, `any_value`, CROSS JOIN that isn't UNNEST,
-    joins on constants, `coalesce((SELECT …))`, WITH RECURSIVE, `QUALIFY row_number()` picks, SET VARIABLE
-    hand-offs, `split_part` / positional indexing, `generate_subscripts`, regex on structured data.
-12. **Was it run?** The PR shows the rows it returned, and a rewrite shows old vs new equal in one call:
-    `FROM table_diff_summary($q$<old query>$q$, $q$<new query>$q$, pk := ['<key>'])` (`duck_diff`): `n_different`,
-    `n_left_only` and `n_right_only` are 0. `table_diff` with the same arguments lists the rows that differ.
-
 ## Checks, in order of how often agents fail them
 
-Fix every hit (see How to run it), then report it with file:line, the rule, and the rewrite.
+Report every hit with file:line, the rule, and the rewrite.
 
 The baseline: a query under ~50 lines that has no bash loop, no tera loop or conditional, and no
-pile of new tables or views. Any work that runs per row is a self-dispatch (checklist 1–2). Spend the
-review on what breaks that baseline.
+pile of new tables or views is assumed good. Self-dispatch is the usual shape, not a requirement.
+Spend the review on what breaks that baseline.
 
 Every review, passing or not, also hunts for the shorter version: fewer lines, more declarative,
 set-based and elegant. Look for repeated expressions a list or a relation can hold, steps a single
@@ -305,15 +269,12 @@ main accepts only PRs with both of its statuses green:
 - `duckstack/review`: this skill, run by Opus 5.5 headless on the lines the PR adds, with RULES.md and the manifesto.
 Findings come back as a PR comment; push a fix and the new head is checked again. Auto-merge does the rest.
 
-By hand, the review fixes what it finds. A finding left as a comment is not done.
+By hand:
 0. Run [references/audit.sql](references/audit.sql) on dev: one query, every rule hit in skills/ and server/ as
    file:line:rule. New antipattern named by the owner = one more row in its `rules` CTE.
-1. Read SQL-MANIFESTO.md and RULES.md, then the code (`duck_tails`, or `gh pr diff` read through shellfs).
-2. For each finding, rewrite the query in the target shape, in place, on a branch from main.
-3. Run the old and the new query on dev on the same inputs and compare them with `duck_diff`'s `table_diff_summary`
-   (checklist 12). Keep the
-   rewrite only when they match, or when the old one was wrong and the difference is the fix. Server files: test in a
-   `:memory:` client that `.read`s extensions.sql and macros.sql first, never by restarting dev.
-4. Delete before adding: a rule, example or file that teaches the antipattern goes, it is not reworded.
-5. Push and open a PR; the queue checks it. Report what was rewritten, the row comparison, and what could not be
-   fixed and why.
+1. Read SQL-MANIFESTO.md, then the diff (`duck_tails`, or `gh pr diff` read through shellfs).
+2. Go through checks 1–10 in order. Run what can be run on dev: `EXPLAIN`, row counts as
+   `len(array_agg(…))`, timing. A claim about speed needs a measurement.
+3. For each finding, give the rewrite in the target shape, not just the complaint.
+4. Verdict: findings by check, the one change that would most improve the work, and the shared
+   relation it should have created.
