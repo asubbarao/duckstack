@@ -10,7 +10,8 @@
 -- in one file and a MAP in another, which union_by_name cannot merge. maximum_object_size 32 MB fits the largest line
 -- (~21 MB); the reader's buffers are twice it per thread.
 -- agent.attachment_fields: every attachment field as a (key, value) row, found with json_keys, so hook runs and other
--- attachments need no hand-typed field list; PIVOT ON key turns one attachment_type back into columns.
+-- attachments need no hand-typed field list; PIVOT ON key turns one attachment_type back into columns. It is created in
+-- the agent.lines rebind below, because it cannot bind before agent.lines exists.
 CREATE SCHEMA IF NOT EXISTS agent;
 CREATE OR REPLACE VIEW agent.entries AS
 WITH roots AS (
@@ -61,12 +62,10 @@ CREATE OR REPLACE VIEW agent.lines AS
 SELECT * FROM read_parquet([{{ files | join(sep=", ") }}], union_by_name := true, file_row_number := true)
 SEMI JOIN agent.entries e ON e.path = transcript;
 CREATE OR REPLACE VIEW agent.attachment_fields AS
-WITH lines_with_attachments AS (
-    SELECT transcript, file_row_number, (timestamp ->> '$')::TIMESTAMPTZ AS ts, attachment ->> 'type' AS attachment_type, attachment
-    FROM agent.lines
-)
-SELECT transcript, file_row_number, ts, attachment_type, key, attachment ->> key AS value
-FROM lines_with_attachments CROSS JOIN UNNEST(json_keys(attachment)) AS t(key);
+SELECT transcript, file_row_number, (timestamp ->> '$')::TIMESTAMPTZ AS ts, attachment ->> 'type' AS attachment_type,
+       key, attachment ->> key AS value
+FROM agent.lines CROSS JOIN UNNEST(json_keys(attachment)) AS t(key)
+WHERE attachment IS NOT NULL;
 $view$, c::JSON, autoescape := false) AS sql FROM c WHERE len(files) > 0
 ), posted AS (
     SELECT array_agg(selfdispatch(sql)) AS receipts FROM statements
