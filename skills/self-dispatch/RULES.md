@@ -14,8 +14,9 @@ writing SQL on this machine.
    statement)" (10-17). No `flatten`, no `LEFT JOIN LATERAL`, no lone `http_post`.
 2. **Each pair of CTEs is one orchestration step.** The next step's statements are built from the previous
    step's receipts: "a single selfdispatch, flicks on it, then the SUBSEQUENT SELF DISPATCH clicks on the
-   next link … each duo of selfdispatch is an orchestration" (10-17). Order comes from that dependency;
-   inside one array use `WITH ORDINALITY` / `array_sort` only when order matters, otherwise it is async (09-24, 10-08).
+   next link … each duo of selfdispatch is an orchestration" (10-17). Order comes from that dependency.
+   Inside one array, `array_agg(… ORDER BY …)` orders the receipts when order matters; `WITH ORDINALITY` only
+   numbers them, and an array alone does not establish execution order (SQL-MANIFESTO §4; 09-24, 10-08).
 3. **Self-dispatch is the escape hatch for every binder error.** "self-disaptch works in all cases. it BYPASSES
    all binder errors and allows concatenating col params into table functions" (09-24). Never claim a reader
    "needs a literal", never `SET VARIABLE`/`getvariable` hand-offs, never `query()`/`query_table` (09-20, 10-08, 10-13).
@@ -52,12 +53,21 @@ writing SQL on this machine.
     gymnastics, no nested quotes or escape hell (09-22, 10-12). `quote_literal(col)` is fine; `translate()` for
     character swaps (09-23, 10-16). No `printf` / `format`: on 10-17 a printf-built command and a printf in a
     dispatch were both rejected; declare the parts as columns and render with Tera.
-13. **Banned:** `VALUES`, `COUNT(*)`, `LIMIT 1`, `OR` chains (use `IN`, `IS [NOT] DISTINCT FROM`, null
-    checks), `WITH RECURSIVE`, scalar subqueries in SELECT lists, `any_value`, cross joins of singleton CTEs
-    (`JOIN ON true`, comma joins), `json_extract` ladders and selector-taking extractors in committed code (except the single `->>` per receipt
+13. **Banned:** `VALUES`, `COUNT(*)`, `LIMIT 1`, `WITH RECURSIVE`, scalar subqueries in SELECT lists, `any_value`, cross joins of singleton CTEs
+    (`JOIN ON true`, comma joins), `json_extract` ladders and hand-typed selector ladders in committed code (selectors are rows, rule 8: "its not that i dont want xpath. the point is why can't i SELECT DISTINCT xpaths FROM document and use them", 10-20) (except the single `->>` per receipt
     body field allowed by rule 5),
     regex on backend data, `generate_subscripts`, positional `split_part` surgery (09-22, 09-23, 10-10).
-14. **Descriptive names** for CTEs and aliases; "sd is not descriptive at all" (09-22).
+    **`OR` is discouraged, not banned** (10-20): "there is not actually anything wrong with the or likes honestly, but
+    OR statement in where clauses is a 'risk' at least when humans write sql"; "ors like are fine for one off queries
+    occasionally". Prefer `IN`, `IS [NOT] DISTINCT FROM`, null checks. One or two ORed patterns are fine; a chain of
+    three or more is blocked by the hook: "chains are not great you can block it". A list of patterns is
+    `string_contains_any(col, [terms])` (sitting_duck, literal, case-sensitive), or `string_contains_any_i` / `lower(col)`
+    to ignore case; include/exclude rules are `WHERE CASE WHEN … THEN true WHEN … THEN false …
+    ELSE false END`. In a `WHERE`, `ELSE NULL` and `ELSE false` drop the same rows; under `NOT` they differ.
+14. **Descriptive names** for CTEs and aliases; "sd is not descriptive at all" (09-22). A soft rule for aliases
+    (10-20): a CTE gets a full name (`comment_html`); a table alias in a join may be 2–4 letters (`users u`,
+    `user_login_events ule`), "there isn't a correct answer per se here, but we need not obfuscate"; the
+    `UNNEST(…) AS t(x)` alias is relaxed.
 15. Spell out the `array_agg` column and name it; turn it into text with `tera_render` (a template that substitutes
     the array) or `string_agg` over rows, never `array_to_string`, which the hook blocks (09-22, 10-17).
 
@@ -105,74 +115,80 @@ writing SQL on this machine.
 Mined from all 5,361 of Alok's prompts that mention SQL, dispatch, Tera or DuckDB tools (Claude and Codex,
 2026-09-14 → 10-18, read with the agent-stream skill's prompts query). Only rules not already above.
 Where two of his messages disagree, the newer wins. "(hook)" means `hooks/hook_checks.sql` now enforces it.
+Numbered from 31: rules 28–30 are "Our own schema first, then friendly SQL" (duckstack PR #89).
 
-**Dispatch shape.** The shape in rule 1 is a block (hook `sql_dispatch_shape`). Each row's statement is a concat
-or a template render, the rows are sent as `array_agg(selfdispatch(sql))` grouped by the row's columns, then
-`CROSS JOIN UNNEST` and `receipt.*`. The reference is `SKILL.md`. Because every dispatch takes that shape, the
-receipt problems below have one place to be checked.
+**Dispatch shape.** The shape in rule 1 is a block (hook `sql_dispatch_shape`). Each row's statement is built in
+its own column (`sql`) by a concat or a template render, the rows are sent as
+`SELECT key_cols, sql, array_agg(selfdispatch(sql)) AS receipts … GROUP BY ALL`, then `CROSS JOIN UNNEST(receipts)`
+and `receipt.*` (10-18). The reference is `SKILL.md`. Because every dispatch takes that shape, the receipt problems
+below have one place to be checked.
 
-28. **Receipts are columns.** Read `receipt.status`, `receipt.error` and `receipt.body` as columns; body fields
+31. **Receipts are columns.** Read `receipt.status`, `receipt.error` and `receipt.body` as columns; body fields
     follow rule 5 (10-09, 10-13, 10-14).
-29. **Check every stage's receipts.** The next stage filters on `receipt.status` and keeps failed receipts as
+32. **Check every stage's receipts.** The next stage filters on `receipt.status` and keeps failed receipts as
     rows behind a flag. A timeout, an error status or an empty or unparsed body counts as a failure, not as
     an empty result (10-14, 10-16). Judge by `receipt.status IS DISTINCT FROM 200`: a failed statement comes back
-    as 422 (binder, parser, cast, missing file; verified 2026-10-19) with the error in the body and `receipt.error` NULL.
-30. **One array, one `CROSS JOIN UNNEST(receipts)` per step**, never `unnest(receipts)` in a SELECT list. A receipt stays on its
+    as 422 (binder, parser, cast and missing-file errors alike; verified on dev 2026-10-20) with DuckDB's error in
+    `receipt.error` and the full `{"detail": …}` in the body.
+33. **One array, one `CROSS JOIN UNNEST(receipts)` per step**, never `unnest(receipts)` in a SELECT list. A receipt stays on its
     source row, so nothing joins back afterwards (10-12, 10-13).
-31. **Source rows are real rows** (catalog, hostfs, a table), never `range()` / `generate_series` (hook, 10-12).
+34. **Source rows are real rows** (catalog, hostfs, a table), never `range()` / `generate_series` (hook, 10-12).
     No sleep or wait rows (hook, 10-17).
-32. **Post through the macro.** Use `selfdispatch(sql)`, never `quackapi_post('…:9495/sql', …)` by hand (hook).
+35. **Post through the macro.** Use `selfdispatch(sql)`, never `quackapi_post('…:9495/sql', …)` by hand (hook).
     Never curl /sql from a reader (hook, 10-16). Never `quack_query` back to dev (10-09, 10-14). Never add a
     route that /sql already covers; fix /sql instead (10-09, 10-12).
-33. **Inside generated statements:** create views, not tables (10-13, 10-14). A constant statement runs as is,
+36. **Inside generated statements:** create views, not tables (10-13, 10-14). A constant statement runs as is,
     not wrapped in a dispatch. Never paste a `$$` body inline; render it from a template (10-09, 10-12).
     Pass the row as `c::JSON`, not `row_to_json` (hook, 10-15). Never pass a subquery as a table-function
     argument (10-13).
-34a. **The row keeps its columns.** `SELECT pr_number, array_agg(selfdispatch(sql)) AS receipts … GROUP BY ALL`,
-    then `CROSS JOIN UNNEST(receipts)`: each receipt sits beside its row's `pr_number`. The statement itself is just a
-    concat (`concat('SELECT * FROM read_csv(', quote_literal(path), ')')`); a template is for when the holes get many.
-    Never two parallel arrays matched by position (`prs` plus `receipts[n]`) (hook, 10-18).
-34b. **Nested `tera_render` is allowed when it helps**, for example a statement that itself dispatches further: render the
+37. **The row keeps its columns and its statement.** First build the statement in a column
+    (`concat('SELECT * FROM read_csv(', quote_literal(path), ')') AS sql`; a template when the holes get many), then
+    `SELECT pr_number, sql, array_agg(selfdispatch(sql)) AS receipts … GROUP BY ALL`, then `CROSS JOIN UNNEST(receipts)`:
+    each receipt sits beside its row's `pr_number` and the statement that produced it, and the statements can be
+    selected and read before anything is posted. No concat or render inside `selfdispatch(...)`. Never two parallel
+    arrays matched by position (`prs` plus `receipts[n]`) (hook, 10-18).
+38. **Nested `tera_render` is allowed when it helps**, for example a statement that itself dispatches further: render the
     per-row statements, `array_agg` them, and send that whole array to another host's `:9495`, which self-dispatches
     it. Don't nest when one render plus a CTE does the same job (10-18).
-34c. **Command words are split by role in the first CTE**: the program (`[gh, 'pr', 'list']`), its arguments and
+39. **Command words are split by role in the first CTE**: the program (`[gh, 'pr', 'list']`), its arguments and
     its flags as separate arrays, then put together with same-query aliases (`list_concat(gh_pr_list, repo_args,
     list_flags)`). A parallel comments array is optional (10-18).
-34. **Push the filter into each generated statement**, so a receipt carries only what is needed (10-08, 10-09).
+40. **Push the filter into each generated statement**, so a receipt carries only what is needed (10-08, 10-09).
 
 **Readers and shell.**
 
-35. Use plain `read_csv` / `read_json`, not the `_auto` variants (hook, 09-16, 09-29).
-36. `read_text` over a pipe needs a stated reason (hook warns, 10-10, 10-13).
-37. A shellfs pipe never contains:
+41. Use plain `read_csv` / `read_json`, not the `_auto` variants (hook, 09-16, 09-29).
+42. `read_text` over a pipe needs a stated reason (hook warns, 10-10, 10-13).
+43. A shellfs pipe never contains:
     - `tail` / `head` (hook, 09-29);
     - a `timeout` wrapper, since the tool's own option bounds it (hook, 09-15);
     - an inline `duckdb -c` program; make the read a view (hook, 09-25). A checked-in `.sql` run with
       `duckdb -f` as its own process is fine;
     - a `true` or `:` command (`|| true`, `; true`), since the shell template takes the accepted exit codes
       (hook warns on the parsed pipe, 10-16).
-38. Hard-code no `/Users/…` path. Use scalarfs path variables, `getenv('HOME')`, or a column declared once
+44. Hard-code no `/Users/…` path. Use scalarfs path variables, `getenv('HOME')`, or a column declared once
     (hook warns, 09-25, 10-15).
-39. Git status and diff come from a view: the hostfs tree joined to duck_tails `git_tree` hashes. Never shell
+45. Git status and diff come from a view: the hostfs tree joined to duck_tails `git_tree` hashes. Never shell
     out to `git diff` / `git status` (10-13).
 
 **SQL forms.**
 
-40. No `replace(replace(…))`: use `translate()` or a template (hook, 09-30). No `list_transform(range(…))`
+46. No `replace(replace(…))`: use `translate()` or a template (hook, 09-30). No `list_transform(range(…))`
     index loops (hook, 10-08). Never pick by position (`split[1]`, neighbour joins on `i + 1`) (10-09, 10-13).
-41. `QUALIFY` and `first_value` / `last_value` are suspect. Use `arg_max` / `max_by` or a key join (hook warns,
-    10-08, 10-15). Never `MERGE INTO`; use CTAS or `INSERT OR REPLACE … BY NAME` (10-09).
-42. Appended tables have a key and take `INSERT OR IGNORE` / `OR REPLACE … BY NAME` (10-08).
-43. Profile with `SUMMARIZE` / `DESCRIBE`, never a list of per-column aggregates (09-29, 10-08). Keep
+47. `first_value` / `last_value` are suspect: use `arg_max` / `max_by` or a key join (hook warns, 10-08, 10-15).
+    `QUALIFY` is fine once the house rules are met (rule 28); a `QUALIFY row_number() … <= n` top-n pick is
+    `arg_max(x, v, n)` / `max(v, n)` instead (rule 29, hook warns). Never `MERGE INTO`; use CTAS or `INSERT OR REPLACE … BY NAME` (10-09).
+48. Appended tables have a key and take `INSERT OR IGNORE` / `OR REPLACE … BY NAME` (10-08).
+49. Profile with `SUMMARIZE` / `DESCRIBE`, never a list of per-column aggregates (09-29, 10-08). Keep
     `array_agg(ts)` and take `list_min` / `list_max` later (10-01, 10-08).
-44. A `CASE` classification returns a descriptive label, not `true` / `false` (09-30). Label union branches
+50. A `CASE` classification returns a descriptive label, not `true` / `false` (09-30). Label union branches
     with a projected scalar, not `* REPLACE (literal AS col)` (10-09).
-45. Filter a view with `WHERE`, never through a macro that takes a path (10-13). Derive input lists from
+51. Filter a view with `WHERE`, never through a macro that takes a path (10-13). Derive input lists from
     relations, never as typed literal lists (10-08).
-46. Refresh incrementally from a watermark: `max(ts)` or the hostfs mtime, plus an anti-join. Fetches skip
+52. Refresh incrementally from a watermark: `max(ts)` or the hostfs mtime, plus an anti-join. Fetches skip
     what is already stored, so a rerun only shrinks in scope (10-08, 10-14).
-47. Never COPY a result out and read it back. Put `CREATE OR REPLACE TABLE … AS` on the SELECT (09-29).
-48. In exploratory queries show `len(content)` with `[left(content,100), right(content,100)]`, never the full
+53. Never COPY a result out and read it back. Put `CREATE OR REPLACE TABLE … AS` on the SELECT (09-29).
+54. In exploratory queries show `len(content)` with `[left(content,100), right(content,100)]`, never the full
     text (10-02, 10-04).
-49. Credentials are `CREATE SECRET` statements in setup.sql, read from env vars (09-30). Postgres objects
+55. Credentials are `CREATE SECRET` statements in setup.sql, read from env vars (09-30). Postgres objects
     are created with `postgres_execute` in Postgres SQL, not with ATTACH plus DuckDB DDL (09-30).

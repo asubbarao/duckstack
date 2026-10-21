@@ -147,11 +147,13 @@ in that one place:
 
 1. **Rows first.** The first CTE declares real rows (catalog, hostfs, a table) with every value as a column.
    No `range()` / `generate_series` source, no literal list of what a relation already holds.
-2. **The statement is a concat or a template.** A plain concat (`concat('SELECT * FROM read_csv(', quote_literal(path), ')')`)
-   is the default. A template from `templates/` is called by name once the holes get many, with no `row_to_json`.
+2. **The statement is a column, built by a concat or a template.** A plain concat
+   (`concat('SELECT * FROM read_csv(', quote_literal(path), ')') AS sql`) is the default. A template from `templates/`
+   is called by name once the holes get many, with no `row_to_json`. Either way it is built in its own CTE, so the
+   statements can be selected and read before posting; a concat or render inside `selfdispatch(...)` is a finding.
    The bash loop template is a fallback and needs a reason.
-3. **The macro, with the row.** `SELECT pr_number, array_agg(selfdispatch(sql)) AS receipts … GROUP BY ALL`: the
-   row keeps its columns. Two arrays matched by position (`prs` plus `receipts[n]`) are a finding, and the hook
+3. **The macro, with the row.** `SELECT pr_number, sql, array_agg(selfdispatch(sql)) AS receipts … GROUP BY ALL`: the
+   row keeps its columns and its statement. Two arrays matched by position (`prs` plus `receipts[n]`) are a finding, and the hook
    blocks them. Never a hand-written `quackapi_post` to /sql, a curl to /sql, a `quack_query` back to dev, or a
    lone post.
 4. **One `CROSS JOIN UNNEST(receipts)` per step**, never `unnest(...)` of receipts in a SELECT list, and nothing
@@ -159,10 +161,9 @@ in that one place:
 5. **Receipts read as columns.** `receipt.*` gives status, body and error. No `->>` ladders and no `from_json` /
    `::JSON[]` over the body.
 6. **Status checked.** The next stage (or the final SELECT) derives a flag from `receipt.status` and keeps the
-   failed rows. Judge by status: when the generated statement fails, dev answers a non-200 (422 for binder,
-   parser, cast and missing-file errors, verified 2026-10-19) with the DuckDB error in the body, and
-   `receipt.error` stays NULL. `receipt.error` is set only when the post
-   itself fails. A pipeline that reads bodies without looking at status is a finding.
+   failed rows. Judge by status: when the generated statement fails, dev answers 422 (binder, parser, cast and
+   missing-file errors alike, verified on dev 2026-10-20) with the DuckDB error in `receipt.error` and the full
+   `{"detail": …}` in the body. A pipeline that reads bodies without looking at status is a finding.
 7. **Unparsed bodies.** An empty body, or a body that came back as text where rows were expected, is a failure:
    the reader or its `:=` options are wrong. Fix the generated statement; don't parse around it.
 8. **Timeouts.** Each command bounds itself with its own option (`curl --max-time`, a reader's timeout), never a
@@ -183,23 +184,23 @@ WITH tables AS (                          -- real rows, every value a column
     SELECT table_name, tera_render('sql.tera', c::JSON, autoescape := false,
                        template_path := concat_ws('/', getenv('HOME'), '.duck/deploy/skills/self-dispatch/templates/*.tera')) AS sql
     FROM tables AS c
-), dispatched AS (                        -- visible self-dispatch; each row rides with its receipt
-    SELECT table_name, array_agg(selfdispatch(sql)) AS receipts FROM rendered GROUP BY ALL
+), dispatched AS (                        -- visible self-dispatch; each row rides with its statement and receipt
+    SELECT table_name, sql, array_agg(selfdispatch(sql)) AS receipts FROM rendered GROUP BY ALL
 )
-SELECT table_name, receipt.*, receipt.status IS DISTINCT FROM 200 AS failed
+SELECT table_name, sql, receipt.*, receipt.status IS DISTINCT FROM 200 AS failed
 FROM dispatched CROSS JOIN UNNEST(receipts) AS t(receipt);
 ```
 
-Verified on dev 2026-10-18 (6 rows, first three; body cut):
+Verified on dev 2026-10-20 (6 rows, first three; body cut):
 
-| table_name | status | body | failed |
-|---|---|---|---|
-| dirs | 200 | `[{"path":"…/Library/LaunchAgents","modified":"2026-10-19 00:10:10"}, …]` | false |
-| files | 200 | `[{"path":"…/Media/.DS_Store","folder":"…/Media","name":…}, …]` | false |
-| folders | 200 | `[{"path":"…/Public","parent":"…","name":"Public",…}, …]` | false |
+| table_name | sql | status | error | body | failed |
+|---|---|---|---|---|---|
+| dirs | `SELECT * FROM fs.dirs LIMIT 5` | 200 | NULL | `[{"path":"…/Library/LaunchAgents","modified":"2026-10-19 00:10"…}, …]` | false |
+| filelist | `SELECT * FROM fs.filelist LIMIT 5` | 200 | NULL | `[{"path":"…/Media/.DS_Store","folder":"…/Media",…}, …]` | false |
+| files | `SELECT * FROM fs.files LIMIT 5` | 200 | NULL | `[{"path":"…/Media/.DS_Store","folder":"…/Media",…}, …]` | false |
 
 The first CTE declares everything, the template only substitutes, the reader is `SELECT *` and brings its own
-columns, and the result is each row's key next to `receipt.*`, with failures kept as flagged rows. `selfdispatch(sql)` is exactly `quackapi_post('http://127.0.0.1:9495/sql', json_object('sql', sql)::VARCHAR)`: the
+columns, and the result is each row's key and statement next to `receipt.*`, with failures kept as flagged rows. `selfdispatch(sql)` is exactly `quackapi_post('http://127.0.0.1:9495/sql', json_object('sql', sql)::VARCHAR)`: the
 post always goes to dev itself, and whatever varies by row goes inside the statement. A query that hand-writes the
 post to dev, takes dev's URL per row, or builds it with `url_build` is a finding; a request to another host is
 `network.tera`.
@@ -276,7 +277,7 @@ A live view straight over a CLI reader is fine and readable:
 
 ## How to run it
 
-Every PR on asubbarao/duckstack goes through the review queue ([queue.sql](queue.sql), launchd every minute), and
+Every PR on asubbarao/duckstack goes through the review queue ([queue.sql](queue.sql), launchd every three minutes), and
 main accepts only PRs with both of its statuses green:
 - `duckstack/rules`: [gate.sql](gate.sql) runs the hook's own checks (`hooks/hook_checks.sql`) on every changed
   `.sql` file and ```sql block, exactly as on an agent's tool call. A new antipattern the owner names is one more

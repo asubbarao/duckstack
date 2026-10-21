@@ -1,11 +1,13 @@
 -- The three self-dispatch templates, one example each. Every query is the same three steps:
 --   1. declare everything in the first CTE (rows; options as text; values prequoted),
 --   2. rendered: tera_render('<template>.tera', c::JSON) — Tera only fills holes,
---   3. dispatched: array_agg(selfdispatch(sql)), then CROSS JOIN UNNEST(receipts).
+--   3. dispatched: SELECT key_cols, sql, array_agg(selfdispatch(sql)) ... GROUP BY ALL, then CROSS JOIN UNNEST(receipts),
+--      so each receipt sits beside its row and the statement that produced it.
 -- shell: commands or files, any reader, many sources per statement, jq on/off | sql: in the database |
 -- bash_loop_fallback_method: a FALLBACK, listed by the audit wherever it is used.
+-- pipeline: one command as words; its example is ../../crawl/references/cookie_jar.sql (verified on dev 2026-10-20).
 -- A pipeline of stages, each fed by the last one's receipts: ../references/five_stage_pipeline.sql.
--- Verified on dev 2026-10-17.
+-- Verified on dev 2026-10-20: every example returns status 200 with its statement beside each receipt.
 
 -- 1. shell: one row per statement. A command ends with ' |', a file is its path; jq appends only '| jq -c ''.[]'''.
 WITH sources AS (
@@ -25,25 +27,25 @@ WITH sources AS (
            list_concat(list_transform(commands, c -> concat_ws(' ', c, CASE WHEN jq THEN '| jq -c ''.[]''' END, '|')), files) AS sources
     FROM sources
 ), rendered AS (
-    SELECT tera_render('shell.tera', c::JSON, autoescape := false,
+    SELECT reader, tera_render('shell.tera', c::JSON, autoescape := false,
                        template_path := '/Users/aloksubbarao/.duck/deploy/skills/self-dispatch/templates/*.tera') AS sql
     FROM declared AS c
 ), dispatched AS (
-    SELECT array_agg(selfdispatch(sql)) AS receipts FROM rendered
+    SELECT reader, sql, array_agg(selfdispatch(sql)) AS receipts FROM rendered GROUP BY ALL
 )
-SELECT receipt.*, receipt.status IS DISTINCT FROM 200 AS failed FROM dispatched CROSS JOIN UNNEST(receipts) AS t(receipt);
+SELECT reader, sql, receipt.*, receipt.status IS DISTINCT FROM 200 AS failed FROM dispatched CROSS JOIN UNNEST(receipts) AS t(receipt);
 
 -- 2. sql: in the database; the names come from information_schema. DDL, DML and PRAGMA have the same shape.
 WITH tables AS (
     SELECT table_schema, table_name, 5 AS row_limit FROM information_schema.tables WHERE table_name LIKE 'chrome_%'
 ), rendered AS (
-    SELECT tera_render('sql.tera', c::JSON, autoescape := false,
+    SELECT table_name, tera_render('sql.tera', c::JSON, autoescape := false,
                        template_path := '/Users/aloksubbarao/.duck/deploy/skills/self-dispatch/templates/*.tera') AS sql
     FROM tables AS c
 ), dispatched AS (
-    SELECT array_agg(selfdispatch(sql)) AS receipts FROM rendered
+    SELECT table_name, sql, array_agg(selfdispatch(sql)) AS receipts FROM rendered GROUP BY ALL
 )
-SELECT receipt.*, receipt.status IS DISTINCT FROM 200 AS failed FROM dispatched CROSS JOIN UNNEST(receipts) AS t(receipt);
+SELECT table_name, sql, receipt.*, receipt.status IS DISTINCT FROM 200 AS failed FROM dispatched CROSS JOIN UNNEST(receipts) AS t(receipt);
 
 -- 4. network: one request per row to another host (never dev itself: that is selfdispatch). Another DuckDB's
 --    host:9495/sql takes the same body. The row's columns ride with its receipt: target next to receipt.*.
@@ -55,9 +57,9 @@ WITH requests AS (
                                template_path := concat_ws('/', getenv('HOME'), '.duck/deploy/skills/self-dispatch/templates/*.tera')) AS sql
     FROM requests AS c
 ), dispatched AS (
-    SELECT target, array_agg(selfdispatch(sql)) AS receipts FROM rendered GROUP BY ALL
+    SELECT target, sql, array_agg(selfdispatch(sql)) AS receipts FROM rendered GROUP BY ALL
 )
-SELECT target, receipt.*, receipt.status IS DISTINCT FROM 200 AS failed FROM dispatched CROSS JOIN UNNEST(receipts) AS t(receipt);
+SELECT target, sql, receipt.*, receipt.status IS DISTINCT FROM 200 AS failed FROM dispatched CROSS JOIN UNNEST(receipts) AS t(receipt);
 
 -- 3. bash_loop_fallback_method: a FALLBACK. This example has a row source, so example 1 is the right answer;
 --    it is here only to show the call. The audit lists every use of this template.
@@ -68,6 +70,6 @@ WITH counts AS (
                        template_path := '/Users/aloksubbarao/.duck/deploy/skills/self-dispatch/templates/*.tera') AS sql
     FROM counts AS c
 ), dispatched AS (
-    SELECT array_agg(selfdispatch(sql)) AS receipts FROM rendered
+    SELECT sql, array_agg(selfdispatch(sql)) AS receipts FROM rendered GROUP BY ALL
 )
-SELECT receipt.*, receipt.status IS DISTINCT FROM 200 AS failed FROM dispatched CROSS JOIN UNNEST(receipts) AS t(receipt);
+SELECT sql, receipt.*, receipt.status IS DISTINCT FROM 200 AS failed FROM dispatched CROSS JOIN UNNEST(receipts) AS t(receipt);

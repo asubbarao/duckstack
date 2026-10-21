@@ -25,7 +25,7 @@ CALL enable_logging(['QueryLog', 'HTTP', 'Quack', 'Metrics'], storage := 'file',
 FROM quack_serve('quack:localhost:9494', token := getenv('QUACK_TOKEN'));
 
 -- 9495: POST /sql {"sql": "..."}; POST /inbox any JSON, read it from quackapi_jobs; GET /profile?sql=…;
--- POST /mcp/ is the dev MCP server: tools query and execute, each a native JSON post to /sql, collected and unnested as receipts.
+-- POST /mcp/: every tool posts its SQL unchanged to /sql; query caps its reply at 50 rows / 8 KiB.
 -- The inbox queue (quackapi_jobs) lives in dev.duckdb: jobs still queued are lost when the file is reset.
 CREATE QUEUE inbox;
 CREATE OR REPLACE ROUTE sql POST '/sql' AS SELECT * FROM quack_query('quack:localhost:9494', $sql, token := getenv('QUACK_TOKEN'));
@@ -35,35 +35,16 @@ CREATE OR REPLACE ROUTE inbox POST '/inbox' STATUS 201 AS SELECT quackapi_enqueu
 -- Notifications carry no id and get 202; the body must not be empty or quackapi answers 500.
 CREATE GROUP mcp WITH (prefix='/mcp');
 CREATE OR REPLACE ROUTE mcp POST '/' IN GROUP mcp AS SELECT '' AS text;
-CREATE OR REPLACE MIDDLEWARE mcp BEFORE GROUP mcp AS
-WITH msg AS (
-    SELECT $body::JSON -> '$.id' AS id, $body::JSON ->> '$.method' AS method,
-           coalesce($body::JSON ->> '$.params.arguments.sql', $body::JSON ->> '$.params.arguments.statement') AS sql
-), posted AS (
-    SELECT id, method, array_agg(selfdispatch(sql)) AS receipts
-    FROM msg WHERE method = 'tools/call' GROUP BY id, method
-), called AS (
-    SELECT id, method FROM msg WHERE method IS DISTINCT FROM 'tools/call'
-    UNION ALL BY NAME
-    SELECT id, method,
-           coalesce(try_cast(r.body AS JSON), json_object('detail', coalesce(r.error, r.body))) AS reply,
-           CASE WHEN r.status = 200 THEN coalesce(json_exists(reply, '$.detail'), false) ELSE true END AS failed
-    FROM posted CROSS JOIN UNNEST(receipts) AS t(r)
-)
-SELECT false AS allow, CASE WHEN id IS NULL THEN 202 ELSE 200 END AS status,
-       json_object('jsonrpc', '2.0', 'id', id, 'result', coalesce(
-           MAP {'initialize': '{"protocolVersion": "2025-06-18", "serverInfo": {"name": "dev", "version": "1"}, "capabilities": {"tools": {}}}',
-                'ping': '{}',
-                'tools/list': '{"tools": [{"name": "query", "description": "Run any SQL on dev, reads and writes. Returns the rows as JSON; a failure returns the DuckDB error.", "inputSchema": {"type": "object", "properties": {"sql": {"type": "string"}}, "required": ["sql"]}}, {"name": "execute", "description": "Same as query, for callers that name it execute.", "inputSchema": {"type": "object", "properties": {"statement": {"type": "string"}}, "required": ["statement"]}}]}'}[method]::JSON,
-           json_object('content', [json_object('type', 'text', 'text', reply::VARCHAR)], 'isError', failed)))::VARCHAR AS body,
-       NULL::VARCHAR AS header_name, NULL::VARCHAR AS header_value
-FROM called;
+.read server/mcp.sql
 -- query_timeout_ms: a git commit's hooks run ~60 s, past quackapi's 30 s default. Longer work runs backgrounded
 -- inside the pipe ('cmd > log 2>&1 & echo $! |') and a later read_lines reads its log.
 -- Response cap 64 MiB (default 16): one transcript line reaches 21 MB; 32 parallel replies stay under 2 GiB.
 -- Bigger self-dispatch reads write Parquet on dev and return a count.
 SET GLOBAL quackapi_max_response_bytes = 67108864;
 FROM quackapi_serve(9495, host := '127.0.0.1', query_timeout_ms := 120000);
+-- quackapi_serve also sets preserve_insertion_order = false, so /sql returned a sorted result in shuffled
+-- 2,048-row vectors (SELECT * FROM range(100000) ORDER BY range came back starting at 49152 or 98304).
+SET GLOBAL preserve_insertion_order = true;
 -- quackapi_serve switches logging off.
 CALL enable_logging(['QueryLog', 'HTTP', 'Quack', 'Metrics'], storage := 'file', storage_path := getenv('QUACK_NATIVE_LOG'), storage_buffer_size := 0);
 

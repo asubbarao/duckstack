@@ -16,7 +16,7 @@ WITH transcript AS (
     SELECT tera_render($w$
 CREATE OR REPLACE TABLE stream.main.blocks AS
 SELECT * EXCLUDE (is_repeat),
-       uuid IS NOT NULL AND file_path IS DISTINCT FROM arg_min(file_path, (timestamp, file_path)) OVER (PARTITION BY uuid) AS is_repeat
+       uuid IS NOT NULL AND (file_path, line) IS DISTINCT FROM arg_min((file_path, line), (timestamp, file_path, line)) OVER (PARTITION BY uuid) AS is_repeat
 FROM (SELECT * FROM stream.main.blocks WHERE file_path NOT IN ({{ files }})
       UNION ALL BY NAME
       SELECT * FROM stream.main.parsed WHERE file_path IN ({{ files }}))
