@@ -17,8 +17,8 @@ Episodes per transcript: a new episode after a gap > 2 min or when the arm chang
 per call with sitting_duck: the `command_name` node of each Bash command from `parse_ast_list(cmd, 'bash')` (git
 with the word after it); SQL `parse_ast_list(cmd, 'sql')` `invocation` nodes (readers, git_*, selfdispatch), plus
 the shell commands inside its `'… |'` literals parsed as bash. Real cost per call: the next assistant line's
-`message.usage` in agent.lines (ASOF JOIN on transcript, `file_row_number > result line`). Ids repeat in the
-stream: one row per tool_use_id with `arg_min(…, line)`. The query: [references/clusters.sql](references/clusters.sql).
+`message.usage` in agent.lines (ASOF JOIN on transcript, `file_row_number > result line`). `NOT is_repeat` leaves
+one row per (file_path, tool_use_id). The query: [references/clusters.sql](references/clusters.sql).
 
 ## 2. Reverse-engineer the questions
 

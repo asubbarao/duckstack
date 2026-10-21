@@ -5,12 +5,16 @@
 -- read_lines_lateral, json_tree) and, when it invokes none, for the bare LATERAL keyword. The
 -- sql_lateral_not_allowlisted hook warns at call time; this finds what got through. LATERAL is allowed; each use is a
 -- candidate to measure against the self-dispatch form (../SKILL.md), which usually wins.
-WITH lateral_functions AS (
-  SELECT DISTINCT function_name FROM duckdb_functions()
-  WHERE function_type = 'table' AND list_bool_or([ends_with(function_name, '_each'), list_contains(['read_lines_lateral', 'json_tree'], function_name)])
+WITH intent AS (
+  SELECT now() - INTERVAL 1 DAY AS since, 'git:///Users/aloksubbarao/duckdb-skills/' AS repo, '@origin/main' AS ref,
+         ['server/*.sql', 'hooks/*.sql', 'skills/*/references/*.sql'] AS repo_patterns,
+         ['*_each', 'read_lines_lateral', 'json_tree'] AS lateral_patterns
+), lateral_functions AS (
+  SELECT DISTINCT f.function_name
+  FROM intent CROSS JOIN UNNEST(lateral_patterns) AS t(name_pattern)
+  JOIN duckdb_functions() AS f ON f.function_name GLOB name_pattern WHERE f.function_type = 'table'
 ), repo_globs AS (
-  SELECT 'git:///Users/aloksubbarao/duckdb-skills/' AS repo, '@origin/main' AS ref, pattern
-  FROM UNNEST(['server/*.sql', 'hooks/*.sql', 'skills/*/references/*.sql']) AS t(pattern)
+  SELECT repo, ref, pattern FROM intent CROSS JOIN UNNEST(repo_patterns) AS t(pattern)
 ), repo_statements AS (
   SELECT pattern, tera_render($t$SELECT replace(filename, '{{ repo }}', '') AS place, content AS sql FROM read_text('{{ repo }}{{ pattern }}{{ ref }}')$t$,
                            repo_globs::JSON, autoescape := false) AS sql
@@ -18,12 +22,12 @@ WITH lateral_functions AS (
 ), repo_reads AS (
   SELECT array_agg(selfdispatch(sql)) AS receipts FROM repo_statements
 ), logged_sql AS (
-  SELECT * EXCLUDE (timestamp) FROM (
+  SELECT logged.* EXCLUDE (timestamp) FROM (
     SELECT 'tool_call' AS source, left(session_id, 8) AS place, tool_command AS sql, timestamp
     FROM stream.blocks WHERE block_type = 'tool_use' AND NOT is_repeat AND contains(tool_name, '__query')
     UNION ALL BY NAME
     SELECT 'server_query' AS source, connection_id::VARCHAR AS place, query AS sql, latency_s, timestamp FROM meta.query_metrics
-  ) WHERE timestamp > now() - INTERVAL 1 DAY
+  ) AS logged JOIN intent ON logged.timestamp > intent.since
 ), statements AS (
   SELECT *, hash(source, place, sql) AS statement_id, contains(upper(sql), 'LATERAL') AS has_lateral_keyword
   FROM (FROM logged_sql
