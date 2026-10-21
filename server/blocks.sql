@@ -44,10 +44,11 @@ WITH line AS (
     SELECT * EXCLUDE (b, content_keys, id_keys, part_keys, message_types), coalesce(b ->> 'type', 'text') AS block_type,
            CASE WHEN list_contains(call_types, block_type) THEN 'call' WHEN list_contains(result_types, block_type) THEN 'result' END AS tool_part,
            -- a tool result's content (Claude) or output (Codex) can be a list of {type, text} parts, joined by
-           -- newlines (Tera reads "\n" as one: on dev, 1554 multi-part results equal their newline join)
+           -- newlines. string_agg, not tera_render: a result can hold a NUL byte, and tera aborts the whole
+           -- server on one (CString unwrap, src/lib.rs:135; 19 boots in a row on 2026-10-21).
            [b -> k FOR k IN part_keys IF json_type(b -> k) = 'ARRAY'][1] AS part_array,
            [p ->> 'text' FOR p IN CAST(part_array AS JSON[]) IF p ->> 'text' IS NOT NULL] AS text_parts,
-           coalesce(CASE WHEN len(text_parts) > 0 THEN tera_render('{{ parts | join(sep="\n") }}', {'parts': text_parts}::JSON, autoescape := false) END,
+           coalesce(list_aggregate(text_parts, 'string_agg', E'\n'),
                     CASE WHEN json_type(b) = 'VARCHAR' THEN b ->> '$' END, [b ->> k FOR k IN content_keys IF b ->> k IS NOT NULL][1]) AS message_content,
            b ->> 'name' AS tool_name,
            -- call_id first: a Codex call and its output share call_id, and each also has its own item id
