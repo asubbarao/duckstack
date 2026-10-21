@@ -2,8 +2,8 @@
 -- episode after a gap or an arm switch (DuckDB/MCP vs not). Signatures come from sitting_duck: the command_name of
 -- each bash `command` (git with its subcommand), SQL `invocation` nodes, and the shell commands inside a SQL `'… |'`
 -- literal. new_tokens counts each API response once, keyed on message.id: one response is written to several
--- transcript lines (one per content block) and parallel calls share one. The usage CTE is lean-results' too; it
--- moves into the proposed agent.turn_usage view (lean-results/SKILL.md). Known gap: in some subagent transcripts
+-- transcript lines (one per content block) and parallel calls share one; usage comes from agent.turn_usage
+-- (server/messages.sql). Known gap: in some subagent transcripts
 -- agent.lines.file_row_number and stream.blocks.line disagree, so the ASOF join can attach a later turn.
 WITH uses AS (
   SELECT file_path, tool_use_id, line, timestamp AS ts, tool_name, tool_command, tool_input,
@@ -17,9 +17,8 @@ WITH uses AS (
 ), transcripts AS (
   SELECT DISTINCT file_path AS transcript, since FROM uses
 ), usage AS (
-  SELECT transcript, file_row_number, json_extract_string(message, '$.id') AS response_id,
-         list_sum(json_extract_string(message, ['$.usage.cache_creation_input_tokens', '$.usage.input_tokens', '$.usage.output_tokens'])::BIGINT[]) AS new_tokens
-  FROM agent.lines JOIN transcripts USING (transcript) WHERE new_tokens IS NOT NULL AND timestamp::TIMESTAMPTZ > since
+  SELECT turn_usage.*, input_new_tokens + output_tokens AS new_tokens
+  FROM agent.turn_usage JOIN transcripts USING (transcript) WHERE ts > since
 ), call_data AS (
   SELECT uses.*, results.* EXCLUDE (file_path, tool_use_id),
          CASE WHEN list_bool_or([starts_with(tool_name, p) FOR p IN duckdb_prefixes]) THEN 'duckdb' ELSE 'not_duckdb' END AS arm,
