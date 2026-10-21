@@ -1,7 +1,8 @@
 -- stream.blocks: one row per block of every Claude and Codex message, agent_data's column names, in an in-memory
 -- database (nothing writes a WAL) with a BM25 index on message_content. block_key is file:line:block (line is the
 -- record's row in its stored file), unique by construction. is_prompt is a person's typed message. is_repeat marks a
--- resumed session's copy of a line: same uuid, not the earliest (timestamp, file) holding it; computed at each build.
+-- resumed session's copy of a line: same uuid, not the earliest (timestamp, file, line) holding it; computed at each build.
+-- The line matters because Claude Desktop re-appends its history into the same file after each bridge-session line.
 -- stream.parsed: the parse of agent.lines (fields are JSON there, hence ->> '$'); the build's input only. A view in the
 -- stream catalog resolves names inside stream, so it names dev.agent.lines.
 -- Boot posts the view, then the empty table from that receipt (a post binds alone), and returns every receipt.
