@@ -46,6 +46,50 @@ cmd or sql, else the whole input). The raw store below is for fields neither car
 - If a filter on several `payload` fields fails with `Failed to cast value to numerical`, project them as columns
   in one CTE and filter in the next.
 
+## Fields only `agent.lines` has
+
+The transcripts are already read: `agent.lines` has every top-level field of every line (192 columns), auto-read,
+each a `JSON` column, for every session and subagent. Hook timings, denials and attribution live only here.
+`SELECT column_name FROM duckdb_columns() WHERE schema_name = 'agent' AND table_name = 'lines'` lists them.
+
+| Question | Columns |
+|---|---|
+| Hook runs and their time | `agent.attachment_fields` where `attachment_type` starts with `hook_` (`hook_success`, `hook_cancelled`, …); keys `hookEvent`, `hookName`, `command`, `durationMs`, `timedOut`, `timeoutMs`, `exitCode` |
+| Any other attachment | `agent.attachment_fields`: one (`key`, `value`) row per field, found with `json_keys`, so no field list is typed |
+| Denied tool calls | `toolDenialKind` (`permission-rule`, `user-rejected`, `automode-blocked`; `cancelled`/`interrupted` are aborts) |
+| Which skill, MCP server or plugin | `attributionSkill`, `attributionMcpServer`, `attributionMcpTool`, `attributionPlugin` |
+| Cost and turn time | `totalCostUSD`, `modelUsage`, `durationMs`, `totalToolDuration` |
+
+`PIVOT … ON key` turns one kind of attachment back into columns, whatever keys it has:
+
+```sql
+WITH hook_runs AS (
+    PIVOT (FROM agent.attachment_fields WHERE starts_with(attachment_type, 'hook_') AND ts > now() - INTERVAL 2 DAY)
+    ON key USING max(value) GROUP BY transcript, file_row_number   -- one value per (line, key), so max loses nothing
+)
+SELECT hookEvent, command, count(file_row_number) AS runs, median(durationMs::DOUBLE) AS p50_ms,
+       max(durationMs::DOUBLE) AS max_ms, count_if(timedOut = 'true') AS timeouts
+FROM hook_runs GROUP BY ALL ORDER BY runs DESC;
+
+SELECT toolDenialKind ->> '$' AS denial_kind, count(file_row_number) AS denials
+FROM agent.lines WHERE toolDenialKind IS NOT NULL AND (timestamp ->> '$')::TIMESTAMPTZ > now() - INTERVAL 2 DAY
+GROUP BY ALL ORDER BY denials DESC;
+```
+
+Observed on dev 2026-10-20 (last two days): 13,533 `PreToolUse` runs of hook_checks, median 1,057 ms, max
+170 s, 2 timeouts; 1,272 `permission-rule` denials, 48 `user-rejected`, 11 `automode-blocked`. `timedOut` is
+`'true'` or `'false'` when present, so compare it to `'true'`; counting the field counts both.
+
+**Ways agents get this wrong** (each one seen, the last on 2026-10-20 in a `/doctor` run):
+- Reading `~/.claude/projects/*/*.jsonl` again with `read_ndjson_objects` or `read_json`. That redoes dev's work.
+  It covers a sample of files, not the store, and it skips subagent files. On the whole glob it runs past dev's
+  2-minute budget, or falls back to one `MAP(VARCHAR, JSON)` column.
+- Copying fields out to a scratch parquet or a `.duckdb` file to "save re-parsing". The parsed copy is
+  already on dev.
+- Using `json_extract_string`, regexp or `split_part` on raw line text for a field that is already a column here.
+- Writing the query before checking `duckdb_views()`. A transcript question starts with `agent.messages`,
+  `stream.blocks` or `agent.lines`.
+
 ## Rules
 
 - **One statement covers every session.** Filter by a time window, `file_path IN (…)` or `session_id IN (…)`.
@@ -57,6 +101,33 @@ cmd or sql, else the whole input). The raw store below is for fields neither car
 - **Briefs:** a subagent brief names `agent.messages` or `stream.blocks` and the query below. Never a store root.
 - **agent_data:** `read_conversations` is only for one file the store doesn't hold yet, with
   `path := '<that file>'`. Never point it at `~/.claude` or `~/.codex`.
+
+## Now: what every session is doing
+
+Start here when asked about "the chat", "a session" or anything happening right now. Concurrent sessions
+include other terminals, Claude Desktop and Codex. One row per session active in the last hour from `agent.sessions`
+(every column but the big `prompts` and `block_keys`; `last_prompt` says what it was asked), its minutes idle, and
+the other live sessions on its branch. Two sessions on one branch are about to collide.
+
+```sql
+WITH live AS (
+  SELECT * EXCLUDE (prompts, block_keys), date_diff('minute', last_active, now()) AS idle_min,
+         ['staging'] AS shared_checkout_branches
+  FROM agent.sessions WHERE last_active > now() - INTERVAL 1 HOUR
+), shared AS (
+  SELECT a.session_id, array_agg(b.session_id) AS shares_branch_with
+  FROM live a JOIN live b ON a.git_branch = b.git_branch AND a.session_id <> b.session_id
+  WHERE NOT list_contains(a.shared_checkout_branches, a.git_branch) GROUP BY a.session_id
+)
+SELECT * EXCLUDE (shared_checkout_branches) FROM live LEFT JOIN shared USING (session_id) ORDER BY last_active DESC;
+```
+
+- `agent.sessions` sits on `stream.blocks`, so a session shows up to ~20 minutes late and `idle_min` counts from
+  its last stored block.
+- `shared_checkout_branches` are branches every session in the main checkout reports (`staging`), so they aren't
+  counted as an overlap.
+- A Codex session's `git_branch` and `cwd` are NULL, so it never shows an overlap, until asubbarao/duckstack#97
+  (Codex session fields from `session_meta`) is merged.
 
 ## Turns: each prompt and the reply that closed it
 

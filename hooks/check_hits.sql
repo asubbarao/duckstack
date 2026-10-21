@@ -176,9 +176,11 @@ SELECT 'sql_new_table' AS check_id, call_id, tool_name, coalesce(next_prompt_cor
 UNION ALL
 SELECT 'sql_new_table_in_file' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((list_contains(sql_statement_kinds, 'create_table') AND list_contains(sql_sources, 'file')), false)
 UNION ALL
-SELECT 'sql_or_of_patterns' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((sql_has_or_of_patterns), false)
+SELECT 'sql_or_of_patterns' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((sql_or_pattern_max >= 3), false)
 UNION ALL
-SELECT 'sql_or_predicate' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((sql_or_node_count > 0 AND NOT sql_has_or_of_patterns), false)
+SELECT 'sql_or_of_two_patterns' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((sql_or_pattern_max = 2), false)
+UNION ALL
+SELECT 'sql_or_predicate' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((sql_or_node_count > 0 AND sql_or_pattern_max < 2), false)
 UNION ALL
 SELECT 'sql_pattern_functions' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((list_has_any(sql_functions, ['regexp_matches', 'regexp_full_match', 'regexp_replace', 'regexp_extract', 'regexp_extract_all', 'regexp_split_to_array', 'regexp_split_to_table', 'string_split_regex', 'str_split_regex', 'regexp_escape'])), false)
 UNION ALL
@@ -210,7 +212,7 @@ SELECT 'sql_star_count' AS check_id, call_id, tool_name, coalesce(next_prompt_co
 UNION ALL
 SELECT 'sql_statement_too_long' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((sql_max_statement_lines > 80), false)
 UNION ALL
-SELECT 'sql_temp_object' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((len(list_filter(sql_heads, h -> h[1] = 'CREATE' AND list_has_any(h, ['TEMP', 'TEMPORARY']))) > 0), false)
+SELECT 'sql_temp_object' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((len(list_filter(sql_heads, h -> h[1] = 'CREATE' AND list_has_any(h, ['TEMP', 'TEMPORARY']) AND NOT list_contains(h, 'TYPE'))) > 0), false)
 UNION ALL
 SELECT 'sql_tera_logic' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((len(list_filter(sql_function_calls, f -> f.name = 'tera_render' AND len(list_filter(f.literals, l -> contains(l, '{%'))) > 0)) > 0), false)
 UNION ALL
