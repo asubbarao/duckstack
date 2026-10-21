@@ -4,6 +4,7 @@
 -- resumed session's copy of a line: same uuid, not the earliest (timestamp, file, line) holding it; computed at each build.
 -- The line matters because Claude Desktop re-appends its history into the same file after each bridge-session line.
 -- tool_part is 'call' or 'result' for a tool call's two blocks, NULL for a message; a call's message_content is its command.
+-- timestamp is UTC, the truth; ts_pst is the same instant on the Pacific wall clock, the one readers group and show by.
 -- stream.parsed: the parse of agent.lines (fields are JSON there, hence ->> '$'); the build's input only. A view in the
 -- stream catalog resolves names inside stream, so it names dev.agent.lines.
 -- Boot posts the view, then the empty table from that receipt (a post binds alone), and returns every receipt.
@@ -27,7 +28,8 @@ WITH line AS (
            transcript AS file_path, file_row_number AS line, CASE WHEN contains(transcript, '/.codex/') THEN 'codex' ELSE 'claude' END AS source,
            contains(transcript, '/subagents/') AS is_agent,
            coalesce(sessionId ->> '$', codex_meta ->> 'id', parse_filename(transcript, true)) AS session_id,
-           (timestamp ->> '$')::TIMESTAMPTZ AS timestamp, type ->> '$' AS message_type, uuid ->> '$' AS uuid,
+           (timestamp ->> '$')::TIMESTAMPTZ AS timestamp, (timestamp ->> '$')::TIMESTAMPTZ AT TIME ZONE 'America/Los_Angeles' AS ts_pst,
+           type ->> '$' AS message_type, uuid ->> '$' AS uuid,
            parentUuid ->> '$' AS parent_uuid, coalesce(cwd ->> '$', codex_meta ->> 'cwd') AS cwd,
            coalesce(gitBranch ->> '$', codex_meta ->> '$.git.branch') AS git_branch, entrypoint ->> '$' AS entrypoint,
            CASE WHEN type ->> '$' IN ('user', 'assistant') THEN message
@@ -43,11 +45,10 @@ WITH line AS (
 ), parsed AS (
     SELECT * EXCLUDE (b, content_keys, id_keys, part_keys, message_types), coalesce(b ->> 'type', 'text') AS block_type,
            CASE WHEN list_contains(call_types, block_type) THEN 'call' WHEN list_contains(result_types, block_type) THEN 'result' END AS tool_part,
-           -- a tool result's content (Claude) or output (Codex) can be a list of {type, text} parts, joined by
-           -- newlines (Tera reads "\n" as one: on dev, 1554 multi-part results equal their newline join)
+           -- a tool result's content (Claude) or output (Codex) can be a list of {type, text} parts, joined by newlines;
+           -- string_agg skips parts without text and is NULL when none has any, so coalesce moves on
            [b -> k FOR k IN part_keys IF json_type(b -> k) = 'ARRAY'][1] AS part_array,
-           [p ->> 'text' FOR p IN CAST(part_array AS JSON[]) IF p ->> 'text' IS NOT NULL] AS text_parts,
-           coalesce(CASE WHEN len(text_parts) > 0 THEN tera_render('{{ parts | join(sep="\n") }}', {'parts': text_parts}::JSON, autoescape := false) END,
+           coalesce(list_aggregate([p ->> 'text' FOR p IN CAST(part_array AS JSON[])], 'string_agg', E'\n'),
                     CASE WHEN json_type(b) = 'VARCHAR' THEN b ->> '$' END, [b ->> k FOR k IN content_keys IF b ->> k IS NOT NULL][1]) AS message_content,
            b ->> 'name' AS tool_name,
            -- call_id first: a Codex call and its output share call_id, and each also has its own item id
@@ -58,7 +59,7 @@ WITH line AS (
     FROM block
 )
 -- a tool call's text is its command, so the BM25 index on message_content finds the SQL and commands agents ran
-SELECT * EXCLUDE (harness_prefixes, command_keys, call_types, result_types, part_array, text_parts)
+SELECT * EXCLUDE (harness_prefixes, command_keys, call_types, result_types, part_array)
          REPLACE (coalesce(message_content, tool_command) AS message_content),
        message_role = 'user' AND block_type IN ('text', 'input_text') AND NOT is_agent
        AND NOT list_bool_or([starts_with(ltrim(message_content), p) FOR p IN harness_prefixes]) AS is_prompt

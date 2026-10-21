@@ -41,3 +41,15 @@ $s$)) AS receipts
 SELECT r.* FROM messages_step CROSS JOIN UNNEST(receipts) AS t(r)
 UNION ALL
 SELECT r.* FROM sessions_step CROSS JOIN UNNEST(receipts) AS t(r);
+
+-- agent.activity: one row per session and Pacific time bucket over the last `lookback`; the caller picks both.
+-- FROM agent.activity(lookback := INTERVAL 30 DAY, bucket := INTERVAL 1 DAY)
+CREATE OR REPLACE MACRO agent.activity(lookback := INTERVAL 7 DAY, bucket := INTERVAL 1 HOUR) AS TABLE
+SELECT source, session_id, time_bucket(bucket, ts_pst) AS bucket_pst,
+       arg_max(cwd, timestamp) AS cwd, arg_max(git_branch, timestamp) AS git_branch,
+       count_if(is_prompt) AS prompts, count_if(message_role = 'assistant' AND block_type = 'text' AND NOT is_agent) AS replies,
+       count_if(tool_part = 'call') AS tool_calls, count_if(tool_part = 'result' AND is_error) AS tool_errors,
+       count_if(is_agent) AS subagent_blocks, sum(content_bytes) AS bytes
+FROM stream.blocks
+WHERE NOT is_repeat AND timestamp > now() - lookback
+GROUP BY ALL;
