@@ -65,9 +65,12 @@ SELECT receipt.* FROM jobs_dispatched CROSS JOIN UNNEST(receipts) AS t(receipt);
 ```
 
 The files each run's PR changes (the gate question): runs, then each run's PR, then that PR's
-files, each stage rendered from the last one's receipts. The last statement `COPY`s its rows to
-raw/ itself, so every row carries `run_id`, `event` and `pr`. A run with no PR returns no rows at
-stage 2 and sends nothing at stage 3.
+files, each stage rendered from the last one's receipts, and the rows come back in the last
+stage's receipts: every row carries `run_id`, `event`, `pr`, `filename` and GitHub's whole file
+object as `pr_file`, and stage 3 tees GitHub's response into `raw_dir` under the UTC `ts`, so a
+re-run adds a copy and never overwrites one. A run with no PR returns no rows
+at stage 2 and sends nothing at stage 3. §3 reads it as the view `pr_files`
+(`CREATE OR REPLACE VIEW pr_files AS` in front).
 
 ```sql
 WITH intent AS (
@@ -83,25 +86,28 @@ WITH intent AS (
     SELECT array_agg(selfdispatch(sql)) AS receipts FROM runs_rendered
 ), prs_rendered AS (
     SELECT tera_render($tera$
-        SELECT '{{ repo }}' AS repo, '{{ raw_dir }}' AS raw_dir, '{{ ts }}' AS ts, {{ run_id }} AS run_id, '{{ event }}' AS event, number AS pr
-        FROM read_json($cmd$gh api repos/{{ repo }}/commits/{{ head_sha }}/pulls |$cmd$)
+        SELECT '{{ repo }}' AS repo, '{{ raw_dir }}' AS raw_dir, '{{ ts }}' AS ts, {{ run_id }} AS run_id, '{{ event }}' AS event,
+               pull.number AS pr
+        FROM read_json($cmd$gh api --paginate --slurp repos/{{ repo }}/commits/{{ head_sha }}/pulls |$cmd$)
+        CROSS JOIN UNNEST(json) AS page(pull)
     $tera$, run_row, autoescape := false) AS sql
     FROM runs_dispatched CROSS JOIN UNNEST(receipts) AS r(receipt) CROSS JOIN UNNEST(receipt.body::JSON[]) AS j(run_row)
 ), prs_dispatched AS (
     SELECT array_agg(selfdispatch(sql)) AS receipts FROM prs_rendered
 ), files_rendered AS (
     SELECT tera_render($tera$
-        COPY (
-            SELECT {{ run_id }} AS run_id, '{{ event }}' AS event, {{ pr }} AS pr, file.filename
-            FROM read_json($cmd$gh api --paginate --slurp "repos/{{ repo }}/pulls/{{ pr }}/files?per_page=100" |$cmd$)
-            CROSS JOIN UNNEST(json) AS page(file)
-        ) TO '{{ raw_dir }}/prfiles-{{ run_id }}-{{ ts }}.json'
+        SELECT {{ run_id }} AS run_id, '{{ event }}' AS event, {{ pr }} AS pr, file.*
+        FROM read_json($cmd$gh api --paginate --slurp "repos/{{ repo }}/pulls/{{ pr }}/files?per_page=100" | tee {{ raw_dir }}/prfiles-{{ run_id }}-{{ pr }}-{{ ts }}.json |$cmd$)
+        CROSS JOIN UNNEST(json) AS page(file)
     $tera$, pr_row, autoescape := false) AS sql
     FROM prs_dispatched CROSS JOIN UNNEST(receipts) AS r(receipt) CROSS JOIN UNNEST(receipt.body::JSON[]) AS j(pr_row)
 ), files_dispatched AS (
     SELECT array_agg(selfdispatch(sql)) AS receipts FROM files_rendered
 )
-SELECT receipt.* FROM files_dispatched CROSS JOIN UNNEST(receipts) AS t(receipt);
+SELECT (file ->> 'run_id')::BIGINT AS run_id, file ->> 'event' AS event, (file ->> 'pr')::BIGINT AS pr,
+       file ->> 'filename' AS filename, file AS pr_file
+FROM files_dispatched CROSS JOIN UNNEST(receipts) AS r(receipt) CROSS JOIN UNNEST(receipt.body::JSON[]) AS f(file);
+-- verified 2026-10-21 on inframe-risk/inframe, 6 runs: the same rows as the filename-only version, every field kept
 ```
 
 One run's full log zip, for duck_hunt: fetched once, kept. The command's only job is to land the
@@ -113,7 +119,9 @@ SELECT * FROM read_lines($cmd${ [ -s raw/run-<run_id>.zip ] || gh api repos/<own
 
 - `gh api --paginate --slurp` over a list endpoint gives one row per page with a `json` list
   column: `CROSS JOIN UNNEST(json)`. Select `file.filename` from it, not a bare `filename`, which
-  binds to the reader's own filename column when the page has none.
+  binds to the reader's own filename column when the page has none. An empty list is one empty
+  page and unnests to no rows; a bare `gh api` of `[]` has no columns and fails to bind (a commit
+  with no PR, measured 2026-10-21).
 - One command per row, dispatched. No loop in the shellfs string, no `.sh` file, no Python.
 - A run's zip is `{N}_{job name}.txt` per job — the input to `/duckstack:duck-hunt`
   (`read_duck_hunt_log('zip://<zip>/<glob>', format)` on dev).
@@ -123,7 +131,6 @@ SELECT * FROM read_lines($cmd${ [ -s raw/run-<run_id>.zip ] || gh api repos/<own
 ```sql
 CREATE OR REPLACE VIEW raw_runs     AS FROM read_json('raw/runs-*.json', filename := true);
 CREATE OR REPLACE VIEW raw_jobs     AS FROM read_json('raw/jobs-*.json', format := 'unstructured', filename := true);
-CREATE OR REPLACE VIEW raw_prfiles  AS FROM read_json('raw/prfiles-*.json', format := 'newline_delimited', filename := 'raw_file');  -- the rows carry their own `filename`
 
 CREATE OR REPLACE VIEW runs AS
 SELECT * EXCLUDE (filename),
@@ -177,7 +184,7 @@ A timeline (Gantt) of one run is each job's offset from the run's first job star
 dependency install, the test step, the aggregate. The test step is the suite; everything else is
 setup a cache or a smaller image can win back.
 
-**The change-detection gate.** Join `raw_prfiles` to the runs and classify each PR by where its
+**The change-detection gate.** Join `pr_files` (§1) to the runs and classify each PR by where its
 files live; a PR that only touches one side but ran the other side's jobs paid for nothing:
 
 ```sql
@@ -185,7 +192,7 @@ SELECT run_id, pr,
        list_filter(array_agg(filename), f -> starts_with(f, 'platform/backend/'))  AS backend_files,
        list_filter(array_agg(filename), f -> starts_with(f, 'platform/frontend/')) AS frontend_files,
        array_agg(filename) AS files
-FROM raw_prfiles GROUP BY ALL;
+FROM pr_files GROUP BY ALL;
 -- verified 2026-10-17: run 39075670966 (PR #1662) → 9 backend, 0 frontend of 14 files; no match is [], not NULL
 ```
 
