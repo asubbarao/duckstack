@@ -51,10 +51,6 @@ WITH declared AS (
            receipt.error IS NOT NULL AS read_failed, receipt.error AS read_error
     FROM read_dispatch CROSS JOIN UNNEST(receipts) AS r(receipt)
     CROSS JOIN UNNEST(coalesce(TRY_CAST(receipt.body AS JSON[]), [NULL::JSON])) AS e(row)
-), failed_reads AS (         -- every failed dispatch, from any stage
-    SELECT branch_name, 'merge-base' AS failed_stage, read_error FROM branch_points WHERE read_failed
-    UNION ALL SELECT branch_name, 'diff --name-status', read_error FROM changed_files WHERE read_failed
-    UNION ALL SELECT branch_name, 'read_text', read_error FROM blobs WHERE read_failed
 ), definitions AS (
     SELECT * FROM (SELECT branch_name, file_path, side, unnest(parse_ast_list(text, language), recursive := true)
                    FROM file_sides JOIN (SELECT uri, text FROM blobs WHERE NOT read_failed) AS blob USING (uri))
@@ -68,9 +64,10 @@ SELECT branch_name, file_path, qualified_name, coalesce(after.name, before.name)
        CASE WHEN before.node_id IS NULL THEN 'added' WHEN after.node_id IS NULL THEN 'removed'
             WHEN (after.descendant_count, after.peek) IS DISTINCT FROM (before.descendant_count, before.peek) THEN 'modified' ELSE 'unchanged' END AS change,
        before.start_line AS before_start_line, before.end_line AS before_end_line,
-       after.start_line AS after_start_line, after.end_line AS after_end_line, false AS read_failed
+       after.start_line AS after_start_line, after.end_line AS after_end_line
 FROM (FROM own_definitions WHERE side = 'before') AS before
 FULL JOIN (FROM own_definitions WHERE side = 'after') AS after USING (branch_name, file_path, qualified_name)
 WHERE change <> 'unchanged'
-UNION ALL BY NAME
-SELECT branch_name, 'read_failed' AS change, true AS read_failed, failed_stage, read_error FROM failed_reads;
+UNION ALL BY NAME SELECT branch_name, 'read_failed' AS change, 'merge-base' AS failed_stage, read_error FROM branch_points WHERE read_failed
+UNION ALL BY NAME SELECT branch_name, 'read_failed' AS change, 'diff --name-status' AS failed_stage, read_error FROM changed_files WHERE read_failed
+UNION ALL BY NAME SELECT branch_name, 'read_failed' AS change, 'read_text' AS failed_stage, read_error FROM blobs WHERE read_failed;
