@@ -5,7 +5,7 @@ description: >
   orchestration practices (private repo asubbarao/devx-takeaways, agent-orchestration/)
   as a dispatch packet plus the house rules every worker must carry: Opus 5.5 set
   explicitly unless a model is named (say which and why), no .sh or Python in the data path
-  (shellfs inside .sql), regex only on web and log text, no selector-taking extractors, no
+  (shellfs inside .sql), regex only on web and log text, selectors as rows not hand-written, no
   lossy aggregation, and evidence that is false-first and read from CI/GitHub. Covers
   launch-evidence-before-promotion, write-scope as an enforcement boundary, bounded rounds,
   and recombination.
@@ -119,9 +119,12 @@ property of the diff blesses every existing violation.
   matched with a regex; say so in one line. Anything structured (paths, hive keys, JSON,
   timestamps) and any query against a backend database (Postgres in any environment, the app's
   CRUD code, DuckDB over structured backend data) stays `regexp_*`-free without his explicit
-  approval. **No selector-taking extractors**
-  (`json_extract`, `html_extract_text(doc,'//path')`) in committed code — readers
-  only; mechanical test is positional arity ≥ 2 in `duckdb_functions()`.
+  approval. **Selectors are rows, never hand-written ladders.** XPath is fine. The failure is a
+  40-line chain of hand-typed `html_extract_text(doc, '//a/b[3]')` or `json_extract` calls.
+  Take the selectors from the document itself as a relation
+  (`list_distinct(list_transform(xml_extract_attributes(parse_html(body), '//*'), a -> a.element_path))`),
+  filter them with a WHERE, and pass each one as a column:
+  `html_extract_text(html, xpath) … CROSS JOIN UNNEST(xpaths) AS t(xpath)`.
 - **No `COUNT(*)`, `min`, `max`, `avg`.** `array_agg(DISTINCT c) AS cs, len(cs) AS n`.
 - **No enumeration** — no `split_part`, no positional indexing of structure.
 - One `.sql` per deliverable, built a layer at a time. No macros yet. **No Python and no
