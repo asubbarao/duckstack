@@ -1,5 +1,5 @@
 -- duckstack review queue, one tick, one query. launchd (com.inframe.duckstack-review.plist, beside this file) runs it
--- every minute from ~/.duck/deploy, the checkout of main, with GH_TOKEN set to asubbarao's token.
+-- every three minutes from ~/.duck/deploy, the checkout of main, with GH_TOKEN set to asubbarao's token.
 -- Each open, non-draft PR by asubbarao on asubbarao/duckstack gets two statuses on its head commit, both required by
 -- main's branch protection:
 --   duckstack/rules   gate.sql: the hook's own checks on every changed .sql file and ```sql block;
@@ -31,7 +31,8 @@ WITH intent AS (
            $t$SELECT * FROM read_json($src${{ fetch_cmd | join(sep=" ") }} && {{ list_cmd | join(sep=" ") }} |$src$)$t$ AS listing_template,
            -- the merge base is git's (duck_tails has none), taken by the program's own shell; env_words are sh-quoted
            $t$SELECT * FROM read_json($src$cd '{{ checkout }}' && PR_BASE=$({{ git_in_repo | join(sep=" ") }} merge-base origin/main {{ head_sha }}) {{ env_words | join(sep=" ") }} {{ duckdb_file | join(sep=" ") }} {{ program }} |$src$)$t$ AS program_template,
-           $t$SELECT * FROM read_json('{{ result_path }}')$t$ AS result_template,
+           -- read as text: a file that is not claude's JSON still reads, and is an 'error' with its text
+           $t$SELECT content FROM read_text('{{ result_path }}')$t$ AS result_template,
            MAP {'duckstack/rules': MAP {'failure': 'Blocking rule hits; see the PR comment', 'success': 'No blocking rule hits'},
                 'duckstack/review': MAP {'pending': 'Opus 5.5 is reviewing', 'success': 'Opus 5.5: clean',
                                          'failure': 'Opus 5.5: changes needed; see the PR comment',
@@ -86,12 +87,13 @@ _{{ signatures[context] }}_$t$ AS comment_template,
     SELECT *, 'resulting' AS stage,
            array_agg(selfdispatch(tera_render(result_template, planned::JSON, autoescape := false))) AS receipts
     FROM planned WHERE result_due GROUP BY ALL
-), reviews AS (        -- the verdict is claude's structured_output; dev's error reading the file (its text) is the answer
-    SELECT resulting.* EXCLUDE (receipts, stage), result_row -> 'structured_output' AS review, left(result_row ->> 'result', 3000) AS answer
-    FROM resulting CROSS JOIN UNNEST(receipts) AS t(receipt)
-    CROSS JOIN UNNEST(coalesce(TRY_CAST(receipt.body AS JSON[]), [json_object('result', receipt.body)])) AS e(result_row)
-    -- a read that never reached dev (status 0, empty body) posts nothing; the next tick reads the file again
-    WHERE receipt.status > 0 AND length(receipt.body) > 0
+), result_files AS (   -- a failed read (dev unreachable or erroring) has no row, posts nothing, and is read again next tick
+    SELECT resulting.* EXCLUDE (receipts, stage), TRY_CAST(file_row ->> 'content' AS JSON) AS result_json, file_row ->> 'content' AS content
+    FROM resulting CROSS JOIN UNNEST(receipts) AS t(receipt) CROSS JOIN UNNEST(TRY_CAST(receipt.body AS JSON[])) AS e(file_row)
+    WHERE receipt.status BETWEEN 200 AND 299
+), reviews AS (        -- the verdict is claude's structured_output; with none, what the file says is the answer
+    SELECT *, result_json -> 'structured_output' AS review, left(coalesce(result_json ->> 'result', content), 3000) AS answer
+    FROM result_files
 ), finding_lines AS (
     SELECT pr_number, string_agg(tera_render($t$- `{{ file }}:{{ line }}` **{{ rule }}**: {{ problem }}
   Rewrite: {{ rewrite }}$t$, finding, autoescape := false), E'\n') AS lines

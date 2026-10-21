@@ -27,13 +27,15 @@ WITH wanted AS (
         SELECT is_text, text FROM git_read({{ uri_literal }})
     $t$, wanted::JSON, autoescape := false))) AS receipts
     FROM wanted GROUP BY ALL
-), blobs AS (
-    SELECT file_path, status, side, (e.row->>'is_text')::BOOLEAN AS is_text, e.row->>'text' AS content
-    FROM read_dispatch CROSS JOIN UNNEST(receipts) AS r(receipt) CROSS JOIN UNNEST(TRY_CAST(receipt.body AS JSON[])) AS e(row)
+), blobs AS (          -- a read that failed keeps its row, with dev's answer as read_error, so the PR is blocked
+    SELECT file_path, status, side, (e.row->>'is_text')::BOOLEAN AS is_text, e.row->>'text' AS content,
+           CASE WHEN e.row IS NULL THEN coalesce(left(receipt.body, 300), receipt.error) END AS read_error
+    FROM read_dispatch CROSS JOIN UNNEST(receipts) AS r(receipt)
+    CROSS JOIN UNNEST(coalesce(TRY_CAST(receipt.body AS JSON[]), [NULL::JSON])) AS e(row)
 )
-SELECT file_path, status, side, content FROM blobs WHERE is_text;
+SELECT file_path, status, side, content, read_error FROM blobs WHERE is_text IS NOT false;
 CREATE OR REPLACE VIEW pr_files AS
-SELECT * EXCLUDE (side) FROM pr_versions WHERE side = 'head';
+SELECT * EXCLUDE (side, read_error) FROM pr_versions WHERE side = 'head' AND read_error IS NULL;
 
 -- The lines a PR adds: of a line's numbers in the new file, those past the old file's copies of it.
 CREATE OR REPLACE VIEW pr_added_lines AS
@@ -52,7 +54,7 @@ CROSS JOIN UNNEST(new_lines.line_numbers[coalesce(old_lines.copies, 0) + 1:]) AS
 
 -- A ```sql block whose first line is '-- BAD' is a deliberate counter-example: its hits are reported as 'example'.
 CREATE OR REPLACE VIEW pr_sql AS
-SELECT file_path, side, content, false AS bad_example FROM pr_versions WHERE ends_with(file_path, '.sql')
+SELECT file_path, side, content, false AS bad_example FROM pr_versions WHERE ends_with(file_path, '.sql') AND read_error IS NULL
 UNION ALL
 -- named <file>#<n>.sql so toolcall_facts reads its extension as .sql
 SELECT tera_render('{{ file_path }}#{{ ordinality }}.sql', {'file_path': file_path, 'ordinality': block.ordinality}::JSON,
@@ -116,6 +118,10 @@ FROM section_rows AS section_row;
 CREATE OR REPLACE VIEW pr_review AS
 WITH parts AS (
     SELECT file_path, action, line FROM pr_rule_hits
+    UNION ALL
+    SELECT file_path, 'block', tera_render($t$- **block** `read_failed` in {{ file_path }} ({{ side }}): {{ read_error }}$t$,
+                                           failed::JSON, autoescape := false)
+    FROM pr_versions AS failed WHERE read_error IS NOT NULL
     UNION ALL BY NAME
     SELECT file_path, section FROM pr_sections
 )
