@@ -44,9 +44,11 @@ WITH line AS (
     SELECT * EXCLUDE (b, content_keys, id_keys, part_keys, message_types), coalesce(b ->> 'type', 'text') AS block_type,
            CASE WHEN list_contains(call_types, block_type) THEN 'call' WHEN list_contains(result_types, block_type) THEN 'result' END AS tool_part,
            -- a tool result's content (Claude) or output (Codex) can be a list of {type, text} parts, joined by
-           -- newlines (Tera reads "\n" as one: on dev, 1554 multi-part results equal their newline join)
+           -- newlines (Tera reads "\n" as one: on dev, 1554 multi-part results equal their newline join).
+           -- NUL bytes are dropped first: a transcript holds one when an agent read a binary file as text, and a
+           -- NUL inside a tera value aborts the whole server (14 boot crashes on 2026-10-21).
            [b -> k FOR k IN part_keys IF json_type(b -> k) = 'ARRAY'][1] AS part_array,
-           [p ->> 'text' FOR p IN CAST(part_array AS JSON[]) IF p ->> 'text' IS NOT NULL] AS text_parts,
+           [replace(p ->> 'text', chr(0), '') FOR p IN CAST(part_array AS JSON[]) IF p ->> 'text' IS NOT NULL] AS text_parts,
            coalesce(CASE WHEN len(text_parts) > 0 THEN tera_render('{{ parts | join(sep="\n") }}', {'parts': text_parts}::JSON, autoescape := false) END,
                     CASE WHEN json_type(b) = 'VARCHAR' THEN b ->> '$' END, [b ->> k FOR k IN content_keys IF b ->> k IS NOT NULL][1]) AS message_content,
            b ->> 'name' AS tool_name,
