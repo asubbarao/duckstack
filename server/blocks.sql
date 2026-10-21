@@ -17,6 +17,7 @@ CREATE OR REPLACE VIEW stream.main.parsed AS
 WITH line AS (
     SELECT ['text', 'thinking', 'output', 'content'] AS content_keys,
            ['call_id', 'tool_use_id', 'id'] AS id_keys, ['command', 'cmd', 'sql', '$'] AS command_keys,
+           ['content', 'output'] AS part_keys, ['message', 'agent_message'] AS message_types,
            ['tool_use', 'function_call', 'custom_tool_call'] AS call_types,
            ['tool_result', 'function_call_output', 'custom_tool_call_output'] AS result_types,
            ['<', '[Request interrupted', 'This session is being continued', 'Base directory for this skill',
@@ -30,7 +31,7 @@ WITH line AS (
            parentUuid ->> '$' AS parent_uuid, coalesce(cwd ->> '$', codex_meta ->> 'cwd') AS cwd,
            coalesce(gitBranch ->> '$', codex_meta ->> '$.git.branch') AS git_branch, entrypoint ->> '$' AS entrypoint,
            CASE WHEN type ->> '$' IN ('user', 'assistant') THEN message
-                WHEN list_contains(['message', 'agent_message'] || call_types || result_types, payload ->> 'type') THEN payload END AS msg
+                WHEN list_contains(message_types || call_types || result_types, payload ->> 'type') THEN payload END AS msg
     FROM dev.agent.lines
 ), block AS (
     SELECT l.* EXCLUDE (msg, codex_meta), coalesce(msg ->> 'role', msg ->> 'type') AS message_role, msg ->> 'model' AS model,
@@ -40,10 +41,11 @@ WITH line AS (
         WITH ORDINALITY AS t(b, block_index)
     WHERE msg IS NOT NULL
 ), parsed AS (
-    SELECT * EXCLUDE (b, content_keys, id_keys), coalesce(b ->> 'type', 'text') AS block_type,
+    SELECT * EXCLUDE (b, content_keys, id_keys, part_keys, message_types), coalesce(b ->> 'type', 'text') AS block_type,
            CASE WHEN list_contains(call_types, block_type) THEN 'call' WHEN list_contains(result_types, block_type) THEN 'result' END AS tool_part,
-           -- a tool result's content (Claude) or output (Codex) can be a list of {type, text} parts
-           [parts FOR parts IN [b -> 'content', b -> 'output'] IF json_type(parts) = 'ARRAY'][1] AS part_array,
+           -- a tool result's content (Claude) or output (Codex) can be a list of {type, text} parts, joined by
+           -- newlines (Tera reads "\n" as one: on dev, 1554 multi-part results equal their newline join)
+           [b -> k FOR k IN part_keys IF json_type(b -> k) = 'ARRAY'][1] AS part_array,
            [p ->> 'text' FOR p IN CAST(part_array AS JSON[]) IF p ->> 'text' IS NOT NULL] AS text_parts,
            coalesce(CASE WHEN len(text_parts) > 0 THEN tera_render('{{ parts | join(sep="\n") }}', {'parts': text_parts}::JSON, autoescape := false) END,
                     CASE WHEN json_type(b) = 'VARCHAR' THEN b ->> '$' END, [b ->> k FOR k IN content_keys IF b ->> k IS NOT NULL][1]) AS message_content,

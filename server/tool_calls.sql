@@ -1,30 +1,27 @@
 -- The tool-call views over stream.blocks (blocks.sql), posted at boot after messages.sql.
--- agent.tool_calls: one row per tool call (tool_part 'call': Claude tool_use, Codex function_call / custom_tool_call),
--- every stream.blocks column of the call (timestamp and content_bytes are the call's), with its result (tool_part
--- 'result') joined on (file_path, tool_use_id): returned_at, took, result_text, is_error, result_bytes, result_block_key.
--- agent.conversation: messages and tool calls as one relation, every column of both. A call row's message_content is
--- its command; a message row has the result columns NULL. block_key matches stream.blocks, so BM25
--- (fts_main_blocks.match_bm25(block_key, '...')) scores both. It reads agent.tool_calls, so it is posted from that receipt.
-WITH tool_calls_step AS (
-    SELECT array_agg(selfdispatch($c$
-CREATE OR REPLACE VIEW agent.tool_calls AS
-WITH calls AS (
-    SELECT * EXCLUDE (is_error) FROM stream.blocks WHERE NOT is_repeat AND tool_part = 'call'
+-- agent.conversation: messages and tool calls as one relation, every stream.blocks column. Each tool call (tool_part
+-- 'call': Claude tool_use, Codex function_call / custom_tool_call) carries its result (tool_part 'result'), joined on
+-- (file_path, tool_use_id): returned_at, took, result_text, is_error, result_bytes, result_block_key; a call's
+-- message_content is its command. block_key matches stream.blocks, so BM25 (fts_main_blocks.match_bm25(block_key,
+-- '...')) scores both.
+-- agent.tool_calls: the call rows of agent.conversation, posted from its receipt.
+WITH conversation_step AS (
+    SELECT array_agg(selfdispatch($v$
+CREATE OR REPLACE VIEW agent.conversation AS
+WITH live AS (
+    SELECT * FROM stream.blocks WHERE NOT is_repeat
 ), results AS (
     SELECT file_path, tool_use_id, timestamp AS returned_at, message_content AS result_text, is_error,
            content_bytes AS result_bytes, block_key AS result_block_key
-    FROM stream.blocks WHERE NOT is_repeat AND tool_part = 'result'
+    FROM live WHERE tool_part = 'result'
 )
-SELECT *, returned_at - timestamp AS took FROM calls LEFT JOIN results USING (file_path, tool_use_id)
-$c$)) AS receipts
-), conversation_step AS (
-    SELECT array_agg(selfdispatch($v$
-CREATE OR REPLACE VIEW agent.conversation AS
-SELECT * FROM stream.blocks WHERE NOT is_repeat AND tool_part IS NULL
-UNION ALL BY NAME
-SELECT * FROM agent.tool_calls
+SELECT live.* EXCLUDE (is_error), results.* EXCLUDE (file_path, tool_use_id), returned_at - timestamp AS took
+FROM live LEFT JOIN results USING (file_path, tool_use_id)
+WHERE tool_part IS DISTINCT FROM 'result'
 $v$)) AS receipts
-    FROM tool_calls_step CROSS JOIN UNNEST(receipts) AS t(r) WHERE r.status = 200
+), tool_calls_step AS (
+    SELECT array_agg(selfdispatch($c$CREATE OR REPLACE VIEW agent.tool_calls AS SELECT * FROM agent.conversation WHERE tool_part = 'call'$c$)) AS receipts
+    FROM conversation_step CROSS JOIN UNNEST(receipts) AS t(r) WHERE r.status = 200
 )
-SELECT r.* FROM tool_calls_step CROSS JOIN UNNEST(receipts) AS t(r)
-UNION ALL SELECT r.* FROM conversation_step CROSS JOIN UNNEST(receipts) AS t(r);
+SELECT r.* FROM conversation_step CROSS JOIN UNNEST(receipts) AS t(r)
+UNION ALL SELECT r.* FROM tool_calls_step CROSS JOIN UNNEST(receipts) AS t(r);
