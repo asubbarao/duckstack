@@ -1,17 +1,16 @@
-{#- video_frames.tera: a slice of a video as rows of frames, streamed through read_csv, each frame hashed by pic2vec,
-    written to <out_dir>/frames_<slice>.parquet. The frame writer is macOS AVFoundation (`swift -`), nothing to install.
+{#- video_frames.tera: a slice of a video as rows of frames, streamed through read_csv, each frame hashed by pic2vec.
+    The JPEGs land in out_dir; the rows come back in the receipt. The frame writer is macOS AVFoundation (`swift -`),
+    nothing to install.
     Row (every value declared by the caller; nothing defaults here):
       video      absolute path of the video file
-      out_dir    absolute directory for the JPEG frames and the Parquet (created if missing)
-      slice      name of this slice in the Parquet file name ('all' for pass one, the scene number after)
+      out_dir    absolute directory for the JPEG frames (created if missing)
       fps        frames per second to sample: 2 for a demo, 0.5 for slides, 10 to 30 for fast motion
       start, end seconds of the slice; end -1 means to the end of the video
       width      frame width in pixels; height keeps the aspect ratio
       quality    JPEG quality 0..1
       sql_tag    dollar-quote tag absent from the script, e.g. 'frames_cmd'
-    Columns written: second DOUBLE (from the start of the video), path VARCHAR, phash VARCHAR.
+    Columns: second DOUBLE (from the start of the video), path VARCHAR, phash VARCHAR.
     shellfs and pic2vec are loaded on the server. Frames stream: one row per frame as it is written. -#}
-COPY (
 SELECT second, path, pic_phash(path) AS phash
 FROM read_csv(${{ sql_tag }}$mkdir -p '{{ out_dir }}' && swift - '{{ video }}' '{{ out_dir }}' {{ fps }} {{ width }} {{ start }} {{ end }} {{ quality }} 2>/dev/null <<'VIDEO_FRAMES_SWIFT'
 import AVFoundation
@@ -40,4 +39,3 @@ while t < end {
 }
 VIDEO_FRAMES_SWIFT
 |${{ sql_tag }}$, header := true)
-) TO '{{ out_dir }}/frames_{{ slice }}.parquet' (FORMAT parquet)

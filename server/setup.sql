@@ -2,7 +2,7 @@
 -- Dev boots ~/.duck/deploy/server/setup.sql, a checkout of GitHub main. A save here changes nothing until it is
 -- pushed to main; the watcher checks main out within 30 s and restarts dev when server/ changed.
 -- The rest is read from server/*.sql, one concern per file, relative to the checkout root: the launchd wrapper starts
--- DuckDB in ~/.duck/deploy and CI in its checkout (.read expands no ~). branches.sql moves into ~/inframe, so it is last.
+-- DuckDB in ~/.duck/deploy and CI in its checkout (.read expands no ~).
 SET GLOBAL extension_directory = '~/.duck/extensions';
 SET GLOBAL secret_directory = '~/.duck/secrets';
 SET GLOBAL temp_directory = '~/.duck/tmp';
@@ -60,4 +60,3 @@ CALL enable_logging(['QueryLog', 'HTTP', 'Quack', 'Metrics'], storage := 'file',
 .read server/host.sql
 .read server/processes.sql
 .read server/reaper.sql
-.read server/branches.sql
