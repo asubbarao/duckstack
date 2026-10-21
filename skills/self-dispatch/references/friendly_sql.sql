@@ -2,7 +2,7 @@
 --
 -- 1. The features each page documents: its inline `code` spans, in page order, one row per page. Each page is
 --    fetched by curl through shellfs and parsed by webbed's html_to_duck_blocks, one dispatched statement per page;
---    --fail turns a missing page into a receipt error, never rows.
+--    --fail turns a missing page into its row with the receipt error and no features.
 WITH pages AS (
   SELECT unnest(['https://duckdb.org/docs/current/sql/query_syntax/select',
                  'https://duckdb.org/2023/08/23/even-friendlier-sql',
@@ -18,10 +18,9 @@ WHERE b.kind = 'inline' AND b.element_type = 'code'$t$, p::JSON, autoescape := f
 dispatched AS (
   SELECT url, executable_sql, array_agg(selfdispatch(executable_sql)) AS receipts FROM page_statements GROUP BY ALL)
 SELECT dispatched.url, dispatch.receipt.status AS post_status, dispatch.receipt.error,
-       (page.row -> 'features')::VARCHAR[] AS features
+       (TRY_CAST(dispatch.receipt.body AS JSON[])[1] -> 'features')::VARCHAR[] AS features
 FROM dispatched
-CROSS JOIN UNNEST(receipts) AS dispatch(receipt)
-CROSS JOIN UNNEST(TRY_CAST(dispatch.receipt.body AS JSON[])) AS page(row);
+CROSS JOIN UNNEST(receipts) AS dispatch(receipt);
 
 -- 2. How many SQL tool calls in the last 7 days use each feature, read from each call's AST (json_serialize_sql
 --    takes SELECT-shaped statements; COPY, CREATE and a bare PIVOT statement are not counted). Each feature is a
@@ -44,15 +43,17 @@ function_markers AS (SELECT unnest([
   {'feature': 'any_value', 'functions': ['any_value', 'arbitrary'], 'arity': NULL, 'indexed': false},
   {'feature': 'string_split(...)[n]', 'functions': ['string_split', 'str_split', 'split', 'string_split_regex', 'str_split_regex', 'regexp_split_to_array'], 'arity': NULL, 'indexed': true}], recursive := true)),
 sql_calls AS (
-  SELECT tool_use_id, coalesce(tool_input ->> 'sql', tool_input ->> 'statement') AS sql_text
+  -- stream.blocks' tool_command is the call's sql or statement (server/blocks.sql).
+  SELECT tool_use_id, tool_command AS sql_text
   FROM stream.blocks
-  WHERE block_type = 'tool_use' AND NOT is_repeat AND contains(tool_name, '__query') AND timestamp > now() - INTERVAL 7 DAY),
+  WHERE block_type = 'tool_use' AND NOT is_repeat AND timestamp > now() - INTERVAL 7 DAY
+    AND tool_name IN ('mcp__dev__query', 'mcp__dev__query_full', 'mcp__dev__execute', 'mcp__duck__query', 'mcp__duck__execute')),
 parsed AS (
   SELECT *, json_serialize_sql(sql_text, skip_null := true, skip_empty := true, skip_default := true) AS ast FROM sql_calls),
 nodes AS (
   SELECT p.tool_use_id, node.key, node.value ->> '$' AS scalar, node.value ->> 'function_name' AS function_name,
-         json_array_length(node.value -> 'children') AS n_args,
-         CASE WHEN (node.value ->> 'type') = 'ARRAY_EXTRACT' THEN node.value -> 'children' -> 0 ->> 'function_name' END AS indexed_function
+         (node.value -> 'children')::JSON[] AS children, len(children) AS n_args,
+         CASE WHEN (node.value ->> 'type') = 'ARRAY_EXTRACT' THEN children[1] ->> 'function_name' END AS indexed_function
   FROM parsed AS p CROSS JOIN LATERAL json_tree(p.ast) AS node
   WHERE (p.ast ->> 'error') = 'false'),
 hits AS (
@@ -62,10 +63,9 @@ hits AS (
   UNION ALL
   SELECT m.feature, n.tool_use_id FROM nodes AS n JOIN function_markers AS m
     ON list_contains(m.functions, CASE WHEN m.indexed THEN n.indexed_function ELSE n.function_name END)
-   AND coalesce(m.arity, n.n_args) = n.n_args)
-SELECT feature, len(array_agg(DISTINCT tool_use_id)) AS calls FROM hits GROUP BY feature
-UNION ALL
-SELECT '(SQL tool calls)', count(tool_use_id) FROM parsed
-UNION ALL
-SELECT '(calls with an AST)', count(CASE WHEN (ast ->> 'error') = 'false' THEN tool_use_id END) FROM parsed
-ORDER BY calls DESC;
+   AND coalesce(m.arity, n.n_args) = n.n_args
+  UNION ALL
+  SELECT '(SQL tool calls)', tool_use_id FROM parsed
+  UNION ALL
+  SELECT '(calls with an AST)', tool_use_id FROM parsed WHERE (ast ->> 'error') = 'false')
+SELECT feature, len(array_agg(DISTINCT tool_use_id)) AS calls FROM hits GROUP BY feature ORDER BY calls DESC;

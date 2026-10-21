@@ -92,13 +92,11 @@ SELECT call_id, sql_source, program_index, n.type AS statement_kind, n.peek AS s
        -- json_serialize_sql takes only a SELECT; a view's query is the text after its first ' AS ', and a
        -- COPY's is everything before its last ') TO ' after 'COPY ('. sitting_duck prints a COPY in that
        -- canonical form and gives it no child nodes, so the text is the only handle on its query.
-       CASE WHEN n.type = 'select_statement'
-            THEN json_serialize_sql(n.peek, skip_null := true, skip_empty := true, skip_default := true) -> 'statements' -> 0
-            WHEN n.type = 'create_view'
-            THEN json_serialize_sql(substr(n.peek, instr(upper(translate(n.peek, E'\n\t\r', '   ')), ' AS ') + 4), skip_null := true, skip_empty := true, skip_default := true) -> 'statements' -> 0
-            WHEN n.type = 'sql_statement' AND starts_with(n.peek, 'COPY (')
-            THEN json_serialize_sql(substr(list_reduce(string_split(n.peek, ') TO ')[:-2], (head, rest) -> concat(head, ') TO ', rest)), length('COPY (') + 1),
-                                    skip_null := true, skip_empty := true, skip_default := true) -> 'statements' -> 0 END AS ast,
+       json_serialize_sql(CASE WHEN n.type = 'select_statement' THEN n.peek
+                               WHEN n.type = 'create_view' THEN substr(n.peek, instr(upper(translate(n.peek, E'\n\t\r', '   ')), ' AS ') + 4)
+                               WHEN n.type = 'sql_statement' AND starts_with(n.peek, 'COPY (')
+                               THEN substr(tera_render($t${{ parts | join(sep=") TO ") }}$t$, json_object('parts', string_split(n.peek, ') TO ')[:-2]), autoescape := false), length('COPY (') + 1) END,
+                          skip_null := true, skip_empty := true, skip_default := true) -> 'statements' -> 0 AS ast,
        row_number() OVER (PARTITION BY call_id, sql_source, program_index ORDER BY piece_no, n.node_id) AS statement_no
 FROM nodes WHERE n.depth = 1;
 

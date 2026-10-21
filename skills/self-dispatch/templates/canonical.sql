@@ -8,24 +8,25 @@
 -- A pipeline of stages, each fed by the last one's receipts: ../references/five_stage_pipeline.sql.
 -- Verified on dev 2026-10-17.
 
--- 1. shell: one row per statement. A command ends with ' |', a file is its path; jq appends only '| jq -c ''.[]'''.
---    read_csv / read_json over commands pass hive_partitioning := false: the path text is the command, and a
---    key=value before a '/' in it ('GREETING=hi cat /x') would otherwise become a column. Files keep hive detection.
+-- 1. shell: one row per statement. A command ends with ' |', a file is its path; jq appends only $j$| jq -c '.[]'$j$.
+--    read_csv / read_json over commands get hive_partitioning := false in `declared`: the path text is the command,
+--    and a key=value before a '/' in it ('GREETING=hi cat /x') would otherwise become a column. Files keep detection.
 WITH sources AS (
-    SELECT 'read_csv' AS reader, false AS jq, ', header := false, hive_partitioning := false' AS options,
+    SELECT 'read_csv' AS reader, false AS jq, ', header := false' AS options,
            ['find /private/tmp -maxdepth 1 -type d', 'find /Users/aloksubbarao/inframe -maxdepth 1 -type d'] AS commands, [] AS files
     UNION ALL
-    SELECT 'read_json', true, ', format := ''newline_delimited'', hive_partitioning := false',      -- gh --paginate prints arrays back to back
-           ['gh api --paginate ''repos/duckdb/duckdb-quack/branches?per_page=100'''], []
+    SELECT 'read_json', true, $o$, format := 'newline_delimited'$o$,      -- gh --paginate prints arrays back to back
+           [$c$gh api --paginate 'repos/duckdb/duckdb-quack/branches?per_page=100'$c$], []
     UNION ALL
-    SELECT 'read_json', false, ', hive_partitioning := false', ['curl -sS --fail --max-time 30 https://api.staging.inframerisk.net/api/v1/utils/health-check/'], []
+    SELECT 'read_json', false, '', ['curl -sS --fail --max-time 30 https://api.staging.inframerisk.net/api/v1/utils/health-check/'], []
     UNION ALL
     SELECT 'read_text', false, '', [], ['/Users/aloksubbarao/.duck/logs/server-exits.log', '/Users/aloksubbarao/.duck/logs/reload-events.log']
     UNION ALL
     SELECT 'read_blob', false, '', [], ['/System/Library/CoreServices/SystemVersion.plist']
 ), declared AS (
-    SELECT reader, options,
-           list_concat(list_transform(commands, c -> concat_ws(' ', c, CASE WHEN jq THEN '| jq -c ''.[]''' END, '|')), files) AS sources
+    SELECT reader,
+           concat(options, CASE WHEN len(commands) > 0 AND reader IN ('read_csv', 'read_json') THEN ', hive_partitioning := false' END) AS options,
+           list_concat(list_transform(commands, c -> concat_ws(' ', c, CASE WHEN jq THEN $j$| jq -c '.[]'$j$ END, '|')), files) AS sources
     FROM sources
 ), rendered AS (
     SELECT tera_render('shell.tera', c::JSON, autoescape := false,
