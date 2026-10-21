@@ -161,32 +161,34 @@ ran it, and the lead passed it on. When run, it mistyped week dates and `+HH:MM`
 crashed on year-1 offsets. The same claim had already been disproved on 10-15: the Python version
 needed a regex and grew to 74 lines.
 
-**The verification is one self-dispatched agent-log COPY that runs both sides.** The inputs and
-the signature are declared once, in the first CTE. The dispatched statement is the agent-log COPY,
-so both sides run as typed columns inside it and land as signed rows. The receipt says only
-whether the write happened, and the readback reads the rows as columns (compendium: "each
-statement writes them and the next stage reads the files").
+**The verification is one self-dispatched query that runs both sides.** The inputs and the
+signature are declared once, in the first CTE. The dispatched statement is the program under test,
+so both sides come back in the receipts, nothing written to read back. Every declared column stays
+on the row (`SELECT *, array_agg(…) … GROUP BY ALL`, so `raws` and `raws_json` are logged too), each
+receipt stays whole (`receipt.*`, body included), each row it returned is one `result_row`, and a
+failed dispatch stays as one row with a NULL `result_row`. The CTE right after the unnest names the
+compared fields with one `->>` each (RULES.md 5). To keep a record, wrap the whole query in
+`COPY (…) TO '<agent_log_dir>' (FORMAT parquet, PARTITION_BY (type, agent_signature), OVERWRITE_OR_IGNORE true, FILENAME_PATTERN '{uuid}')`.
 ```sql
 WITH verification AS (     -- 1. plain values, declared once
     SELECT [<inputs>] AS raws, to_json(raws)::VARCHAR AS raws_json,
-           '<agent>' AS agent, '<session id>' AS session_id, '<skill>' AS skill,
-           $n$<notes>$n$ AS notes, '<agent_log_dir>' AS log_dir
+           '<agent>' AS agent, '<session id>' AS session_id, concat_ws('-', agent, session_id) AS agent_signature,
+           '<skill>' AS skill, $n$<notes>$n$ AS notes
 ), sides AS (              -- 2. the program under test, rendered once as a column
     SELECT *, tera_render($tera$<duckdb side> UNION ALL BY NAME <python side>$tera$, v::JSON, autoescape := false) AS both_sides
     FROM verification AS v
-), rendered AS (           -- 3. the agent-log COPY: both_sides stored as text and run as a subquery
-    SELECT tera_render($tera$COPY (SELECT uuidv7() AS row_id, 'verification' AS type, $v${{ agent }}$v$ AS agent,
-               $v${{ session_id }}$v$ AS session_id, $v${{ agent }}-{{ session_id }}$v$ AS agent_signature,
-               $v${{ skill }}$v$ AS skill, $query${{ both_sides }}$query$ AS query_was_ran, r.*,
-               $n${{ notes }}$n$ AS markdown_notes, now() AS ts
-        FROM ({{ both_sides }}) AS r)
-    TO $v${{ log_dir }}$v$ (FORMAT parquet, PARTITION_BY (type, agent_signature), OVERWRITE_OR_IGNORE true, FILENAME_PATTERN '{uuid}')$tera$,
-        s::JSON, autoescape := false) AS sql
-    FROM sides AS s
-), dispatched AS (         -- 4. post it
-    SELECT array_agg(selfdispatch(sql)) AS receipts FROM rendered
+), dispatched AS (         -- 3. run it, each receipt beside its whole row
+    SELECT *, array_agg(selfdispatch(both_sides)) AS receipts
+    FROM sides GROUP BY ALL
+), result_rows AS (        -- 4. every receipt, and each row it returned
+    SELECT * EXCLUDE (receipts, receipt), receipt.*
+    FROM dispatched
+    CROSS JOIN UNNEST(receipts) AS t(receipt)
+    CROSS JOIN UNNEST(coalesce(try_cast(receipt.body AS JSON[]), [NULL::JSON])) AS r(result_row)
 )
-SELECT receipt.* FROM dispatched CROSS JOIN UNNEST(receipts) AS t(receipt);
+SELECT uuidv7() AS row_id, 'verification' AS type, * RENAME (both_sides AS query_was_ran, notes AS markdown_notes),
+       result_row->>'side' AS side, result_row->>'raw' AS raw, result_row->>'<compared column>' AS <compared column>, now() AS ts
+FROM result_rows;
 ```
 `<both sides>` is `<duckdb side> UNION ALL BY NAME <python side>` over the same declared list:
 - **DuckDB side:** `SELECT 'duckdb' AS side, raw, <duckdb expression over raw> AS <compared column>
@@ -197,11 +199,13 @@ SELECT receipt.* FROM dispatched CROSS JOIN UNNEST(receipts) AS t(receipt);
   type in `error`, so every input is a row on both sides. The reader infers the columns.
 
 The program is rendered once, so the stored `query_was_ran` is exactly what ran, and the signature
-is built from the declared agent and session id. Values render inside dollar quotes (`$v$`,
-`$raws$`, `$n$`), so inputs and notes may contain a single quote. A worker testing ponytail's or
-Thermos's proposal writes it as the Python (or bash) side. Worked example (verified on dev
-2026-10-18, an input and the notes containing `'`): `skill = 'T4-check-dispatched-v3'` under
-`~/.duck/agent_log/skill_trial_2026_10_17/type=verification`.
+is built from the declared agent and session id. Values sit inside dollar quotes (`$raws$`, `$n$`),
+so inputs and notes may contain a single quote. A worker testing ponytail's or
+Thermos's proposal writes it as the Python (or bash) side. Verified on dev 2026-10-20 with two
+dates, one invalid (`2026-02-30`), and notes containing `'`: four rows, both sides, each carrying
+`raws` and `raws_json`; Python's `ValueError` kept in `result_row`. Against the per-statement COPY
+version read back from its Parquet, on type, agent, session, signature, skill, query, notes, side,
+raw and the compared column: 4 rows each, EXCEPT ALL empty both ways; 0.060 s against 0.053 s.
 Readback: `query/references/useful_queries.sql`, "Verification: both sides".
 
 ## 4. Evidence is false-first
