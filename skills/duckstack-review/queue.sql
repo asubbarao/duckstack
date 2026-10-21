@@ -1,5 +1,5 @@
 -- duckstack review queue, one tick. launchd (com.inframe.duckstack-review.plist, beside this file) runs it every
--- minute from ~/.duck/deploy, the checkout of main, with GH_TOKEN set to asubbarao's token.
+-- three minutes from ~/.duck/deploy, the checkout of main, with GH_TOKEN set to asubbarao's token.
 -- Each open, non-draft PR by asubbarao on asubbarao/duckstack gets two statuses on its head commit, both required by
 -- main's branch protection:
 --   duckstack/rules   gate.sql: the hook's own checks on every changed .sql file and ```sql block;

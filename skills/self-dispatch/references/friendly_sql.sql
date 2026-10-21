@@ -1,7 +1,8 @@
 -- Friendly SQL we lean on, read from DuckDB's own pages, and how often agents use it. Run each query on dev.
 --
--- 1. The features each page documents: its inline `code` spans, in page order, one row per page. web_page() takes
---    one literal URL, so each page is its own dispatched statement.
+-- 1. The features each page documents: its inline `code` spans, in page order, one row per page. Each page is
+--    fetched by curl through shellfs and parsed by webbed's html_to_duck_blocks, one dispatched statement per page;
+--    --fail turns a missing page into a receipt error, never rows.
 WITH pages AS (
   SELECT unnest(['https://duckdb.org/docs/current/sql/query_syntax/select',
                  'https://duckdb.org/2023/08/23/even-friendlier-sql',
@@ -9,14 +10,15 @@ WITH pages AS (
                  'https://duckdb.org/docs/lts/sql/statements/pivot',
                  'https://duckdb.org/docs/lts/sql/statements/unpivot']) AS url),
 page_statements AS (
-  SELECT url, tera_render($t$SELECT status, list_distinct(array_agg(b.content ORDER BY b.element_order)) AS features
-FROM web_page('{{ url }}') CROSS JOIN UNNEST(duckblocks) AS block(b)
-WHERE b.kind = 'inline' AND b.element_type = 'code' GROUP BY status$t$, p::JSON, autoescape := false) AS executable_sql
+  SELECT url, tera_render($t$SELECT list_distinct(array_agg(b.content ORDER BY b.element_order)) AS features
+FROM read_text('curl -sSL --fail --max-time 30 {{ url }} |')
+CROSS JOIN UNNEST(html_to_duck_blocks(content::HTML)) AS block(b)
+WHERE b.kind = 'inline' AND b.element_type = 'code'$t$, p::JSON, autoescape := false) AS executable_sql
   FROM pages AS p),
 dispatched AS (
   SELECT url, executable_sql, array_agg(selfdispatch(executable_sql)) AS receipts FROM page_statements GROUP BY ALL)
 SELECT dispatched.url, dispatch.receipt.status AS post_status, dispatch.receipt.error,
-       page.row ->> 'status' AS page_status, (page.row -> 'features')::VARCHAR[] AS features
+       (page.row -> 'features')::VARCHAR[] AS features
 FROM dispatched
 CROSS JOIN UNNEST(receipts) AS dispatch(receipt)
 CROSS JOIN UNNEST(TRY_CAST(dispatch.receipt.body AS JSON[])) AS page(row);

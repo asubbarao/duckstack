@@ -52,12 +52,21 @@ writing SQL on this machine.
     gymnastics, no nested quotes or escape hell (09-22, 10-12). `quote_literal(col)` is fine; `translate()` for
     character swaps (09-23, 10-16). No `printf` / `format`: on 10-17 a printf-built command and a printf in a
     dispatch were both rejected; declare the parts as columns and render with Tera.
-13. **Banned:** `VALUES`, `COUNT(*)`, `LIMIT 1` without `ORDER BY` (10-20, rule 29), `OR` chains (use `IN`, `IS [NOT] DISTINCT FROM`, null
-    checks), `WITH RECURSIVE`, scalar subqueries in SELECT lists, `any_value`, cross joins of singleton CTEs
-    (`JOIN ON true`, comma joins), `json_extract` ladders and selector-taking extractors in committed code (except the single `->>` per receipt
+13. **Banned:** `VALUES`, `COUNT(*)`, `LIMIT 1` without `ORDER BY` (10-20, rule 29), `WITH RECURSIVE`, scalar subqueries in SELECT lists, `any_value`, cross joins of singleton CTEs
+    (`JOIN ON true`, comma joins), `json_extract` ladders and hand-typed selector ladders in committed code (selectors are rows, rule 8: "its not that i dont want xpath. the point is why can't i SELECT DISTINCT xpaths FROM document and use them", 10-20) (except the single `->>` per receipt
     body field allowed by rule 5),
     regex on backend data, `generate_subscripts`, positional `split_part` surgery (09-22, 09-23, 10-10).
-14. **Descriptive names** for CTEs and aliases; "sd is not descriptive at all" (09-22).
+    **`OR` is discouraged, not banned** (10-20): "there is not actually anything wrong with the or likes honestly, but
+    OR statement in where clauses is a 'risk' at least when humans write sql"; "ors like are fine for one off queries
+    occasionally". Prefer `IN`, `IS [NOT] DISTINCT FROM`, null checks. One or two ORed patterns are fine; a chain of
+    three or more is blocked by the hook: "chains are not great you can block it". A list of patterns is
+    `string_contains_any(col, [terms])` (sitting_duck, literal, case-sensitive), or `string_contains_any_i` / `lower(col)`
+    to ignore case; include/exclude rules are `WHERE CASE WHEN … THEN true WHEN … THEN false …
+    ELSE false END`. In a `WHERE`, `ELSE NULL` and `ELSE false` drop the same rows; under `NOT` they differ.
+14. **Descriptive names** for CTEs and aliases; "sd is not descriptive at all" (09-22). A soft rule for aliases
+    (10-20): a CTE gets a full name (`comment_html`); a table alias in a join may be 2–4 letters (`users u`,
+    `user_login_events ule`), "there isn't a correct answer per se here, but we need not obfuscate"; the
+    `UNNEST(…) AS t(x)` alias is relaxed.
 15. Spell out the `array_agg` column and name it; turn it into text with `tera_render` (a template that substitutes
     the array) or `string_agg` over rows, never `array_to_string`, which the hook blocks (09-22, 10-17).
 
@@ -118,11 +127,12 @@ writing SQL on this machine.
     `max_by` the single row. One ordered row: first `arg_max(s, started)` over the row struct (`FROM sessions AS s`),
     the same verb as top n; `ORDER BY ... LIMIT 1` is also valid: "limit 1 is a valid ; ONLY with an orderby though,
     agents dont usually do that" (10-20). `LIMIT 1` with no `ORDER BY` is an arbitrary row and is blocked. Instead of `any_value(col)`, keep the array (`array_agg(col)` / `list(col)`) and leave it
-    unselected, or take `[1]` of it. Instead of `string_split(x, sep)[n]`, keep the array or use a reader that returns
+    unselected; when one value is needed, pick it by an order: `arg_max(col, v)` or `array_agg(col ORDER BY v)[1]`
+    (a bare `array_agg(col)[1]` is the same arbitrary pick as `any_value`). Instead of `string_split(x, sep)[n]`, keep the array or use a reader that returns
     columns (`read_csv` with its delimiter, `parse_path`, netquack); the hook warns.
 30. **Friendly SQL we lean on**, kept as a query rather than prose: `references/friendly_sql.sql`. Its first query
-    reads DuckDB's SELECT, friendly-SQL, even-friendlier-SQL, PIVOT and UNPIVOT pages through `web_page` (one
-    dispatched statement per page) and lists each page's features; its second counts how many agent SQL calls used
+    reads DuckDB's SELECT, friendly-SQL, even-friendlier-SQL, PIVOT and UNPIVOT pages with curl through shellfs and
+    webbed's `html_to_duck_blocks` (one dispatched statement per page) and lists each page's features; its second counts how many agent SQL calls used
     each feature in the last 7 days. The ones we lean on: `COLUMNS([...])` / `COLUMNS(lambda)`, `* EXCLUDE`,
     `* REPLACE`, `* RENAME`, `SUMMARIZE`, `DESCRIBE`, `PIVOT` / `UNPIVOT`, top-n aggregates, `LIMIT n%`,
     `GROUP BY ALL` and `BY NAME`. **The GROUP BY ALL pitfall:** it groups by every column that is not aggregated, so

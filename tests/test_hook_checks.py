@@ -9,17 +9,20 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-# The PreToolUse hook runs on this binary with its ~/.duckdbrc extensions, so the cases do too.
-HOOK_DUCKDB = os.environ.get("HOOK_DUCKDB", "/opt/homebrew/bin/duckdb")
+# The cases run on the duckdb found on PATH (HOOK_DUCKDB overrides), like the hook itself; a missing binary fails.
+HOOK_DUCKDB = os.environ.get("HOOK_DUCKDB", "duckdb")
 CASES = json.loads((ROOT / "tests/hook_cases.json").read_text())
 
 
 @pytest.fixture(scope="module")
 def results():
-    if not shutil.which(HOOK_DUCKDB):
-        pytest.skip(f"the hook's DuckDB ({HOOK_DUCKDB}) is not on this machine")
+    duckdb = shutil.which(HOOK_DUCKDB)
+    if duckdb is None:
+        pytest.fail(
+            f"no DuckDB CLI: {HOOK_DUCKDB!r} is not on PATH; install duckdb or set HOOK_DUCKDB"
+        )
     run = subprocess.run(
-        [HOOK_DUCKDB, ":memory:", "-bail", "-f", "tests/hook_cases.sql"],
+        [duckdb, ":memory:", "-bail", "-f", "tests/hook_cases.sql"],
         cwd=ROOT,
         text=True,
         capture_output=True,

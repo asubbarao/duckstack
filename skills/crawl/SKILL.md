@@ -48,7 +48,13 @@ FROM read_text('curl -sSL --fail --max-time 30 https://github.com/Angelerator/Sa
 
 `--fail` makes a non-2xx exit non-zero, so the reader errors and no row lands; the url stays
 due and is retried. `--max-time` bounds every fetch. Add `-A '<agent>'`, `-H` or cookies as
-the site needs; they are curl flags, not a framework.
+the site needs; they are curl flags, not a framework. A 429 or 5xx is retried by curl itself:
+`--retry 2 --retry-delay 1` (verified 2026-10-20: two retries logged, then the final 429).
+Space requests with `sleep_ms(<ms>)`, not a shell sleep.
+
+A public page with no session needs no curl at all: httpfs reads it, `read_text('<url>')`,
+`read_json('<url>')` or webbed `read_html('<url>')`, and follows redirects, http→https included.
+It throws on a 404, so a url column is self-dispatched to make each failure a receipt.
 
 Every crawl states its limits, in a comment above the query: timeout, workers, batch size,
 delay, link-following, depth, cache and result limits. An API error page is never a seed.
@@ -86,6 +92,36 @@ already landed, anti-joined against recent fetches as above. Rerun it (or schedu
 `cron()`) and a crawl grows one round per run until nothing is due. The only scheduled fetch on
 dev today is the daily extension-catalog refresh in `server/ext_catalog.sql`.
 
+## Sessions — cookies and logins
+
+The jar is a relation, not a file. `curl -c -` prints the Netscape cookie jar to stdout and
+`read_csv` reads it, to see which cookies a login set. To carry the session, pipe the jar from
+one curl into the next: `curl -c - -o /dev/null '<login>' | curl -b - '<page>' |`. The jar and
+the carry are two step rows of one template, `shell.tera`
+([references/cookie_jar.sql](references/cookie_jar.sql)). The cookie value then never becomes
+shell text, so nothing needs quoting. Observed on dev 2026-10-20 (httpbin): `x=1` and `x=a'b$c`
+both came back unchanged. Pasting the value into `-H 'Cookie: …'` broke on `a'b$c` (shell exit 2),
+and Tera's `autoescape` is HTML encoding, so it sent `a&#x27;b$c`.
+
+- **Log in:** `curl -sS -L -b '' -c - -o /dev/null [-d 'user=…&pass=…'] '<login url>' |`. The `-b ''`
+  turns on the cookie engine so cookies set during the redirects are kept.
+- **HttpOnly cookies.** Observed on github.com/login (2026-10-20, curl 8.7.1): curl kept the
+  HttpOnly `_gh_sess` cookie and wrote its line with a `#HttpOnly_` prefix on the domain. With
+  `comment := '#'` that line would be skipped. `null_padding := true`, then `WHERE name IS NOT NULL`,
+  then `replace(domain, '#HttpOnly_', '')` kept it.
+- **httpfs and a cookie set on a redirect.** Observed on 2026-10-20: `read_text('https://httpbin.org/cookies/set?x=1')`
+  (which sets `x` and redirects to `/cookies`) returned `{"cookies": {}}`. A cookie you already
+  have went through an httpfs secret, set in a `:memory:` client (never on dev):
+  `CREATE SECRET (TYPE http, EXTRA_HTTP_HEADERS MAP {'Cookie': '<header>'}, SCOPE 'https://<site>')`.
+- **Expired session:** a 401, or a redirect back to the login page, means log in again. The jar's
+  `expires` column says when.
+- **The Chrome bridge (`--chrome`)** is for a login that can't be scripted (MFA, captcha) or a
+  session that already lives in Chrome. It is not needed just because a cookie is HttpOnly.
+- **A form that needs a CSRF token:** GET the form, read the hidden `<input>` value and POST it
+  back with the jar. `html_to_duck_blocks` drops `<input>`. The attribute XPath reads it:
+  `html_extract_text(parse_html(body), $x$//input[@name='authenticity_token']/@value$x$)`. Observed
+  on github.com/login (2026-10-20): it returned an 88-char token. The POST back has not been tested.
+
 ## Step 2 — Look before parsing
 
 ```sql
@@ -106,8 +142,38 @@ Never return a page body to the conversation: lengths, heads, counts, and bounde
 3. **Links**: `html_extract_links(body::HTML)` → `STRUCT(text, href, title, line_number)[]`,
    expanded once with `CROSS JOIN UNNEST`.
 4. **Tables**: `html_extract_tables(body::HTML)`; never walk `<tr>/<td>`.
-5. **One region**: `html_extract_text(body::HTML, '<xpath>')` → the matching nodes' text as a
-   list; XPath for axes, text predicates, `last()`, `not()`.
+5. **XPath, with the paths as rows.** Take the page's own element paths, filter them with a WHERE,
+   and pass each one as a column. `html_extract_text(html, xpath)` takes a VARCHAR xpath
+   (`duckdb_functions()`), so no dispatch is needed. On nflbite (2026-10-20) this returned the 30
+   team names under `/html/body/div/div/header/div/div/nav/ul/li/div/a`:
+
+```sql
+WITH page AS (
+    SELECT url, '/html/body/div/div/header/div/div/nav/ul/li/div/a' AS xpath_prefix,
+           parse_html(arg_max(response ->> 'body', fetched_at)) AS html
+    FROM lake.agents.ext_fetch WHERE url = 'https://<site>/<page>' GROUP BY url
+), document_xpaths AS (
+    SELECT *, list_distinct(list_transform(xml_extract_attributes(html, '//*'), a -> a.element_path)) AS xpaths
+    FROM page
+)
+SELECT url, xpath, html_extract_text(html, xpath) AS texts
+FROM document_xpaths CROSS JOIN UNNEST(xpaths) AS t(xpath)
+WHERE starts_with(xpath, xpath_prefix);
+```
+
+   With `xpath_prefix := '/html'`, every distinct path on the page is a row; look at them, then
+   set the prefix. On a stored duckdb.org page (2026-10-20), `'/html/body'` gave 68 paths.
+
+   What was observed on 2026-10-20, not a general rule:
+
+   | page | `xml_extract_attributes(parse_html(body), '//*')` | `xml_extract_attributes(body::HTML, '//*')` | `html_extract_text` |
+   |---|---|---|---|
+   | nflbite.is | 406 rows | 0 rows | worked |
+   | github.com/login | 0 rows | not tried | worked (`//title`, `//input/@name`) |
+
+   So check `len(xpaths)` on each page before relying on it. The cause of the github.com result is
+   not known; a namespace was ruled out (the page declares no `xmlns`). A hand-typed XPath for one
+   known node is fine (`//input[@name='x']/@value`). A 40-line chain of them is the failure.
 
 ```sql
 WITH page AS (
@@ -121,6 +187,22 @@ WHERE b.kind = 'block' ORDER BY n;
 
 URLs are strings: `url_resolve`, `url_origin`, `urlpattern_test`, `starts_with`, not `LIKE`, not regex.
 
+Some sites ship tables inside HTML comments (`<!-- <table>… -->`), so the rungs above miss them.
+Read the comments as nodes with the `//comment()` XPath, parse each one, then keep the ones that
+parsed to rows. Observed on basketball-reference.com/teams/BOS/2024.html (2026-10-20): 110
+comments, 10 of them with table rows, 6,538 rows in all.
+
+```sql
+WITH page AS (
+    SELECT url, parse_html(arg_max(response ->> 'body', fetched_at)) AS html
+    FROM lake.agents.ext_fetch WHERE url = 'https://<site>/<page>' GROUP BY url
+), comment_tables AS (
+    SELECT url, comment_html, html_extract_table_rows(comment_html) AS table_rows
+    FROM page CROSS JOIN UNNEST(html_extract_text(html, '//comment()')) AS t(comment_html)
+)
+SELECT * FROM comment_tables WHERE len(table_rows) > 0;
+```
+
 ## The shape catalog — pick before writing
 
 | The site looks like… | Shape | Rounds |
@@ -130,7 +212,8 @@ URLs are strings: `url_resolve`, `url_origin`, `urlpattern_test`, `starts_with`,
 | no map, unknown depth | **walk** — same-site links of landed pages, bounded by `LIMIT` per round | n |
 | pages are table-carriers keyed by an entity; the ask is relational | **crossjoin** — `html_extract_tables` per entity, typed join the site never renders | 1 + join |
 | it should refresh on its own | **staged** — a `cron()` line in `server/setup.sql` over a stale view; run 2 fetches 0 pages | — |
-| any of the above behind auth / an SPA | `--chrome` (below), or curl with the session cookie | — |
+| any of the above behind a login | curl with the cookie jar (Sessions, above); `--chrome` only if the login can't be scripted | — |
+| an SPA (the data appears only after JavaScript runs) | `--chrome` (below) | — |
 
 ## `--chrome` — the page needs the user's session or a rendered DOM
 

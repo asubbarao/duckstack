@@ -131,7 +131,10 @@ SELECT s.call_id, s.sql_source, s.program_index, s.statement_no, t.id AS node_id
        -- Named arguments (hive_partitioning := false) carry their name as the argument's alias.
        [c ->> 'alias' FOR c IN children IF (c ->> 'alias') IS NOT NULL] AS named_args,
        -- Operators that read like functions (COALESCE, IN, NOT) keep their AST type as a name.
-       CASE WHEN (t.value ->> 'class') = 'OPERATOR' THEN lower(t.value ->> 'type') END AS op
+       CASE WHEN (t.value ->> 'class') = 'OPERATOR' THEN lower(t.value ->> 'type') END AS op,
+       -- DuckDB flattens a OR b OR (c OR d) into one CONJUNCTION_OR, so its pattern children are the chain's length.
+       CASE WHEN typ = 'CONJUNCTION_OR'
+            THEN len(list_filter(arg_kinds, k -> k IN ('~~', '!~~', '~~*', '!~~*', 'contains', 'glob', 'starts_with', 'ends_with', 'prefix', 'suffix', 'like_escape', 'ilike_escape'))) END AS or_pattern_children
 FROM sql_statements s CROSS JOIN LATERAL json_tree(s.ast) AS t
 WHERE s.ast IS NOT NULL AND t.type = 'OBJECT';
 
@@ -157,7 +160,7 @@ WITH node_facts AS (
          bool_or(typ = 'RECURSIVE_CTE_NODE') AS has_recursive_cte,
          bool_or(key = 'cte_map' AND list_contains([(e -> 'value' ->> 'materialized') FOR e IN json_extract(v, '$.map[*]')], 'CTE_MATERIALIZE_ALWAYS')) AS has_materialized_cte,
          count(CASE WHEN typ = 'CONJUNCTION_OR' THEN 1 END) AS or_node_count,
-         bool_or(typ = 'CONJUNCTION_OR' AND list_has_any(arg_kinds, ['~~', '!~~', '~~*', '!~~*', 'contains', 'glob', 'starts_with', 'ends_with', 'prefix', 'suffix', 'like_escape', 'ilike_escape'])) AS has_or_of_patterns,
+         max(or_pattern_children) AS or_pattern_max,
          list_filter(list(CASE WHEN typ = 'LIMIT_MODIFIER' THEN (v -> 'limit' -> 'value' ->> 'value')::BIGINT END), x -> x IS NOT NULL) AS limit_values,
          -- LIMIT 1 on a query node with no ORDER BY among its own modifiers picks an arbitrary row.
          bool_or(list_contains([(m ->> 'type') = 'LIMIT_MODIFIER' AND (m -> 'limit' -> 'value' ->> 'value') = '1' FOR m IN (v -> 'modifiers')::JSON[]], true)
@@ -186,7 +189,7 @@ SELECT s.call_id, s.sql_source, s.program_index, s.statement_no, s.statement_kin
        coalesce(f.has_recursive_cte, false) AS has_recursive_cte,
        coalesce(f.has_materialized_cte, false) AS has_materialized_cte,
        coalesce(f.or_node_count, 0) AS or_node_count,
-       coalesce(f.has_or_of_patterns, false) AS has_or_of_patterns,
+       coalesce(f.or_pattern_max, 0) AS or_pattern_max,
        coalesce(f.limit_values, []) AS limit_values,
        coalesce(f.has_unordered_limit_1, false) AS has_unordered_limit_1,
        coalesce(f.join_types, []) AS join_types,
@@ -230,7 +233,7 @@ stmts AS (
          bool_or(has_recursive_cte) AS sql_has_recursive_cte,
          bool_or(has_materialized_cte) AS sql_has_materialized_cte,
          sum(or_node_count) AS sql_or_node_count,
-         bool_or(has_or_of_patterns) AS sql_has_or_of_patterns,
+         max(or_pattern_max) AS sql_or_pattern_max,
          bool_or(has_comma_join) AS sql_has_comma_join,
          bool_or(has_cross_join_not_unnest) AS sql_has_cross_join_not_unnest,
          bool_or(has_unnest_cross_join) AS sql_has_unnest_cross_join,

@@ -1,5 +1,14 @@
 -- Runs the hook's own facts and checks over hook_cases.json, as if each case were a tool call, and prints
 -- every case with the checks that fired on it. Run from the checkout root (tests/test_hook_checks.py does).
+-- The hook gets its extensions from ~/.duckdbrc; the cases install the ones the hook files need, so they run
+-- the same with no ~/.duckdbrc (CI).
+INSTALL scalarfs FROM community;
+INSTALL shellfs FROM community;
+INSTALL sitting_duck FROM community;
+INSTALL parser_tools FROM community;
+INSTALL tera FROM community;
+INSTALL netquack FROM community;
+LOAD netquack;
 LOAD scalarfs;
 LOAD shellfs;
 LOAD sitting_duck;
