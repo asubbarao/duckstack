@@ -7,7 +7,16 @@
 .read skills/duckstack-review/gate.sql
 .output /dev/null
 COPY (
-    WITH pr_view AS (     -- title and body come from gh here, not through the queue's shell, so free text is never quoted
+    WITH rubric AS (      -- the rubric in the order the reviewer reads it: the manifesto, the skill, Alok's rules
+        SELECT rubric_file.file_path, rubric_file.rubric_order,
+               quote_literal(concat_ws('/', getenv('PWD'), rubric_file.file_path)) AS path_literal
+        FROM UNNEST(['SQL-MANIFESTO.md', 'skills/duckstack-review/SKILL.md', 'skills/self-dispatch/RULES.md'])
+             WITH ORDINALITY AS rubric_file(file_path, rubric_order)
+    ), rubric_reads AS (  -- one read per file; the file's row keeps its order
+        SELECT rubric_order, array_agg(selfdispatch(tera_render($t$SELECT content FROM read_text({{ path_literal }})$t$,
+                                                                rubric::JSON, autoescape := false))) AS receipts
+        FROM rubric GROUP BY ALL
+    ), pr_view AS (       -- title and body come from gh here, not through the queue's shell, so free text is never quoted
         FROM read_json($cmd$"$PR_GH" pr view "$PR_NUMBER" --repo "$PR_GH_REPO" --json number,title,body |$cmd$)
     ), line_copies AS (   -- each line's copies in order; the PR adds the head's copies past the base's count
         SELECT file_path, side, split.line, split.line_number,
@@ -41,14 +50,14 @@ $t$, section_row::JSON, autoescape := false) AS section
         FROM pr_parts
     ), pr_prompt AS (
         FROM pr_texts JOIN pr_view ON pr_view.number = pr_texts.pr_number
-    ), prompt_parts AS (  -- the rubric files in path order (the manifesto first), then the PR's own prompt
-        SELECT filename, content AS part
-        FROM read_text(['SQL-MANIFESTO.md', 'skills/duckstack-review/SKILL.md', 'skills/self-dispatch/RULES.md'])
+    ), prompt_parts AS (  -- the rubric in its declared order, then the PR's own prompt
+        SELECT rubric_order, file_row ->> 'content' AS part
+        FROM rubric_reads CROSS JOIN UNNEST(receipts) AS t(receipt) CROSS JOIN UNNEST(TRY_CAST(receipt.body AS JSON[])) AS e(file_row)
         UNION ALL BY NAME
         SELECT tera_render('review_prompt.tera', pr_prompt::JSON, autoescape := false, template_path := 'skills/duckstack-review/*.tera') AS part
         FROM pr_prompt
     )
-    SELECT string_agg(part, '' ORDER BY filename NULLS LAST) AS prompt FROM prompt_parts
+    SELECT string_agg(part, '' ORDER BY rubric_order NULLS LAST) AS prompt FROM prompt_parts
 -- 0<&0 keeps the pipe as the background job's stdin; sh gives a background job /dev/null otherwise.
 -- shortcut: $REVIEW_CLAUDE is split on spaces, so its words (claude's path under HOME and its flags) hold none.
 ) TO $cmd$| (cd "$HOME/.duck/review" && mkdir -p results && $REVIEW_CLAUDE --settings "$REVIEW_SETTINGS" --json-schema "$REVIEW_SCHEMA" > "$REVIEW_RESULT.part" 2>&1; mv "$REVIEW_RESULT.part" "$REVIEW_RESULT") 0<&0 > /dev/null 2>&1 &$cmd$

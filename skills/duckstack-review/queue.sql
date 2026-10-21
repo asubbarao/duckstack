@@ -32,8 +32,12 @@ WITH intent AS (
            -- the merge base is git's (duck_tails has none), taken by the program's own shell; env_words are sh-quoted
            $t$SELECT * FROM read_json($src$cd '{{ checkout }}' && PR_BASE=$({{ git_in_repo | join(sep=" ") }} merge-base origin/main {{ head_sha }}) {{ env_words | join(sep=" ") }} {{ duckdb_file | join(sep=" ") }} {{ program }} |$src$)$t$ AS program_template,
            '{{ results_dir }}/{{ pr_number }}-{{ head_sha | truncate(length=12, end="") }}.json' AS result_path_template,
-           -- read as text: a file that is not claude's JSON still reads, and is an 'error' with its text
-           $t$SELECT content FROM read_text('{{ result_path }}')$t$ AS result_template,
+           -- read as text and parsed once, one selector per field: a file that is not claude's JSON still reads, with no
+           -- verdict, and its text is the answer
+           $t$SELECT TRY_CAST(content AS JSON) AS result_json, result_json ->> '$.structured_output.verdict' AS verdict,
+                     result_json -> '$.structured_output.findings' AS findings,
+                     left(coalesce(result_json ->> '$.result', content), 3000) AS answer
+              FROM read_text('{{ result_path }}')$t$ AS result_template,
            MAP {'duckstack/rules': MAP {'failure': 'Blocking rule hits; see the PR comment', 'success': 'No blocking rule hits'},
                 'duckstack/review': MAP {'pending': 'Opus 5.5 is reviewing', 'success': 'Opus 5.5: clean',
                                          'failure': 'Opus 5.5: changes needed; see the PR comment',
@@ -81,18 +85,19 @@ _{{ signatures[context] }}_$t$ AS comment_template,
     SELECT *, 'programs' AS stage,
            array_agg(selfdispatch(tera_render(program_template, planned::JSON, autoescape := false))) AS receipts
     FROM planned WHERE program IS NOT NULL GROUP BY ALL
-), gated AS (          -- gate.sql's verdict for the PR; a failed program prints no row and posts nothing
-    SELECT programs.* EXCLUDE (receipts, stage), (gate_row ->> 'blocked')::BOOLEAN AS blocked, gate_row ->> 'rule_lines' AS rule_lines
-    FROM programs CROSS JOIN UNNEST(receipts) AS t(receipt) CROSS JOIN UNNEST(TRY_CAST(receipt.body AS JSON[])) AS e(gate_row)
+), gated AS (          -- gate.sql's row for the PR; a program that printed none keeps its row with dev's answer
+    SELECT programs.* EXCLUDE (receipts, stage), gate_row IS NOT NULL AS program_ran,
+           left(coalesce(receipt.error, receipt.body), 300) AS program_answer,
+           (gate_row ->> 'blocked')::BOOLEAN AS blocked, gate_row ->> 'rule_lines' AS rule_lines
+    FROM programs CROSS JOIN UNNEST(receipts) AS t(receipt)
+    CROSS JOIN UNNEST(coalesce(nullif(TRY_CAST(receipt.body AS JSON[]), []), [NULL::JSON])) AS e(gate_row)
 ), resulting AS (
     SELECT *, 'resulting' AS stage,
            array_agg(selfdispatch(tera_render(result_template, planned::JSON, autoescape := false))) AS receipts
     FROM planned WHERE result_due GROUP BY ALL
-), reviews AS (        -- the verdict is claude's structured_output; with none, what the file says is the answer.
-    -- A failed read (dev unreachable or erroring) has no row, posts nothing, and is read again next tick.
-    SELECT resulting.* EXCLUDE (receipts, stage), file_row ->> 'content' AS content, TRY_CAST(content AS JSON) AS result_json,
-           result_json -> 'structured_output' AS review, review ->> 'verdict' AS verdict,
-           TRY_CAST(review -> 'findings' AS JSON[]) AS findings, left(coalesce(result_json ->> 'result', content), 3000) AS answer
+), reviews AS (        -- a failed read (dev unreachable or erroring) has no row, posts nothing, and is read again next tick
+    SELECT resulting.* EXCLUDE (receipts, stage), file_row ->> 'verdict' AS verdict,
+           TRY_CAST(file_row ->> 'findings' AS JSON[]) AS findings, file_row ->> 'answer' AS answer
     FROM resulting CROSS JOIN UNNEST(receipts) AS t(receipt) CROSS JOIN UNNEST(TRY_CAST(receipt.body AS JSON[])) AS e(file_row)
     WHERE receipt.status BETWEEN 200 AND 299
 ), finding_lines AS (
@@ -101,15 +106,21 @@ _{{ signatures[context] }}_$t$ AS comment_template,
     FROM reviews CROSS JOIN UNNEST(findings) WITH ORDINALITY AS f(finding, finding_number)
     GROUP BY pr_number
 ), outcomes AS (       -- one row per PR and status to post this tick; a row with lines also gets a comment
+    -- a review that did not start is an 'error' with no result file, so the next tick launches it again; a gate that
+    -- did not run posts nothing and runs again next tick
     SELECT *, program_status AS context,
-           CASE WHEN program_status = 'duckstack/review' THEN 'pending' WHEN blocked THEN 'failure' ELSE 'success' END AS state,
-           CASE WHEN program_status = 'duckstack/rules' THEN rule_lines END AS lines
-    FROM gated
+           CASE WHEN NOT program_ran THEN 'error' WHEN program_status = 'duckstack/review' THEN 'pending'
+                WHEN blocked THEN 'failure' ELSE 'success' END AS state,
+           CASE WHEN NOT program_ran THEN tera_render($t$The review did not start; the next tick starts it again. Dev's answer:
+
+{{ program_answer }}$t$, gated::JSON, autoescape := false)
+                WHEN program_status = 'duckstack/rules' THEN rule_lines END AS lines
+    FROM gated WHERE CASE WHEN program_ran THEN true ELSE program_status = 'duckstack/review' END
     UNION ALL BY NAME
     SELECT reviews.*, 'duckstack/review' AS context,
            CASE verdict WHEN 'clean' THEN 'success' WHEN 'changes' THEN 'failure' ELSE 'error' END AS state,
            -- no verdict came back: show what the reviewer wrote, so the error says why
-           CASE WHEN review IS NULL THEN tera_render($t$The reviewer gave no verdict. Its answer, cut at 3000 characters:
+           CASE WHEN verdict IS NULL THEN tera_render($t$The reviewer gave no verdict. Its answer, cut at 3000 characters:
 
 {{ answer }}$t$, reviews::JSON, autoescape := false)
                 ELSE coalesce(finding_lines.lines, 'No findings.') END AS lines
