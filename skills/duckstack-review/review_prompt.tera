@@ -2,7 +2,7 @@
 
 ---
 
-# duckstack/review: PR #{{ number }} "{{ title }}" in asubbarao/duckstack
+# duckstack/review: PR #{{ pr_number }} "{{ title }}" in asubbarao/duckstack
 
 You are the review gate. You have no tools: do not search, read files, run queries or write tool calls. Everything
 you need is in this prompt: the PR's description, every changed file with the lines it adds, and the rubric. Where the
