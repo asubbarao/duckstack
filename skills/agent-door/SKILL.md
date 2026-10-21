@@ -15,9 +15,9 @@ restarts it (every MCP session drops); `~/.duck/dev.duckdb` is a rebuildable out
 
 | door | how | runs |
 |---|---|---|
-| `dev` MCP → `query(sql)` at `http://localhost:9495/mcp/` | tool call | one SELECT, readers included; up to 50 complete rows / 8 KiB of result text, with explicit truncation metadata. Use ORDER BY for a meaningful prefix. |
-| `dev` MCP → `query_full(sql)` | tool call | SQL unchanged, complete result without preview caps; use when the result size is understood. |
-| `dev` MCP → `execute(statement)` | tool call | SQL unchanged: COPY, DDL, DML, LOAD, readers and ShellFS. COPY writes every source row. |
+| `dev` MCP → `query(sql)` at `http://localhost:9495/mcp/` | tool call | any SQL, posted to `/sql` unchanged; the reply is capped at 50 complete rows / 8 KiB as `{rows, returned_rows, total_rows, truncated, reason, row_limit, byte_limit}`. Use ORDER BY for a meaningful prefix. |
+| `dev` MCP → `query_full(sql)` | tool call | any SQL unchanged, the complete reply; use when the result size is understood. |
+| `dev` MCP → `execute(statement)` | tool call | any SQL unchanged, the complete reply: COPY, DDL, DML, LOAD, readers and ShellFS. COPY writes every source row. |
 | HTTP `/sql` | POST JSON `{"sql": "…"}` to `http://127.0.0.1:9495/sql` | any SQL, run untouched; a parse or bind error is HTTP 422 with the message. |
 | quack | `quack_query('quack:localhost:9494', $q$<SQL>$q$, token := getenv('QUACK_TOKEN'))` from a `:memory:` DuckDB with `LOAD quack` | any SQL |
 | HTTP `/inbox` | POST any JSON to `http://127.0.0.1:9495/inbox` | lands as a row in `quackapi_jobs` (queue `inbox`, `payload` JSON); 201 with the id |

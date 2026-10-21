@@ -25,7 +25,7 @@ CALL enable_logging(['QueryLog', 'HTTP', 'Quack', 'Metrics'], storage := 'file',
 FROM quack_serve('quack:localhost:9494', token := getenv('QUACK_TOKEN'));
 
 -- 9495: POST /sql {"sql": "..."}; POST /inbox any JSON, read it from quackapi_jobs; GET /profile?sql=…;
--- POST /mcp/: query previews 50 rows / 8 KiB; query_full and execute post SQL unchanged to /sql.
+-- POST /mcp/: every tool posts its SQL unchanged to /sql; query caps its reply at 50 rows / 8 KiB.
 -- The inbox queue (quackapi_jobs) lives in dev.duckdb: jobs still queued are lost when the file is reset.
 CREATE QUEUE inbox;
 CREATE OR REPLACE ROUTE sql POST '/sql' AS SELECT * FROM quack_query('quack:localhost:9494', $sql, token := getenv('QUACK_TOKEN'));
