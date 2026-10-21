@@ -64,6 +64,9 @@ FROM called;
 -- Bigger self-dispatch reads write Parquet on dev and return a count.
 SET GLOBAL quackapi_max_response_bytes = 67108864;
 FROM quackapi_serve(9495, host := '127.0.0.1', query_timeout_ms := 120000);
+-- quackapi_serve also sets preserve_insertion_order = false, so /sql returned a sorted result in shuffled
+-- 2,048-row vectors (SELECT * FROM range(100000) ORDER BY range came back starting at 49152 or 98304).
+SET GLOBAL preserve_insertion_order = true;
 -- quackapi_serve switches logging off.
 CALL enable_logging(['QueryLog', 'HTTP', 'Quack', 'Metrics'], storage := 'file', storage_path := getenv('QUACK_NATIVE_LOG'), storage_buffer_size := 0);
 
