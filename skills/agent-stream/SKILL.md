@@ -67,19 +67,23 @@ the other live sessions on its branch. Two sessions on one branch are about to c
 
 ```sql
 WITH live AS (
-  SELECT * EXCLUDE (prompts, block_keys), date_diff('minute', last_active, now()) AS idle_min
+  SELECT * EXCLUDE (prompts, block_keys), date_diff('minute', last_active, now()) AS idle_min,
+         ['staging'] AS shared_checkout_branches
   FROM agent.sessions WHERE last_active > now() - INTERVAL 1 HOUR
 ), shared AS (
-  SELECT a.session_id, list(b.session_id) AS shares_branch_with
+  SELECT a.session_id, array_agg(b.session_id) AS shares_branch_with
   FROM live a JOIN live b ON a.git_branch = b.git_branch AND a.session_id <> b.session_id
-  WHERE a.git_branch <> 'staging' GROUP BY a.session_id
+  WHERE NOT list_contains(a.shared_checkout_branches, a.git_branch) GROUP BY a.session_id
 )
-SELECT * FROM live LEFT JOIN shared USING (session_id) ORDER BY last_active DESC;
+SELECT * EXCLUDE (shared_checkout_branches) FROM live LEFT JOIN shared USING (session_id) ORDER BY last_active DESC;
 ```
 
 - `agent.sessions` sits on `stream.blocks`, so a session shows up to ~20 minutes late and `idle_min` counts from
   its last stored block.
-- `staging` is the shared checkout's branch, so it isn't counted as an overlap.
+- `shared_checkout_branches` are branches every session in the main checkout reports (`staging`), so they aren't
+  counted as an overlap.
+- A Codex session's `git_branch` and `cwd` are NULL, so it never shows an overlap, until asubbarao/duckstack#97
+  (Codex session fields from `session_meta`) is merged.
 
 ## Turns: each prompt and the reply that closed it
 
