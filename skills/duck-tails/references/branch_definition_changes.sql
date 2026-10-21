@@ -1,15 +1,16 @@
--- Definitions one inframe branch added, removed or modified since it left origin/staging. Git lists the changed files;
--- sitting_duck parses both ends of each. The first CTE names the branch and the repo; every git call and git:// uri
--- takes both, so nothing depends on dev's working directory. Three dependent self-dispatch stages (merge base, changed
+-- Definitions one inframe branch added, removed or modified since it left its base. Git lists the changed files;
+-- sitting_duck parses both ends of each. The first CTE names the branch, its base and the repo; every git call and
+-- git:// uri takes them, so nothing depends on dev's working directory. Three dependent self-dispatch stages (merge base, changed
 -- files, one read_text of every blob), each with its statements as a column beside its receipts. A failed dispatch at
 -- any stage stays a row (change = 'read_failed', failed_stage, read_error): a misspelled or deleted branch fails at
 -- merge-base. A declaration wrapping a same-named definition (TS `const x` around its declarator) is dropped so each
 -- name counts once; the ends join on qualified_name, not on name.
 -- Verified on dev 2026-10-21 for the branch below: 37 rows in 0.42-0.48 s; 'no-such-branch' returns one merge-base row.
 WITH declared AS (
-    SELECT 'aloksubbarao/inf-1618-weekly-report-own-flag' AS branch_name, getenv('HOME') || '/inframe' AS repo
+    SELECT 'aloksubbarao/inf-1618-weekly-report-own-flag' AS branch_name, 'origin/staging' AS base_ref,
+           concat(getenv('HOME'), '/inframe') AS repo
 ), merge_base_statements AS (
-    SELECT *, tera_render($t$SELECT rtrim(content, E'\n') AS branch_point FROM read_lines($c$git -C '{{ repo }}' merge-base origin/staging '{{ branch_name }}' |$c$)$t$,
+    SELECT *, tera_render($t$SELECT rtrim(content, E'\n') AS branch_point FROM read_lines($c$git -C '{{ repo }}' merge-base '{{ base_ref }}' '{{ branch_name }}' |$c$)$t$,
                           declared::JSON, autoescape := false) AS sql
     FROM declared
 ), merge_base_dispatch AS (
