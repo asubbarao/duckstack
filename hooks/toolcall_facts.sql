@@ -125,7 +125,7 @@ SELECT s.call_id, s.sql_source, s.program_index, s.statement_no, t.id AS node_id
        -- Operators that read like functions (COALESCE, IN, NOT) keep their AST type as a name.
        CASE WHEN (t.value ->> 'class') = 'OPERATOR' THEN lower(t.value ->> 'type') END AS op,
        -- DuckDB flattens a OR b OR (c OR d) into one CONJUNCTION_OR, so its pattern children are the chain's length.
-       CASE WHEN (t.value ->> 'type') = 'CONJUNCTION_OR'
+       CASE WHEN typ = 'CONJUNCTION_OR'
             THEN len(list_filter(arg_kinds, k -> k IN ('~~', '!~~', '~~*', '!~~*', 'contains', 'glob', 'starts_with', 'ends_with', 'prefix', 'suffix', 'like_escape', 'ilike_escape'))) END AS or_pattern_children
 FROM sql_statements s CROSS JOIN LATERAL json_tree(s.ast) AS t
 WHERE s.ast IS NOT NULL AND t.type = 'OBJECT';
