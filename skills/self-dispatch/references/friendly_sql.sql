@@ -45,13 +45,11 @@ function_markers AS (SELECT unnest([
   {'feature': 'any_value', 'functions': ['any_value', 'arbitrary'], 'arity': NULL, 'indexed': false},
   {'feature': 'string_split(...)[n]', 'functions': ['string_split', 'str_split', 'split', 'string_split_regex', 'str_split_regex', 'regexp_split_to_array'], 'arity': NULL, 'indexed': true}], recursive := true)),
 sql_calls AS (
-  -- An MCP call carries SQL when its input has a sql or statement key, the keys stream.blocks reads into tool_command
-  -- (server/blocks.sql); that covers every SQL tool, named or not. The CASE reads json_keys only for MCP calls: as a
-  -- plain AND the scan parsed every tool input and the query took 14-21 s instead of 3.4 s (2026-10-21).
+  -- A call carries SQL when stream.blocks read its tool_command from a sql or statement key (server/blocks.sql).
   SELECT tool_use_id, tool_command AS sql_text
   FROM stream.blocks
   WHERE block_type = 'tool_use' AND NOT is_repeat AND timestamp > now() - INTERVAL 7 DAY
-    AND CASE WHEN starts_with(tool_name, 'mcp__') THEN list_has_any(json_keys(tool_input), ['sql', 'statement']) ELSE false END),
+    AND tool_command_key IN ('sql', 'statement')),
 parsed AS (
   SELECT *, json_serialize_sql(sql_text, skip_null := true, skip_empty := true, skip_default := true) AS ast FROM sql_calls),
 nodes AS (

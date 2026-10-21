@@ -547,8 +547,13 @@ all_checks AS (
          'block' AS hook_decision, []::VARCHAR[] AS replaces_hooks
   FROM stop_rules s
   JOIN read_parquet('/Users/aloksubbarao/.duck/hook_data/rules_ranked.parquet') AS r USING (rule_id)),
-sql_tool_names AS (
-  -- sql_tools is declared in toolcall_facts.sql, which every caller reads before this file.
-  SELECT list(tool_name ORDER BY tool_name) AS names FROM sql_tools)
-SELECT all_checks.* REPLACE (CASE WHEN all_checks.tools = ['@sql'] THEN list_concat(st.names, ['Bash', 'Write', 'Edit']) ELSE all_checks.tools END AS tools)
-FROM all_checks LEFT JOIN sql_tool_names AS st ON all_checks.tools = ['@sql'];
+tool_groups AS (
+  -- '@sql' stands for sql_tools (toolcall_facts.sql, which every caller reads before this file), Bash, Write and Edit.
+  SELECT '@sql' AS tool, tool_name AS member FROM sql_tools
+  UNION ALL
+  SELECT '@sql', unnest(['Bash', 'Write', 'Edit'])),
+check_tools AS (
+  SELECT c.check_id, list(coalesce(g.member, t.tool)) AS tools
+  FROM all_checks AS c CROSS JOIN UNNEST(c.tools) AS t(tool) LEFT JOIN tool_groups AS g ON g.tool = t.tool
+  GROUP BY c.check_id)
+SELECT all_checks.* REPLACE (check_tools.tools AS tools) FROM all_checks JOIN check_tools USING (check_id);

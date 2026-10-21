@@ -21,7 +21,7 @@ WHERE is_prompt AND timestamp > now() - INTERVAL 3 DAY ORDER BY timestamp;
 ```
 
 Turns, actions and plans read `stream.blocks` (full text, `tool_input`, and `tool_command`: the input's command,
-cmd, sql or statement, else the whole input). The raw store below is for fields neither carries (`session_meta`, payload extras).
+cmd, sql or statement, else the whole input; `tool_command_key` says which, `$` for the whole input). The raw store below is for fields neither carries (`session_meta`, payload extras).
 
 ## The store
 
