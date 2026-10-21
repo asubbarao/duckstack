@@ -6,7 +6,7 @@
 -- sql_lateral_not_allowlisted hook warns at call time; this finds what got through. LATERAL is allowed; each use is a
 -- candidate to measure against the self-dispatch form (../SKILL.md), which usually wins.
 WITH intent AS (
-  SELECT now() - INTERVAL 1 DAY AS since, 'git:///Users/aloksubbarao/duckdb-skills/' AS repo, '@origin/main' AS ref,
+  SELECT 'git:///Users/aloksubbarao/duckdb-skills/' AS repo, '@origin/main' AS ref,
          ['server/*.sql', 'hooks/*.sql', 'skills/*/references/*.sql'] AS repo_patterns,
          ['*_each', 'read_lines_lateral', 'json_tree'] AS lateral_patterns
 ), lateral_functions AS (
@@ -22,12 +22,12 @@ WITH intent AS (
 ), repo_reads AS (
   SELECT array_agg(selfdispatch(sql)) AS receipts FROM repo_statements
 ), logged_sql AS (
-  SELECT logged.* EXCLUDE (timestamp) FROM (
+  SELECT now() - INTERVAL 1 DAY AS since, * FROM (
     SELECT 'tool_call' AS source, left(session_id, 8) AS place, tool_command AS sql, timestamp
     FROM stream.blocks WHERE block_type = 'tool_use' AND NOT is_repeat AND contains(tool_name, '__query')
     UNION ALL BY NAME
     SELECT 'server_query' AS source, connection_id::VARCHAR AS place, query AS sql, latency_s, timestamp FROM meta.query_metrics
-  ) AS logged JOIN intent ON logged.timestamp > intent.since
+  ) WHERE timestamp > since
 ), statements AS (
   SELECT *, hash(source, place, sql) AS statement_id, contains(upper(sql), 'LATERAL') AS has_lateral_keyword
   FROM (FROM logged_sql

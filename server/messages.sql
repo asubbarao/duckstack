@@ -15,7 +15,9 @@ SELECT * EXCLUDE (message_content, tool_input, tool_command), left(message_conte
 FROM stream.blocks
 $m$)) AS receipts
 ), sessions_step AS (
-    SELECT array_agg(selfdispatch($s$
+    SELECT array_agg(selfdispatch(sql)) AS receipts
+    FROM messages_step CROSS JOIN UNNEST(receipts) AS t(r)
+    CROSS JOIN UNNEST([$s$
 CREATE OR REPLACE VIEW agent.sessions AS
 WITH session_blocks AS (
     SELECT * FROM stream.blocks WHERE NOT is_repeat
@@ -38,10 +40,7 @@ WITH session_blocks AS (
 SELECT a.*, p.prompts, len(p.distinct_prompts) AS prompt_count,
        p.distinct_prompts[1].message_content AS first_prompt, p.distinct_prompts[-1].message_content AS last_prompt
 FROM activity a LEFT JOIN prompts p USING (session_id)
-$s$)) AS receipts
-    FROM messages_step CROSS JOIN UNNEST(receipts) AS t(r) WHERE r.status = 200
-), turn_usage_step AS (
-    SELECT array_agg(selfdispatch($u$
+$s$, $u$
 CREATE OR REPLACE VIEW agent.turn_usage AS
 WITH usage_lines AS (
     SELECT transcript, file_row_number, timestamp::TIMESTAMPTZ AS ts, message ->> 'id' AS response_id, message -> 'usage' AS usage
@@ -51,10 +50,9 @@ SELECT transcript, file_row_number, ts, response_id,
        (usage ->> 'cache_creation_input_tokens')::BIGINT + (usage ->> 'input_tokens')::BIGINT AS input_new_tokens,
        (usage ->> 'output_tokens')::BIGINT AS output_tokens
 FROM usage_lines
-$u$)) AS receipts
+$u$]) AS s(sql)
+    WHERE r.status = 200
 )
 SELECT r.* FROM messages_step CROSS JOIN UNNEST(receipts) AS t(r)
 UNION ALL
-SELECT r.* FROM sessions_step CROSS JOIN UNNEST(receipts) AS t(r)
-UNION ALL
-SELECT r.* FROM turn_usage_step CROSS JOIN UNNEST(receipts) AS t(r);
+SELECT r.* FROM sessions_step CROSS JOIN UNNEST(receipts) AS t(r);
