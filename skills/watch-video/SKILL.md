@@ -46,10 +46,10 @@ frames come back in the receipts and nothing is stored but the JPEGs: the query 
 
 ## 2. Read the settled frames, longest scenes first
 
-The query's last `SELECT` groups `numbered` by scene, so filter it with a `HAVING`, not a `WHERE`:
+The query ends `FROM scenes ORDER BY scene`; replace that last line with a filter on the `scenes` relation:
 
 ```sql
-FROM numbered GROUP BY scene HAVING max(second) - min(second) >= 3 ORDER BY starts;
+FROM scenes WHERE seconds_on_screen >= 3 ORDER BY seconds_on_screen DESC;
 ```
 
 Read each `settled_frame` with the Read tool. A scene that stayed up for seconds is content; half-second

@@ -6,14 +6,13 @@
 INSTALL pic2vec FROM community;
 LOAD pic2vec;
 
-WITH video AS (            -- every value, once: the video, the base pass, what counts as a scene and a busy scene
-    SELECT '/abs/path/help.mov' AS video, '/abs/scratch/help_frames' AS out_dir,
+WITH video AS (            -- every value, once: the video, the base pass, what counts as a scene and a busy scene,
+    SELECT '/abs/path/help.mov' AS video, '/abs/scratch/help_frames' AS out_dir,    -- and the template, read from its file
            2 AS fps, 1400 AS width, 0 AS start, -1 AS "end", 0.8 AS quality, 'frames_cmd' AS sql_tag,
-           10 AS scene_bits, 16 AS busy_bits, 10 AS busy_fps, 20 AS busy_scenes
+           10 AS scene_bits, 16 AS busy_bits, 10 AS busy_fps, 20 AS busy_scenes, content AS template
+    FROM read_text('/Users/aloksubbarao/duckdb-skills/skills/tera/references/video_frames.tera')
 ), pass_one_statements AS (
-    SELECT *, tera_render('video_frames.tera', v::JSON, autoescape := false,
-               template_path := '/Users/aloksubbarao/duckdb-skills/skills/tera/references/*.tera') AS sql
-    FROM video AS v
+    SELECT *, tera_render(template, v::JSON, autoescape := false) AS sql FROM video AS v
 ), pass_one AS (           -- the video row stays beside its receipts
     SELECT * EXCLUDE (sql), array_agg(selfdispatch(sql)) AS receipts FROM pass_one_statements GROUP BY ALL
 ), pass_one_frames AS (
@@ -22,29 +21,31 @@ WITH video AS (            -- every value, once: the video, the base pass, what 
     FROM pass_one CROSS JOIN UNNEST(receipts) AS t(receipt) CROSS JOIN UNNEST(receipt.body::JSON[]) AS f(frame)
 ), pass_one_scenes AS (
     SELECT *, sum((coalesce(bits, scene_bits) >= scene_bits)::INT) OVER (ORDER BY second) AS scene FROM pass_one_frames
-), busy AS (               -- one row per busy scene: the video row at the busy rate over that scene's span, ranked
-    SELECT video, out_dir, busy_fps AS fps, width, quality, sql_tag, scene_bits, busy_bits, busy_scenes, scene,
-           min(second) AS start, max(second + 1.0 / pass_one_scenes.fps) AS "end", max(bits) AS scene_bits_changed,
-           rank() OVER (ORDER BY max(bits) DESC) AS busy_rank
+), busy AS (               -- one row per busy scene: the video row at the busy rate over that scene's span
+    SELECT * EXCLUDE (fps, start, "end", second, frame_path, phash, bits), busy_fps AS fps, min(second) AS start,
+           max(second + 1.0 / pass_one_scenes.fps) AS "end", max(bits) AS scene_bits_changed
     FROM pass_one_scenes GROUP BY ALL HAVING max(bits) >= busy_bits
+), busiest AS (            -- the busy_scenes busiest, most movement first, as one ordered list
+    SELECT array_agg(b ORDER BY scene_bits_changed DESC)[1:busy_scenes] AS scenes FROM busy AS b GROUP BY busy_scenes
 ), pass_two_statements AS (
-    SELECT scene_bits, tera_render('video_frames.tera', b::JSON, autoescape := false,
-               template_path := '/Users/aloksubbarao/duckdb-skills/skills/tera/references/*.tera') AS sql
-    FROM busy AS b WHERE busy_rank <= busy_scenes
-), pass_two AS (
-    SELECT scene_bits, array_agg(selfdispatch(sql)) AS receipts FROM pass_two_statements GROUP BY scene_bits
+    SELECT busy_scene, tera_render(busy_scene.template, busy_scene::JSON, autoescape := false) AS sql
+    FROM busiest CROSS JOIN UNNEST(scenes) AS t(busy_scene)
+), pass_two AS (           -- one array of posts; each busy scene's row stays beside its receipt
+    SELECT array_agg({busy_scene: busy_scene, receipt: selfdispatch(sql)}) AS posts FROM pass_two_statements
 ), frames AS (             -- pass two's frames, parsed like pass one's, beside them by name
     SELECT second, frame_path, phash, scene_bits FROM pass_one_frames
     UNION ALL BY NAME
     SELECT (frame ->> 'second')::DOUBLE AS second, frame ->> 'path' AS frame_path, (frame ->> 'phash')::BIGINT AS phash,
-           scene_bits
-    FROM pass_two CROSS JOIN UNNEST(receipts) AS t(receipt) CROSS JOIN UNNEST(receipt.body::JSON[]) AS f(frame)
+           post.busy_scene.scene_bits AS scene_bits, post.busy_scene.scene AS busy_scene
+    FROM pass_two CROSS JOIN UNNEST(posts) AS t(post) CROSS JOIN UNNEST(post.receipt.body::JSON[]) AS f(frame)
 ), frame_bits AS (
     SELECT *, pic_hamming(phash, lag(phash) OVER (ORDER BY second)) AS bits FROM frames
 ), numbered AS (
     SELECT *, sum((coalesce(bits, scene_bits) >= scene_bits)::INT) OVER (ORDER BY second) AS scene FROM frame_bits
+), scenes AS (
+    SELECT scene, min(second) AS starts, max(second) AS ends, round(ends - starts, 1) AS seconds_on_screen,
+           array_agg(frame_path ORDER BY second) AS frame_paths, len(frame_paths) AS frames,
+           max(bits) AS most_bits_changed, arg_max(frame_path, second) AS settled_frame
+    FROM numbered GROUP BY scene
 )
-SELECT scene, min(second) AS starts, max(second) AS ends, round(ends - starts, 1) AS seconds_on_screen,
-       array_agg(frame_path ORDER BY second) AS frame_paths, len(frame_paths) AS frames, max(bits) AS most_bits_changed,
-       arg_max(frame_path, second) AS settled_frame
-FROM numbered GROUP BY scene ORDER BY scene;
+FROM scenes ORDER BY scene;

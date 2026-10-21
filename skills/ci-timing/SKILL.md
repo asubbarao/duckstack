@@ -67,16 +67,18 @@ SELECT receipt.* FROM jobs_dispatched CROSS JOIN UNNEST(receipts) AS t(receipt);
 The files each run's PR changes (the gate question): runs, then each run's PR, then that PR's
 files, each stage rendered from the last one's receipts, and the rows come back in the last
 stage's receipts: every row carries `run_id`, `event`, `pr`, `filename` and GitHub's whole file
-object as `pr_file`, and stage 3 tees GitHub's response into raw/. A run with no PR returns no rows
+object as `pr_file`, and stage 3 tees GitHub's response into `raw_dir` under the UTC `ts`, so a
+re-run adds a copy and never overwrites one. A run with no PR returns no rows
 at stage 2 and sends nothing at stage 3. §3 reads it as the view `pr_files`
 (`CREATE OR REPLACE VIEW pr_files AS` in front).
 
 ```sql
 WITH intent AS (
-    SELECT '<owner>/<repo>' AS repo, 'ci.yml' AS workflow, 40 AS run_limit
+    SELECT '<owner>/<repo>' AS repo, 'ci.yml' AS workflow, 40 AS run_limit, 'raw' AS raw_dir,
+           strftime(now(), '%Y%m%dT%H%M%SZ') AS ts
 ), runs_rendered AS (
     SELECT tera_render($tera$
-        SELECT '{{ repo }}' AS repo, databaseId AS run_id, headSha AS head_sha, event
+        SELECT '{{ repo }}' AS repo, '{{ raw_dir }}' AS raw_dir, '{{ ts }}' AS ts, databaseId AS run_id, headSha AS head_sha, event
         FROM read_json($cmd$gh run list --repo {{ repo }} --workflow {{ workflow }} --limit {{ run_limit }} --json databaseId,headSha,event |$cmd$)
     $tera$, intent::JSON, autoescape := false) AS sql
     FROM intent
@@ -84,7 +86,8 @@ WITH intent AS (
     SELECT array_agg(selfdispatch(sql)) AS receipts FROM runs_rendered
 ), prs_rendered AS (
     SELECT tera_render($tera$
-        SELECT '{{ repo }}' AS repo, {{ run_id }} AS run_id, '{{ event }}' AS event, pull.number AS pr
+        SELECT '{{ repo }}' AS repo, '{{ raw_dir }}' AS raw_dir, '{{ ts }}' AS ts, {{ run_id }} AS run_id, '{{ event }}' AS event,
+               pull.number AS pr
         FROM read_json($cmd$gh api --paginate --slurp repos/{{ repo }}/commits/{{ head_sha }}/pulls |$cmd$)
         CROSS JOIN UNNEST(json) AS page(pull)
     $tera$, run_row, autoescape := false) AS sql
@@ -94,7 +97,7 @@ WITH intent AS (
 ), files_rendered AS (
     SELECT tera_render($tera$
         SELECT {{ run_id }} AS run_id, '{{ event }}' AS event, {{ pr }} AS pr, file.*
-        FROM read_json($cmd$gh api --paginate --slurp "repos/{{ repo }}/pulls/{{ pr }}/files?per_page=100" | tee raw/prfiles-{{ run_id }}-{{ pr }}.json |$cmd$)
+        FROM read_json($cmd$gh api --paginate --slurp "repos/{{ repo }}/pulls/{{ pr }}/files?per_page=100" | tee {{ raw_dir }}/prfiles-{{ run_id }}-{{ pr }}-{{ ts }}.json |$cmd$)
         CROSS JOIN UNNEST(json) AS page(file)
     $tera$, pr_row, autoescape := false) AS sql
     FROM prs_dispatched CROSS JOIN UNNEST(receipts) AS r(receipt) CROSS JOIN UNNEST(receipt.body::JSON[]) AS j(pr_row)
