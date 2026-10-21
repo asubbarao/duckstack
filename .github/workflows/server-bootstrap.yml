@@ -74,7 +74,7 @@ jobs:
           test "$answer" = '[{"answer":42}]'
 
           DUCKSTACK_DEV_URL=http://127.0.0.1:9495 \
-            uv run --no-project --with pytest python -m pytest tests/test_mcp_preview.py -q
+            uv run --no-project --with pytest --with mcp==2.3.0 python -m pytest tests/test_mcp_preview.py -q
 
       - name: Confirm a broken table macro fails startup
         run: |

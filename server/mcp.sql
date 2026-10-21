@@ -1,13 +1,26 @@
 CREATE OR REPLACE MIDDLEWARE mcp BEFORE GROUP mcp AS
 -- Every tool posts its SQL to /sql unchanged; query caps only the reply, keeping a prefix of complete rows.
 -- Dev still builds the whole result before the cut, so total_rows is exact.
-WITH msg AS (
-    SELECT policy, body -> '$.id' AS id, body ->> '$.method' AS method, body ->> '$.params.name' AS tool_name,
-           MAP {'query': 'sql', 'query_full': 'sql', 'execute': 'statement'}[tool_name] AS argument_key,
-           body -> '$.params.arguments' -> argument_key AS argument,
-           argument ->> '$' AS sql,
-           json_type(argument) IS NOT DISTINCT FROM 'VARCHAR' AS valid_call
-    FROM (SELECT $body::JSON AS body, {row_limit: 50, byte_limit: 8192, reserved_bytes: 256} AS policy)
+-- The tools are rows: tools/list and each call's argument path are built from them.
+WITH tools AS (
+    SELECT unnest([
+        {name: 'query', argument_key: 'sql',
+         description: 'Run any SQL on dev unchanged and cap the reply: {rows, returned_rows, total_rows, truncated, reason, row_limit, byte_limit}. Dev still runs the whole statement; ORDER BY makes the prefix meaningful. Use query_full for the complete result.'},
+        {name: 'query_full', argument_key: 'sql',
+         description: 'Run any SQL on dev unchanged and return the complete result, no cap. Large replies consume context; prefer query to explore.'},
+        {name: 'execute', argument_key: 'statement',
+         description: 'Run any SQL on dev unchanged, including COPY, DDL and writes, and return the complete result, no cap.'}
+    ], recursive := true)
+), msg AS (
+    SELECT $body::JSON AS body, {row_limit: 50, byte_limit: 8192, reserved_bytes: 256} AS policy,
+           json_object('tools', array_agg(json_object('name', name, 'description', description,
+               'inputSchema', json_object('type', 'object', 'properties', json_object(argument_key, json_object('type', 'string')),
+                                          'required', [argument_key])))) AS tool_list,
+           body -> '$.id' AS id, body ->> '$.method' AS method, body ->> '$.params.name' AS tool_name,
+           map_from_entries(array_agg({key: name, value: concat('$.params.arguments.', argument_key)}))[tool_name] AS argument_path,
+           body ->> argument_path AS sql,
+           json_type(body, argument_path) IS NOT DISTINCT FROM 'VARCHAR' AS valid_call
+    FROM tools
 ), posted AS (
     SELECT id, method, tool_name, policy, array_agg({sql: sql, receipt: selfdispatch(sql)}) AS receipts
     FROM msg WHERE method = 'tools/call' AND valid_call GROUP BY id, method, tool_name, policy
@@ -39,7 +52,7 @@ WITH msg AS (
                 ELSE answer END AS reply
     FROM received
 ), called AS (
-    SELECT id, method, tool_name FROM msg WHERE method IS DISTINCT FROM 'tools/call'
+    SELECT id, method, tool_name, tool_list FROM msg WHERE method IS DISTINCT FROM 'tools/call'
     UNION ALL BY NAME
     SELECT id, method, tool_name, json_object('detail', 'Unknown tool or missing string SQL argument') AS reply, true AS failed
     FROM msg WHERE method = 'tools/call' AND NOT valid_call
@@ -50,7 +63,7 @@ SELECT false AS allow, CASE WHEN id IS NULL THEN 202 ELSE 200 END AS status,
        json_object('jsonrpc', '2.0', 'id', id, 'result', coalesce(
            MAP {'initialize': '{"protocolVersion": "2025-06-18", "serverInfo": {"name": "dev", "version": "2"}, "capabilities": {"tools": {}}}',
                 'ping': '{}',
-                'tools/list': '{"tools": [{"name": "query", "description": "Run any SQL on dev unchanged (SELECT, PIVOT, LOAD, several statements, DDL) and cap the reply at 50 complete rows and 8 KiB: {rows, returned_rows, total_rows, truncated, reason, row_limit, byte_limit}. Dev still runs the whole statement; ORDER BY makes the prefix meaningful. Use query_full for the complete result.", "inputSchema": {"type": "object", "properties": {"sql": {"type": "string"}}, "required": ["sql"]}}, {"name": "query_full", "description": "Run any SQL on dev unchanged and return the complete result with no row or byte cap. Large replies consume context; prefer query to explore.", "inputSchema": {"type": "object", "properties": {"sql": {"type": "string"}}, "required": ["sql"]}}, {"name": "execute", "description": "Run any SQL on dev unchanged, including COPY, DDL and writes, and return the complete result with no row or byte cap, as query_full does.", "inputSchema": {"type": "object", "properties": {"statement": {"type": "string"}}, "required": ["statement"]}}]}' }[method]::JSON,
+                'tools/list': tool_list::VARCHAR}[method]::JSON,
            json_object('content', [json_object('type', 'text', 'text', reply::VARCHAR)], 'isError', failed)))::VARCHAR AS body,
        NULL::VARCHAR AS header_name, NULL::VARCHAR AS header_value
 FROM called;

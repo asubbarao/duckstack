@@ -3,6 +3,7 @@
 Run with DUCKSTACK_DEV_URL=http://127.0.0.1:9495. Server-bootstrap CI supplies its own server.
 """
 
+import asyncio
 import json
 import os
 from urllib.error import HTTPError
@@ -57,12 +58,42 @@ def preview(sql):
 def test_tools_advertise_any_sql_and_the_reply_cap():
     tools = {tool["name"]: tool for tool in rpc("tools/list")["tools"]}
     assert set(tools) == {"query", "query_full", "execute"}
-    assert "50" in tools["query"]["description"]
-    assert "8 KiB" in tools["query"]["description"]
     assert "total_rows" in tools["query"]["description"]
+    assert "row_limit" in tools["query"]["description"]
+    assert tools["execute"]["inputSchema"]["required"] == ["statement"]
+    assert tools["query"]["inputSchema"]["properties"] == {"sql": {"type": "string"}}
     for tool in tools.values():
         assert "any SQL" in tool["description"]
         assert "one SELECT" not in tool["description"]
+
+
+def test_official_mcp_client_lists_and_calls_every_tool():
+    # Field names follow mcp 2.x (input_schema, is_error); server-bootstrap pins the version.
+    pytest.importorskip("mcp")
+    from mcp import ClientSession
+    from mcp.client.streamable_http import streamable_http_client
+
+    async def session_replies():
+        async with streamable_http_client(BASE + "/mcp/") as streams:
+            read, write, *_ = streams
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                listed = await session.list_tools()
+                calls = {}
+                for tool in listed.tools:
+                    (argument,) = tool.input_schema["required"]
+                    calls[tool.name] = await session.call_tool(
+                        tool.name, {argument: "SELECT 42 AS n"}
+                    )
+                return calls
+
+    calls = asyncio.run(session_replies())
+    assert set(calls) == {"query", "query_full", "execute"}
+    assert not any(reply.is_error for reply in calls.values())
+    texts = {name: json.loads(reply.content[0].text) for name, reply in calls.items()}
+    assert (
+        texts["query"]["rows"] == texts["query_full"] == texts["execute"] == [{"n": 42}]
+    )
 
 
 @pytest.mark.parametrize("size", [0, 1, 49, 50, 51, 200])
