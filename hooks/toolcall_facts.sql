@@ -32,13 +32,18 @@ SELECT call_id, file_path,
        parse_path(file_path) AS file_path_parts
 FROM tc_input WHERE file_path IS NOT NULL;
 
+-- The MCP tools whose input is SQL; hook_checks.sql expands tools ['@sql'] from this relation.
+CREATE OR REPLACE VIEW sql_tools AS
+SELECT unnest(['mcp__dev__query', 'mcp__dev__query_full', 'mcp__dev__execute', 'mcp__dev__query_no_limit',
+               'mcp__dev__query_with_limit', 'mcp__dev__sql', 'mcp__dev__self_dispatch',
+               'mcp__duck__query', 'mcp__duck__execute']) AS tool_name;
+
 -- Every SQL text a call carries.
 CREATE OR REPLACE VIEW sql_texts AS
 SELECT call_id, 'tool' AS sql_source, 0::BIGINT AS program_index,
        coalesce(input_json ->> 'sql', input_json ->> 'statement', input_json ->> 'query', input_json ->> 'rows_sql') AS sql_text
 FROM tc_input
-WHERE tool_name IN ('mcp__dev__query', 'mcp__dev__execute', 'mcp__dev__query_no_limit', 'mcp__dev__query_with_limit',
-                    'mcp__dev__sql', 'mcp__dev__self_dispatch')
+WHERE tool_name IN (FROM sql_tools)
 UNION ALL
 SELECT b.call_id, 'embedded', e.idx, e.prog.program
 FROM bash_src b CROSS JOIN UNNEST(b.embedded_programs) WITH ORDINALITY AS e(prog, idx)
@@ -89,11 +94,15 @@ WITH parsed_texts AS (
 SELECT call_id, sql_source, program_index, n.type AS statement_kind, n.peek AS statement_sql,
        [upper(w) FOR w IN string_split(trim(n.peek), ' ') IF w <> ''][1:5] AS head_words,
        len(string_split(n.peek, E'\n')) AS statement_lines,
-       -- json_serialize_sql takes only a SELECT; a view's query is the text after its first ' AS '.
-       CASE n.type WHEN 'select_statement'
-            THEN json_serialize_sql(n.peek, skip_null := true, skip_empty := true, skip_default := true) -> 'statements' -> 0
-            WHEN 'create_view'
-            THEN json_serialize_sql(substr(n.peek, instr(upper(translate(n.peek, E'\n\t\r', '   ')), ' AS ') + 4), skip_null := true, skip_empty := true, skip_default := true) -> 'statements' -> 0 END AS ast,
+       -- json_serialize_sql takes only a SELECT; a view's query is the text after its first ' AS ', and a
+       -- COPY's is everything before its last ') TO ' after 'COPY ('. sitting_duck prints a COPY in that
+       -- canonical form and gives it no child nodes, so the text is the only handle on its query.
+       json_serialize_sql(CASE WHEN n.type = 'select_statement' THEN n.peek
+                               WHEN n.type = 'create_view' THEN substr(n.peek, instr(upper(translate(n.peek, E'\n\t\r', '   ')), ' AS ') + 4)
+                               WHEN n.type = 'sql_statement' AND starts_with(n.peek, 'COPY (')
+                               THEN substr(n.peek, length('COPY (') + 1,
+                                           length(n.peek) - instr(reverse(n.peek), reverse(') TO ')) - length('COPY (') - length(') TO ') + 1) END,
+                          skip_null := true, skip_empty := true, skip_default := true) -> 'statements' -> 0 AS ast,
        row_number() OVER (PARTITION BY call_id, sql_source, program_index ORDER BY piece_no, n.node_id) AS statement_no
 FROM nodes WHERE n.depth = 1;
 
@@ -111,17 +120,20 @@ SELECT s.call_id, s.sql_source, s.program_index, s.statement_no, t.id AS node_id
                  WHEN (t.value ->> 'ref_type') = 'REGULAR' THEN t.value ->> 'join_type'
                  ELSE t.value ->> 'ref_type' END END AS join_kind,
        t.value -> 'right' ->> 'type' AS join_right_type,
-       [lower(c ->> 'class') FOR c IN json_extract(t.value, '$.right.function.children[*]')] AS join_right_arg_kinds,
+       [lower(c ->> 'class') FOR c IN coalesce((t.value -> 'right' -> 'function' -> 'children')::JSON[], [])] AS join_right_arg_kinds,
+       -- A node's arguments: a table function keeps them under 'function', every other node directly.
+       coalesce(CASE WHEN (t.value ->> 'type') = 'TABLE_FUNCTION' THEN t.value -> 'function' -> 'children' ELSE t.value -> 'children' END::JSON[], []) AS children,
        [CASE WHEN (c ->> 'class') = 'FUNCTION' THEN c ->> 'function_name'
              WHEN (c ->> 'class') = 'CAST' AND (c -> 'child' ->> 'class') = 'CONSTANT' THEN 'constant'
              ELSE lower(c ->> 'class') END
-        FOR c IN CASE WHEN (t.value ->> 'type') = 'TABLE_FUNCTION' THEN json_extract(t.value, '$.function.children[*]') ELSE json_extract(t.value, '$.children[*]') END] AS arg_kinds,
+        FOR c IN children] AS arg_kinds,
        -- Constant arguments, and the constants inside a list argument (read_text(['a', 'b'])).
        -- json_serialize_sql drops an empty string's value; a non-null constant without one is ''.
        [coalesce(c -> 'value' ->> 'value', CASE WHEN (c -> 'value' ->> 'is_null') = 'false' THEN '' END)
-        FOR c IN flatten([CASE WHEN (a ->> 'function_name') = 'list_value' THEN json_extract(a, '$.children[*]') ELSE [a] END
-                          FOR a IN CASE WHEN (t.value ->> 'type') = 'TABLE_FUNCTION' THEN json_extract(t.value, '$.function.children[*]') ELSE json_extract(t.value, '$.children[*]') END])
+        FOR c IN flatten([CASE WHEN (a ->> 'function_name') = 'list_value' THEN (a -> 'children')::JSON[] ELSE [a] END FOR a IN children])
         IF (c ->> 'class') = 'CONSTANT'] AS literal_args,
+       -- Named arguments (hive_partitioning := false) carry their name as the argument's alias.
+       [c ->> 'alias' FOR c IN children IF (c ->> 'alias') IS NOT NULL] AS named_args,
        -- Operators that read like functions (COALESCE, IN, NOT) keep their AST type as a name.
        CASE WHEN (t.value ->> 'class') = 'OPERATOR' THEN lower(t.value ->> 'type') END AS op,
        -- DuckDB flattens a OR b OR (c OR d) into one CONJUNCTION_OR, so its pattern children are the chain's length.
@@ -145,7 +157,7 @@ WITH node_facts AS (
          list_sort(list_distinct(list(fn))) AS functions_called,
          list_filter(list(CASE WHEN coalesce(fn, op) IS NOT NULL THEN {'name': coalesce(fn, op), 'args': arg_kinds, 'literals': literal_args} END), x -> x IS NOT NULL) AS function_calls,
          flatten(list_filter(list(CASE WHEN key = 'cte_map' THEN [e ->> 'key' FOR e IN json_extract(v, '$.map[*]')] END), x -> x IS NOT NULL)) AS cte_names,
-         list_filter(list(CASE WHEN tfn IS NOT NULL THEN {'name': tfn, 'args': arg_kinds, 'literals': literal_args} END), x -> x IS NOT NULL) AS table_function_calls,
+         list_filter(list(CASE WHEN tfn IS NOT NULL THEN {'name': tfn, 'args': arg_kinds, 'literals': literal_args, 'params': named_args} END), x -> x IS NOT NULL) AS table_function_calls,
          bool_or(fn = 'count_star') AS has_count_star,
          bool_or((v -> 'filter') IS NOT NULL AND cls IN ('FUNCTION', 'WINDOW')) AS has_filter_clause,
          bool_or(typ = 'EXPRESSION_LIST') AS has_values_clause,
@@ -154,6 +166,9 @@ WITH node_facts AS (
          count(CASE WHEN typ = 'CONJUNCTION_OR' THEN 1 END) AS or_node_count,
          max(or_pattern_children) AS or_pattern_max,
          list_filter(list(CASE WHEN typ = 'LIMIT_MODIFIER' THEN (v -> 'limit' -> 'value' ->> 'value')::BIGINT END), x -> x IS NOT NULL) AS limit_values,
+         -- LIMIT 1 on a query node with no ORDER BY among its own modifiers picks an arbitrary row.
+         bool_or(list_contains([(m ->> 'type') = 'LIMIT_MODIFIER' AND (m -> 'limit' -> 'value' ->> 'value') = '1' FOR m IN (v -> 'modifiers')::JSON[]], true)
+                 AND NOT list_contains([m ->> 'type' FOR m IN (v -> 'modifiers')::JSON[]], 'ORDER_MODIFIER')) AS has_unordered_limit_1,
          list_sort(list_distinct(list(join_kind))) AS join_types,
          bool_or(join_kind = 'COMMA') AS has_comma_join,
          bool_or(join_kind = 'CROSS' AND join_right_fn = 'unnest') AS has_unnest_cross_join,
@@ -180,6 +195,7 @@ SELECT s.call_id, s.sql_source, s.program_index, s.statement_no, s.statement_kin
        coalesce(f.or_node_count, 0) AS or_node_count,
        coalesce(f.or_pattern_max, 0) AS or_pattern_max,
        coalesce(f.limit_values, []) AS limit_values,
+       coalesce(f.has_unordered_limit_1, false) AS has_unordered_limit_1,
        coalesce(f.join_types, []) AS join_types,
        coalesce(f.has_comma_join, false) AS has_comma_join,
        coalesce(f.has_unnest_cross_join, false) AS has_unnest_cross_join,
@@ -217,6 +233,7 @@ stmts AS (
          bool_or(has_filter_clause) AS sql_has_filter_clause,
          bool_or(has_values_clause) AS sql_has_values_clause,
          bool_or(list_contains(limit_values, 1)) AS sql_has_limit_1,
+         bool_or(has_unordered_limit_1) AS sql_has_unordered_limit_1,
          bool_or(has_recursive_cte) AS sql_has_recursive_cte,
          bool_or(has_materialized_cte) AS sql_has_materialized_cte,
          sum(or_node_count) AS sql_or_node_count,

@@ -4,7 +4,7 @@
 -- Existing hooks in ~/.claude/settings.json PreToolUse, by order: H1 inframe flow gate, H2 Bash duckdb (-init,
 -- regexp, OR of LIKE), H3 mcp__dev__ (regexp, OR of LIKE), H4 Bash text readers, H5 mcp__dev__ recursive glob,
 -- H6 new TABLE ask, H7 quote chars / variable hand-off / text joining / star count, H8 git show/restore/diff.
--- tools ['@sql'] means every tool that carries SQL: the dev SQL tools, Bash (embedded duckdb) and .sql Write/Edit.
+-- tools ['@sql'] means every tool that carries SQL: sql_tools (toolcall_facts.sql), Bash (embedded duckdb) and .sql Write/Edit.
 CREATE OR REPLACE VIEW hook_checks AS
 WITH primary_checks AS (SELECT unnest([
 -- ── Bash: git and gh ──────────────────────────────────────────────────────────────────────────────
@@ -182,8 +182,8 @@ WITH primary_checks AS (SELECT unnest([
  'message': 'No aggregate FILTER outside a data-quality check: CASE inside the aggregate, or a named CTE per subset joined back.',
  'action': 'block', 'hook_event': 'PreToolUse', 'hook_decision': 'deny', 'replaces_hooks': []::VARCHAR[]},
 {'check_id': 'sql_limit_one', 'rule_id': '01a14840-dca3-7b3e-aa0c-8d2dc98980b9', 'tools': ['@sql'],
- 'predicate_sql': $p$sql_has_limit_1$p$,
- 'message': 'No one-row limit: LIMIT 0 or DESCRIBE for a schema, an explicit preview LIMIT 2-10 while shaping, then the full set.',
+ 'predicate_sql': $p$sql_has_unordered_limit_1$p$,
+ 'message': 'LIMIT 1 with no ORDER BY returns an arbitrary row. For the top row per group use arg_max(x, v) / max(v), for the top n arg_max(x, v, n) / max(v, n) (lists), for one ordered row arg_max(t, v) over the row struct (FROM sessions AS t) or ORDER BY ... LIMIT 1, for a schema LIMIT 0 or DESCRIBE. Over our own relations (agent.*, stream.*, fs.*, server/*.sql views) a row picked by hand means the view lacks its key: fix the view upstream.',
  'action': 'block', 'hook_event': 'PreToolUse', 'hook_decision': 'deny', 'replaces_hooks': []::VARCHAR[]},
 {'check_id': 'sql_row_constructor', 'rule_id': '01a14840-dca3-73b5-8414-99cc89df2bbf', 'tools': ['@sql'],
  'predicate_sql': $p$sql_has_values_clause$p$,
@@ -219,7 +219,7 @@ WITH primary_checks AS (SELECT unnest([
  'action': 'block', 'hook_event': 'PreToolUse', 'hook_decision': 'deny', 'replaces_hooks': []::VARCHAR[]},
 {'check_id': 'sql_any_value', 'rule_id': '01a14840-dca3-7ec7-9970-b6ce50e3faa7', 'tools': ['@sql'],
  'predicate_sql': $p$list_has_any(sql_functions, ['any_value', 'arbitrary'])$p$,
- 'message': 'No arbitrary-value picks: group by the column, keep the list (array_agg), or use the reader''s own parameters / PIVOT.',
+ 'message': 'any_value returns an arbitrary row''s value. Keep the array (array_agg(col) / list(col)) and leave it unselected; for one value pick it by an order, arg_max(col, v) or array_agg(col ORDER BY v)[1] (a bare array_agg(col)[1] is just as arbitrary); group by the column when it is a key. Over our own relations a column that needs any_value belongs at another grain: fix the view upstream.',
  'action': 'block', 'hook_event': 'PreToolUse', 'hook_decision': 'deny', 'replaces_hooks': []::VARCHAR[]},
 {'check_id': 'sql_lossy_case_pivot', 'rule_id': '01a14840-dca3-7ec7-9970-b6ce50e3faa7', 'tools': ['@sql'],
  'predicate_sql': $p$len(list_filter(sql_function_calls, f -> f.name IN ('max', 'min', 'first', 'last') AND list_contains(f.args, 'case'))) > 0$p$,
@@ -308,7 +308,7 @@ WITH primary_checks AS (SELECT unnest([
  'action': 'warn', 'hook_event': 'PreToolUse', 'hook_decision': 'context', 'replaces_hooks': []::VARCHAR[]},
 {'check_id': 'sql_json_extract', 'rule_id': '01a14840-dca3-7c6d-b5ef-46229fcd38d5', 'tools': ['@sql'],
  'predicate_sql': $p$list_has_any(sql_functions, ['json_extract', 'json_extract_string', 'json_extract_path', 'json_extract_path_text'])$p$,
- 'message': 'Read JSON with read_json and its typed columns (dot access on structs); no json_extract on nested fields.',
+ 'message': 'json_extract is for JSON we do not own: read_json brings typed columns (dot access on structs; one ->> per receipt body field, RULES.md rule 5). Over our own relations (agent.lines, stream.*, agent.*) read the parsed columns of stream.blocks / agent.messages, and add a missing field to that view upstream (as duckstack PR #87 did for Codex call ids), not to each query.',
  'action': 'warn', 'hook_event': 'PreToolUse', 'hook_decision': 'context', 'replaces_hooks': []::VARCHAR[]},
 {'check_id': 'sql_hand_typed_structure', 'rule_id': '01a14840-dca3-77f9-a973-fca3ea534be1', 'tools': ['@sql'],
  'predicate_sql': $p$len(list_filter(sql_function_calls, f -> f.name IN ('from_json', 'from_json_strict', 'json_transform', 'json_transform_strict') AND f.args[2] = 'constant')) > 0$p$,
@@ -368,13 +368,21 @@ WITH primary_checks AS (SELECT unnest([
  'message': 'No json_each: the reader brings its own columns and receipts unnest as columns (10-17).',
  'action': 'block', 'hook_event': 'PreToolUse', 'hook_decision': 'deny', 'replaces_hooks': []::VARCHAR[]},
 {'check_id': 'sql_row_number_pick', 'rule_id': '01a14c82-594d-74bb-a924-9bc199ecb47e', 'tools': ['@sql'],
- 'predicate_sql': $p$sql_has_qualify AND list_contains(sql_functions, 'row_number')$p$,
- 'message': 'No picking rows with QUALIFY row_number() ... <= n: arg_max / max_by, or a join on keys (10-17).',
+ 'predicate_sql': $p$sql_has_qualify AND list_has_any(sql_functions, ['row_number', 'rank', 'dense_rank'])$p$,
+ 'message': 'QUALIFY row_number() ... <= n is a top-n pick by hand: arg_max(x, v, n) / max(v, n) return the top n per group as lists (arg_max(label, val, 2) gives [five, three]), arg_max(x, v) / max_by the single row; GROUP BY the keys, since GROUP BY ALL also groups by a v selected bare. Over our own relations fix the view upstream so the query needs neither; QUALIFY is fine once the house rules are met.',
+ 'action': 'warn', 'hook_event': 'PreToolUse', 'hook_decision': 'context', 'replaces_hooks': []::VARCHAR[]},
+{'check_id': 'sql_split_index', 'rule_id': 'split-index-keep-the-array', 'tools': ['@sql'],
+ 'predicate_sql': $p$len(list_filter(sql_function_calls, f -> f.name = 'array_extract' AND f.args[1] IN ('string_split', 'str_split', 'split', 'string_split_regex', 'str_split_regex', 'regexp_split_to_array'))) > 0$p$,
+ 'message': 'string_split(...)[n] reaches into structure by position: keep the array (string_split(x, sep) AS parts) and use list functions on it, or a reader that returns columns (read_csv with its delimiter, parse_path / parse_filename, netquack / urlpattern for URLs). Over our own relations add the parsed column to the view upstream (10-20).',
  'action': 'warn', 'hook_event': 'PreToolUse', 'hook_decision': 'context', 'replaces_hooks': []::VARCHAR[]},
 {'check_id': 'sql_shellfs_grep', 'rule_id': '01a14c82-594d-7177-aad5-0f0766dd37c6', 'tools': ['@sql'],
  'predicate_sql': $p$len(list_filter(sql_table_function_calls, t -> len(list_filter(t.literals, l -> list_has_any(string_split(translate(l, E'|;&\t\n', '     '), ' '), ['grep', 'egrep', 'rg']))) > 0)) > 0$p$,
  'message': 'No grep through shellfs: find definitions with sitting_duck read_ast over duck_tails git:// paths and files with fs.files (10-17).',
  'action': 'block', 'hook_event': 'PreToolUse', 'hook_decision': 'deny', 'replaces_hooks': []::VARCHAR[]},
+{'check_id': 'sql_shellfs_hive_columns', 'rule_id': 'shellfs-command-hive-partitioning', 'tools': ['@sql'],
+ 'predicate_sql': $p$len(list_filter(sql_table_function_calls, t -> t.name IN ('read_csv', 'read_csv_auto', 'read_json', 'read_json_auto', 'read_ndjson', 'read_ndjson_auto', 'read_json_objects') AND ends_with(rtrim(t.literals[1]), '|') AND len(list_filter(parse_path(t.literals[1], 'both_slash')[:-2], part -> contains(part, '='))) > 0 AND NOT list_contains(coalesce(t.params, []), 'hive_partitioning'))) > 0$p$,
+ 'message': 'DuckDB reads hive key=value folders from the path text, and a shellfs path is the command: a key=value followed by a / or \ (an env assignment or --flag=value before a path) becomes a column, and one whose name matches a real field overwrites its value. Pass hive_partitioning := false when read_csv / read_json read a command (''cmd |''); files keep detection (10-20).',
+ 'action': 'warn', 'hook_event': 'PreToolUse', 'hook_decision': 'context', 'replaces_hooks': []::VARCHAR[]},
 {'check_id': 'sql_shellfs_raw_pytest', 'rule_id': '01a14c82-594d-7d31-a678-6bccd48c92aa', 'tools': ['@sql'],
  'predicate_sql': $p$len(list_filter(sql_table_function_calls, t -> t.name <> 'read_duck_hunt_log' AND len(list_filter(t.literals, l -> contains(l, 'pytest'))) > 0)) > 0$p$,
  'message': 'Read test output with duck_hunt (read_duck_hunt_log), one row per test, not raw console lines (10-17).',
@@ -538,7 +546,14 @@ all_checks AS (
          r.canonical_rule AS message, 'deferred' AS action, 'Stop (reads the final reply and the turn''s tool results)' AS hook_event,
          'block' AS hook_decision, []::VARCHAR[] AS replaces_hooks
   FROM stop_rules s
-  JOIN read_parquet('/Users/aloksubbarao/.duck/hook_data/rules_ranked.parquet') AS r USING (rule_id))
-SELECT * REPLACE (CASE WHEN tools = ['@sql'] THEN ['mcp__dev__query', 'mcp__dev__execute', 'mcp__dev__query_no_limit',
-         'mcp__dev__query_with_limit', 'mcp__dev__sql', 'mcp__dev__self_dispatch', 'Bash', 'Write', 'Edit'] ELSE tools END AS tools)
-FROM all_checks;
+  JOIN read_parquet('/Users/aloksubbarao/.duck/hook_data/rules_ranked.parquet') AS r USING (rule_id)),
+tool_groups AS (
+  -- '@sql' stands for sql_tools (toolcall_facts.sql, which every caller reads before this file), Bash, Write and Edit.
+  SELECT '@sql' AS tool, tool_name AS member FROM sql_tools
+  UNION ALL
+  SELECT '@sql', unnest(['Bash', 'Write', 'Edit'])),
+check_tools AS (
+  SELECT c.check_id, list(coalesce(g.member, t.tool)) AS tools
+  FROM all_checks AS c CROSS JOIN UNNEST(c.tools) AS t(tool) LEFT JOIN tool_groups AS g ON g.tool = t.tool
+  GROUP BY c.check_id)
+SELECT all_checks.* REPLACE (check_tools.tools AS tools) FROM all_checks JOIN check_tools USING (check_id);

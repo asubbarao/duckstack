@@ -166,7 +166,7 @@ SELECT 'sql_lateral_not_allowlisted' AS check_id, call_id, tool_name, coalesce(n
 UNION ALL
 SELECT 'sql_left_join_lateral' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((sql_has_left_join_lateral), false)
 UNION ALL
-SELECT 'sql_limit_one' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((sql_has_limit_1), false)
+SELECT 'sql_limit_one' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((sql_has_unordered_limit_1), false)
 UNION ALL
 SELECT 'sql_lossy_case_pivot' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((len(list_filter(sql_function_calls, f -> f.name IN ('max', 'min', 'first', 'last') AND list_contains(f.args, 'case'))) > 0), false)
 UNION ALL
@@ -198,7 +198,7 @@ SELECT 'sql_recursive_glob' AS check_id, call_id, tool_name, coalesce(next_promp
 UNION ALL
 SELECT 'sql_row_constructor' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((sql_has_values_clause), false)
 UNION ALL
-SELECT 'sql_row_number_pick' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((sql_has_qualify AND list_contains(sql_functions, 'row_number')), false)
+SELECT 'sql_row_number_pick' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((sql_has_qualify AND list_has_any(sql_functions, ['row_number', 'rank', 'dense_rank'])), false)
 UNION ALL
 SELECT 'sql_scalar_subquery_select' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((sql_has_scalar_subquery_in_select), false)
 UNION ALL
@@ -206,7 +206,11 @@ SELECT 'sql_set_on_dev' AS check_id, call_id, tool_name, coalesce(next_prompt_co
 UNION ALL
 SELECT 'sql_shellfs_grep' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((len(list_filter(sql_table_function_calls, t -> len(list_filter(t.literals, l -> list_has_any(string_split(translate(l, E'|;&\t\n', '     '), ' '), ['grep', 'egrep', 'rg']))) > 0)) > 0), false)
 UNION ALL
+SELECT 'sql_shellfs_hive_columns' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((len(list_filter(sql_table_function_calls, t -> t.name IN ('read_csv', 'read_csv_auto', 'read_json', 'read_json_auto', 'read_ndjson', 'read_ndjson_auto', 'read_json_objects') AND ends_with(rtrim(t.literals[1]), '|') AND len(list_filter(parse_path(t.literals[1], 'both_slash')[:-2], part -> contains(part, '='))) > 0 AND NOT list_contains(coalesce(t.params, []), 'hive_partitioning'))) > 0), false)
+UNION ALL
 SELECT 'sql_shellfs_raw_pytest' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((len(list_filter(sql_table_function_calls, t -> t.name <> 'read_duck_hunt_log' AND len(list_filter(t.literals, l -> contains(l, 'pytest'))) > 0)) > 0), false)
+UNION ALL
+SELECT 'sql_split_index' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((len(list_filter(sql_function_calls, f -> f.name = 'array_extract' AND f.args[1] IN ('string_split', 'str_split', 'split', 'string_split_regex', 'str_split_regex', 'regexp_split_to_array'))) > 0), false)
 UNION ALL
 SELECT 'sql_star_count' AS check_id, call_id, tool_name, coalesce(next_prompt_corrects, false) AS corrected FROM facts WHERE coalesce((sql_has_count_star), false)
 UNION ALL

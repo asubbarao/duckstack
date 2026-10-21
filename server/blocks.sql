@@ -13,7 +13,7 @@ WITH intent AS (
 CREATE OR REPLACE VIEW stream.main.parsed AS
 WITH line AS (
     SELECT ['text', 'thinking', 'output', 'content'] AS content_keys,
-           ['id', 'tool_use_id', 'call_id'] AS id_keys, ['command', 'cmd', 'sql', '$'] AS command_keys,
+           ['id', 'tool_use_id', 'call_id'] AS id_keys, ['command', 'cmd', 'sql', 'statement', '$'] AS command_keys,
            ['<', '[Request interrupted', 'This session is being continued', 'Base directory for this skill',
             'Another Claude session sent a message', '# AGENTS.md', '[Cross-session delivery notice]',
             'Here is a note offered by a side agent'] AS harness_prefixes,
@@ -40,7 +40,8 @@ WITH line AS (
     FROM block
 )
 SELECT * EXCLUDE (harness_prefixes, command_keys),
-       coalesce([tool_input ->> k FOR k IN command_keys IF tool_input ->> k IS NOT NULL][1], tool_input::VARCHAR) AS tool_command,
+       [k FOR k IN command_keys IF tool_input ->> k IS NOT NULL][1] AS tool_command_key,
+       tool_input ->> tool_command_key AS tool_command,
        message_role = 'user' AND block_type IN ('text', 'input_text') AND NOT is_agent
        AND NOT list_bool_or([starts_with(ltrim(message_content), p) FOR p IN harness_prefixes]) AS is_prompt
 FROM parsed

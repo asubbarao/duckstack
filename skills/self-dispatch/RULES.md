@@ -52,7 +52,7 @@ writing SQL on this machine.
     gymnastics, no nested quotes or escape hell (09-22, 10-12). `quote_literal(col)` is fine; `translate()` for
     character swaps (09-23, 10-16). No `printf` / `format`: on 10-17 a printf-built command and a printf in a
     dispatch were both rejected; declare the parts as columns and render with Tera.
-13. **Banned:** `VALUES`, `COUNT(*)`, `LIMIT 1`, `WITH RECURSIVE`, scalar subqueries in SELECT lists, `any_value`, cross joins of singleton CTEs
+13. **Banned:** `VALUES`, `COUNT(*)`, `LIMIT 1` without `ORDER BY` (10-20, rule 29), `WITH RECURSIVE`, scalar subqueries in SELECT lists, `any_value`, cross joins of singleton CTEs
     (`JOIN ON true`, comma joins), `json_extract` ladders and hand-typed selector ladders in committed code (selectors are rows, rule 8: "its not that i dont want xpath. the point is why can't i SELECT DISTINCT xpaths FROM document and use them", 10-20) (except the single `->>` per receipt
     body field allowed by rule 5),
     regex on backend data, `generate_subscripts`, positional `split_part` surgery (09-22, 09-23, 10-10).
@@ -87,6 +87,10 @@ writing SQL on this machine.
     `read_lines('cmd |')` for curl, gh, git, osascript, aws, codex (09-28, 10-08, 10-11 "curl is not
     banned through shellfs"). Never `column0 VARCHAR`: use the reader's options. `read_text` is batch,
     `read_lines` streams. At most a simple `jq` in the pipe; no `sed`/`tr`/`awk` — do it in SQL (09-24, 09-29).
+    `read_csv` / `read_json` over a command pass `hive_partitioning := false`: DuckDB reads hive `key=value` folders
+    from the path text, which is the command, so `GREETING=hi cat /x |` gains a column and a name that matches a
+    real field overwrites it. Files keep detection (signed agent-log `PARTITION_BY` output needs it); the hook warns
+    (10-20).
 19. **Use the extensions built for the job:** hostfs for the filesystem, duck_tails for git, duck_hunt for
     test/CI logs, sitting_duck and parser_tools for code, webbed for HTML, agent_data / `agent.stream` for
     transcripts, urlpattern / netquack for URLs, scalarfs for content-as-file. Never grep/find/cat (10-07, 10-08, 10-14).
@@ -108,3 +112,31 @@ writing SQL on this machine.
     some AI slop that the AI didn't even test" (10-17). Run it, show the rows.
 27. **Code reaches main through a PR that passed the review queue** (skills/duckstack-review/queue.sql): the
     hook's checks on every changed file, then an Opus review against this file. Nobody pushes main (10-17).
+
+## Our own schema first, then friendly SQL
+
+28. **Workarounds are for schemas we don't own.** QUALIFY picks, `json_extract` and the other `_extract`s, `LIMIT 1`
+    subselects and `any_value` are techniques for operating against someone else's data, which might be like this
+    or that. Over our own relations (`agent.lines`, `stream.*`, `agent.*`, `fs.*`, the `server/*.sql` views) there is
+    rarely an excuse for them: fix the relation upstream so every reader stays simple; on a personal machine that is
+    a luxury we have (10-20). Example: Codex tool calls never paired because `stream.parsed` read the item id before
+    `call_id`; the fix went into the parse (duckstack PR #87), not into every reader. Once the house rules are met,
+    QUALIFY and `json_extract` are fine (both are warns); `any_value` and an unordered `LIMIT 1` stay blocked
+    everywhere (rule 13) (10-20).
+29. **The inline replacements the hooks name** (10-20). Top n per group: `arg_max(x, v, n)` / `max(v, n)` return
+    lists (`arg_max(label, val, 2)` gives `['five', 'three']`, `max(val, 2)` gives `[5, 3]`); `arg_max(x, v)` /
+    `max_by` the single row. One ordered row: first `arg_max(s, started)` over the row struct (`FROM sessions AS s`),
+    the same verb as top n; `ORDER BY ... LIMIT 1` is also valid: "limit 1 is a valid ; ONLY with an orderby though,
+    agents dont usually do that" (10-20). `LIMIT 1` with no `ORDER BY` is an arbitrary row and is blocked. Instead of `any_value(col)`, keep the array (`array_agg(col)` / `list(col)`) and leave it
+    unselected; when one value is needed, pick it by an order: `arg_max(col, v)` or `array_agg(col ORDER BY v)[1]`
+    (a bare `array_agg(col)[1]` is the same arbitrary pick as `any_value`). Instead of `string_split(x, sep)[n]`, keep the array or use a reader that returns
+    columns (`read_csv` with its delimiter, `parse_path`, netquack); the hook warns.
+30. **Friendly SQL we lean on**, kept as a query rather than prose: `references/friendly_sql.sql`. Its first query
+    reads DuckDB's SELECT, friendly-SQL, even-friendlier-SQL, PIVOT and UNPIVOT pages with curl through shellfs and
+    webbed's `html_to_duck_blocks` (one dispatched statement per page) and lists each page's features; its second counts how many agent SQL calls used
+    each feature in the last 7 days. The ones we lean on: `COLUMNS([...])` / `COLUMNS(lambda)`, `* EXCLUDE`,
+    `* REPLACE`, `* RENAME`, `SUMMARIZE`, `DESCRIBE`, `PIVOT` / `UNPIVOT`, top-n aggregates, `LIMIT n%`,
+    `GROUP BY ALL` and `BY NAME`. **The GROUP BY ALL pitfall:** it groups by every column that is not aggregated, so
+    next to `arg_max` / `max` a value column selected bare (or carried in by `*`) becomes a key, and the top-n comes
+    back once per value (`[one]`, `[three]`, `[five]` instead of `[five, three]`). With top-n aggregates, GROUP BY the
+    keys by name (10-20).
