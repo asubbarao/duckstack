@@ -214,13 +214,15 @@ WITH picked AS (
            coalesce(json ->> 'body', json ->> 'commit_id', json ->> 'sha') AS detail
     FROM read_ndjson_objects($c$gh api 'repos/{{ repo }}/issues/{{ pr }}/timeline?per_page=100' --paginate --jq '.[]' |$c$)
   $t$, p::JSON, autoescape := false) AS sql
-  FROM prs AS p
+  FROM picked AS p
 ), github_dispatched AS (
   SELECT pr, picked_account, array_agg(selfdispatch(sql)) AS receipts FROM github_statements GROUP BY ALL
-), github AS (
-  SELECT 'github' AS src, g.pr, (event ->> 'ts')::TIMESTAMPTZ AS ts, event ->> 'account' AS account,
-         event ->> 'what' AS what, event ->> 'detail' AS detail, event ->> 'account' IS NOT DISTINCT FROM g.picked_account AS ours
+), github_events AS (
+  SELECT 'github' AS src, g.pr, g.picked_account, (event ->> 'ts')::TIMESTAMPTZ AS ts, event ->> 'account' AS account,
+         event ->> 'what' AS what, event ->> 'detail' AS detail
   FROM github_dispatched AS g CROSS JOIN UNNEST(receipts) AS r(receipt) CROSS JOIN UNNEST(receipt.body::JSON[]) AS e(event)
+), github AS (
+  SELECT * EXCLUDE (picked_account), account IS NOT DISTINCT FROM picked_account AS ours FROM github_events
 ), agents AS (
   FROM agent.messages AS m JOIN prs ON m.git_branch = prs.branch
   SELECT 'agent' AS src, prs.pr, m.timestamp AS ts, prs.account, true AS ours, m.session_id AS session,
@@ -233,7 +235,7 @@ ORDER BY ts;
 ```
 
 Each picked PR is one `gh pr view` and one `issues/<pr>/timeline` call (comments, reviews, commits, merged,
-closed), so nothing pages through the whole repo. The timeline is read as raw objects (`read_ndjson_objects`), so a
+closed), both built from `picked`, so nothing pages through the whole repo. The timeline is read as raw objects (`read_ndjson_objects`), so a
 PR with no review or no commit still binds. `what` is GitHub's own event name (`commented`, `reviewed`, `merged`);
 commits have no login, so `ours` is false on them. `at` is a reserved word, so the time column is `ts`. `head` is
 null on tool_use rows; `tool_command_head` holds the command.
