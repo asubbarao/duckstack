@@ -29,9 +29,8 @@ WITH source AS (
         WHERE table_schema IN ('public', 'bp_records', 'bp_graph', 'bp_assertions') AND table_type = 'BASE TABLE'$$)
 ), last_attempt AS (
     SELECT table_name AS key,
-        run_started + CASE WHEN status = 'ok' THEN INTERVAL 5 MINUTE ELSE INTERVAL 30 SECOND END AS due_at
-    FROM pull_log
-    QUALIFY row_number() OVER (PARTITION BY table_name ORDER BY run_started DESC) = 1
+        arg_max(run_started + CASE WHEN status = 'ok' THEN INTERVAL 5 MINUTE ELSE INTERVAL 30 SECOND END, run_started) AS due_at
+    FROM pull_log GROUP BY table_name
 ), due AS (
     SELECT s.key AS table_name, now() AS run_started, strftime(now(), '%Y%m%dT%H%M%SZ') AS run_id,
         s.src, s.target, s.table_name AS source_table, s.key

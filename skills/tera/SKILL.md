@@ -87,7 +87,8 @@ Sources: [extension and cookbook](https://query.farm/products/extensions/tera/),
 
 ## Worked reference: a video as rows
 
-`references/video_frames.tera` writes `<out_dir>/frames_<slice>.parquet` from a `read_csv` over a pipe whose
-producer is a heredoc program (macOS AVFoundation via `swift -`) writing one frame per row at a chosen rate;
-`pic_phash` runs per row as the stream arrives. `references/video_frames.sql` dispatches pass one, defines
-`scenes` over the Parquet files, and dispatches pass two per busy scene. See the `watch-video` skill.
+`references/video_frames.tera` returns one row per frame (`second, path, phash`) from a `read_csv` over a pipe
+whose producer is a heredoc program (macOS AVFoundation via `swift -`) writing one JPEG per frame at a chosen
+rate; `pic_phash` runs per row as the stream arrives. `references/video_frames.sql` is one query: it dispatches
+pass one, splits its receipts' frames into scenes, dispatches pass two per busy scene, and returns the scenes over
+both passes' frames. See the `watch-video` skill.
