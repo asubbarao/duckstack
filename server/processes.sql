@@ -4,7 +4,7 @@
 -- process: 'claude' (its group leader is the zsh a Claude Bash call starts, sourcing ~/.claude/shell-snapshots), 'codex'
 -- (a child of codex outside its own install and MCP servers), 'orphan' (the group leader is gone: an agent's call ended
 -- and left its job running). reap marks every process of a group the reaper kills: the group's oldest process was
--- spawned by an agent, the group is 10 minutes old, and it is not an orphaned app or system helper. reap_dev_job marks a
+-- spawned by an agent, the group is 20 minutes old, and it is not an orphaned app or system helper. reap_dev_job marks a
 -- process dev's shell started (a shellfs command, a nohup job) that is an hour old: it shares dev's group, started after
 -- dev, so the wrapper and feeder started with dev never qualify. reap_client_job marks a command a session's own DuckDB
 -- (server/client.sql) has run for over 3 minutes: one stuck shellfs command blocks every later call to that session.
@@ -61,7 +61,7 @@ WITH ps_words AS (
     WHERE process.group_spawned_by = 'orphan'
 ), marked AS (
     SELECT process.*, dev.dev_pid, dev.dev_age_s,
-           coalesce(process.group_spawned_by IS NOT NULL AND process.group_age_s >= 600 AND exempt.pgid IS NULL, false) AS reap,
+           coalesce(process.group_spawned_by IS NOT NULL AND process.group_age_s >= 1200 AND exempt.pgid IS NULL, false) AS reap,
            coalesce(process.age_s < dev.dev_age_s AND process.age_s >= 3600, false) AS reap_dev_job,
            coalesce(contains(process.parent_args, '/server/client.sql') AND process.age_s >= 180, false) AS reap_client_job
     FROM grouped AS process
