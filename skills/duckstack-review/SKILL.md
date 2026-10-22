@@ -47,9 +47,14 @@ Across a month of transcripts this was the owner's most repeated complaint, and 
 "why is this so slow" and "why did it crash" moments.
 
 Flag:
-- A lateral join on a table function, a `read_*_lateral`, a column passed into `read_csv` or
-  `read_text`, or a comment explaining a binder error away ("only accepts a literal"). A binder
-  error means: self-dispatch.
+- A column passed into `read_csv` or `read_text`, or a comment explaining a binder error away
+  ("only accepts a literal"). A binder error means: self-dispatch.
+- A lateral join on a table function or a `read_*_lateral` that the self-dispatch form would beat.
+  LATERAL is allowed, but self-dispatch usually wins: a LATERAL that stays needs a measurement
+  (latency or rows moved, both forms on the same input) showing it is the faster one. With no
+  measurement, it is a finding.
+- Self-dispatch mixed with LATERAL, or receipts matched to their inputs by array position. Each
+  dispatched statement selects its own keys.
 - A `UNION ALL` of N hand-written statements, one per input.
 - A bash loop, `xargs`, a `.sh` file or a Python loop that runs one command per row.
 - An inputs-times-endpoint cross join, listener discovery joined into the dispatch, or any

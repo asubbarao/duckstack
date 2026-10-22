@@ -54,5 +54,8 @@ Rules:
 - Dev is `http://127.0.0.1:9495/sql`; `selfdispatch(sql)` wraps `quackapi_post`. Empty input sends nothing.
   Never blindly retry an uncertain write.
 
+LATERAL is allowed but rarely beats self-dispatch. Where it runs (tool calls, dev's own query log, files on main),
+to measure against the self-dispatch form: [references/lateral_audit.sql](references/lateral_audit.sql).
+
 Background: [compendium](references/compendium.md), [inline.sql](references/inline.sql),
 [review.sql](references/review.sql) (every dispatch site, for the `duckstack-review` checks).

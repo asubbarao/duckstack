@@ -4,6 +4,9 @@
 -- and branch, its block_keys, and prompts, every typed prompt as its whole stream.blocks row in order, each with
 -- is_near_repeat (within rapidfuzz_ratio 90 of the one before); prompt_count, first_prompt and last_prompt skip
 -- those. Select the columns a reply needs.
+-- agent.turn_usage: one row per agent.lines line that carries API usage (only assistant lines do), the usage read
+-- once per row: input_new_tokens is cache_creation_input_tokens + input_tokens, what the turn added to the context.
+-- One API response is written to several lines (one per content block); response_id counts it once.
 WITH messages_step AS (
     SELECT array_agg(selfdispatch($m$
 CREATE OR REPLACE VIEW agent.messages AS
@@ -12,7 +15,9 @@ SELECT * EXCLUDE (message_content, tool_input, tool_command), left(message_conte
 FROM stream.blocks
 $m$)) AS receipts
 ), sessions_step AS (
-    SELECT array_agg(selfdispatch($s$
+    SELECT array_agg(selfdispatch(sql)) AS receipts
+    FROM messages_step CROSS JOIN UNNEST(receipts) AS t(r)
+    CROSS JOIN UNNEST([$s$
 CREATE OR REPLACE VIEW agent.sessions AS
 WITH session_blocks AS (
     SELECT * FROM stream.blocks WHERE NOT is_repeat
@@ -35,8 +40,18 @@ WITH session_blocks AS (
 SELECT a.*, p.prompts, len(p.distinct_prompts) AS prompt_count,
        p.distinct_prompts[1].message_content AS first_prompt, p.distinct_prompts[-1].message_content AS last_prompt
 FROM activity a LEFT JOIN prompts p USING (session_id)
-$s$)) AS receipts
-    FROM messages_step CROSS JOIN UNNEST(receipts) AS t(r) WHERE r.status = 200
+$s$, $u$
+CREATE OR REPLACE VIEW agent.turn_usage AS
+WITH usage_lines AS (
+    SELECT transcript, file_row_number, timestamp::TIMESTAMPTZ AS ts, message ->> 'id' AS response_id, message -> 'usage' AS usage
+    FROM agent.lines WHERE (message -> 'usage') IS NOT NULL
+)
+SELECT transcript, file_row_number, ts, response_id,
+       (usage ->> 'cache_creation_input_tokens')::BIGINT + (usage ->> 'input_tokens')::BIGINT AS input_new_tokens,
+       (usage ->> 'output_tokens')::BIGINT AS output_tokens
+FROM usage_lines
+$u$]) AS s(sql)
+    WHERE r.status = 200
 )
 SELECT r.* FROM messages_step CROSS JOIN UNNEST(receipts) AS t(r)
 UNION ALL
