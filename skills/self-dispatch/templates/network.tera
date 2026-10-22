@@ -1,0 +1,3 @@
+{# 4. A request to another host (never dev's own :9495; dev is selfdispatch(sql)): one POST per row.
+   Row: url (text), body (text, usually json_object(...)::VARCHAR). unnest makes status, reason and body columns. #}
+SELECT unnest(quackapi_post($url${{ url }}$url$, $body${{ body }}$body$))

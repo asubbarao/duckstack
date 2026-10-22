@@ -76,7 +76,8 @@ SELECT r.* FROM dispatched CROSS JOIN UNNEST(receipts) AS t(r)
 ```
 
 A single command still goes through `array_agg` and `CROSS JOIN UNNEST` of a one-element
-array. Use `WITH ORDINALITY` when order matters; arrays alone don't establish execution order.
+array. Use `array_agg(… ORDER BY …)` when order inside one array matters; `WITH ORDINALITY` only
+numbers the receipts, and arrays alone don't establish execution order.
 Keep the generated `sql` beside its receipt when anything downstream needs it.
 
 ## 5. Views and tables first, macros last

@@ -138,53 +138,71 @@ Parquet is temporary: a carry across a light switch, or a shared output director
 `COPY … (FORMAT parquet, OVERWRITE_OR_IGNORE)`. Flag Parquet used as a cache to hide a heavy
 view (fix the view), and inserts where a COPY would do.
 
+## Self-dispatch checklist
+
+Every dispatch has one shape, and the hook blocks any other (`sql_dispatch_shape`). The reference is
+[../self-dispatch/SKILL.md](../self-dispatch/SKILL.md). Because the shape is fixed, the review checks these points
+in that one place:
+
+1. **Rows first.** The first CTE declares real rows (catalog, hostfs, a table) with every value as a column.
+   No `range()` / `generate_series` source, no literal list of what a relation already holds.
+2. **The statement is a column, built by a concat or a template.** A plain concat
+   (`concat('SELECT * FROM read_csv(', quote_literal(path), ')') AS sql`) is the default. A template from `templates/`
+   is called by name once the holes get many, with no `row_to_json`. Either way it is built in its own CTE, so the
+   statements can be selected and read before posting; a concat or render inside `selfdispatch(...)` is a finding.
+   The bash loop template is a fallback and needs a reason.
+3. **The macro, with the row.** `SELECT pr_number, sql, array_agg(selfdispatch(sql)) AS receipts … GROUP BY ALL`: the
+   row keeps its columns and its statement. Two arrays matched by position (`prs` plus `receipts[n]`) are a finding, and the hook
+   blocks them. Never a hand-written `quackapi_post` to /sql, a curl to /sql, a `quack_query` back to dev, or a
+   lone post.
+4. **One `CROSS JOIN UNNEST(receipts)` per step**, never `unnest(...)` of receipts in a SELECT list, and nothing
+   joined back to the source afterwards.
+5. **Receipts read as columns.** `receipt.*` gives status, body and error. No `->>` ladders and no `from_json` /
+   `::JSON[]` over the body.
+6. **Status checked.** The next stage (or the final SELECT) derives a flag from `receipt.status` and keeps the
+   failed rows. Judge by status: when the generated statement fails, dev answers 422 (binder, parser, cast and
+   missing-file errors alike, verified on dev 2026-10-20) with the DuckDB error in `receipt.error` and the full
+   `{"detail": …}` in the body. A pipeline that reads bodies without looking at status is a finding.
+7. **Unparsed bodies.** An empty body, or a body that came back as text where rows were expected, is a failure:
+   the reader or its `:=` options are wrong. Fix the generated statement; don't parse around it.
+8. **Timeouts.** Each command bounds itself with its own option (`curl --max-time`, a reader's timeout), never a
+   `timeout` wrapper. A receipt that timed out is a failure row, not a missing row. The post itself is bounded
+   by quackapi's HTTP timeout.
+9. **Narrow statements.** Each generated statement filters and projects what the next stage needs, creates
+   views rather than tables, and carries no `$$` body pasted inline.
+10. **Order by dependency.** A later stage is built from the earlier stage's receipts. Use `array_agg(… ORDER BY …)`
+    only when order inside one array matters. No sleep or wait rows.
+
 ## What good looks like
 
 ```sql
-WITH intent AS (                          -- what is being done, as data
-    SELECT parent AS path, ['git', '-C', parent, 'log', '--oneline', '-5'] AS cmd
-    FROM fs.folders WHERE name = '.git'
-), rendered AS (                          -- generic template, substitution only
-    SELECT path, tera_render('reader-shellfs.tera', intent::JSON, autoescape := false,
-                             template_path := '<templates>/*.tera') AS sql
-    FROM intent
-), dispatched AS (                        -- visible self-dispatch
-    SELECT array_agg(selfdispatch(sql)) AS receipts FROM rendered
+WITH tables AS (                          -- real rows, every value a column
+    SELECT table_schema, table_name, 5 AS row_limit
+    FROM information_schema.tables WHERE table_schema = 'fs'
+), rendered AS (                          -- a canonical template by name; Tera only fills holes
+    SELECT table_name, tera_render('sql.tera', c::JSON, autoescape := false,
+                       template_path := concat_ws('/', getenv('HOME'), '.duck/deploy/skills/self-dispatch/templates/*.tera')) AS sql
+    FROM tables AS c
+), dispatched AS (                        -- visible self-dispatch; each row rides with its statement and receipt
+    SELECT table_name, sql, array_agg(selfdispatch(sql)) AS receipts FROM rendered GROUP BY ALL
 )
-SELECT r.* FROM dispatched CROSS JOIN UNNEST(receipts) AS t(r);
+SELECT table_name, sql, receipt.*, receipt.status IS DISTINCT FROM 200 AS failed
+FROM dispatched CROSS JOIN UNNEST(receipts) AS t(receipt);
 ```
 
-The owner's own examples (2026-10-17); he wrote the post out as `quackapi_post(...)`, written here as
-`selfdispatch(sql)`, the same call since PR #50. The first CTE declares everything; tera only substitutes; the
-reader is `SELECT *` and brings its own columns; the result is `receipt.*`:
+Verified on dev 2026-10-20 (6 rows, first three; body cut):
 
-```sql
-WITH c AS (
-    SELECT unnest(['/tmp', '/Users/aloksubbarao/inframe']) AS path
-), rendered AS (
-    SELECT tera_render(
-        $tera$
-        SELECT * FROM read_csv(
-            $cmd$find "{{ path }}" -maxdepth 1 -type d |$cmd$,
-            header := false
-        )
-        $tera$,
-        c::JSON,
-        autoescape := false
-    ) AS sql
-    FROM c
-), dispatched AS (
-    SELECT array_agg(selfdispatch(sql)) AS receipts
-    FROM rendered
-)
-SELECT receipt.*
-FROM dispatched
-CROSS JOIN UNNEST(receipts) AS t(receipt);
-```
+| table_name | sql | status | error | body | failed |
+|---|---|---|---|---|---|
+| dirs | `SELECT * FROM fs.dirs LIMIT 5` | 200 | NULL | `[{"path":"…/Library/LaunchAgents","modified":"2026-10-19 00:10"…}, …]` | false |
+| filelist | `SELECT * FROM fs.filelist LIMIT 5` | 200 | NULL | `[{"path":"…/Media/.DS_Store","folder":"…/Media",…}, …]` | false |
+| files | `SELECT * FROM fs.files LIMIT 5` | 200 | NULL | `[{"path":"…/Media/.DS_Store","folder":"…/Media",…}, …]` | false |
 
-`selfdispatch(sql)` is exactly `quackapi_post('http://127.0.0.1:9495/sql', json_object('sql', sql)::VARCHAR)`: the
+The first CTE declares everything, the template only substitutes, the reader is `SELECT *` and brings its own
+columns, and the result is each row's key and statement next to `receipt.*`, with failures kept as flagged rows. `selfdispatch(sql)` is exactly `quackapi_post('http://127.0.0.1:9495/sql', json_object('sql', sql)::VARCHAR)`: the
 post always goes to dev itself, and whatever varies by row goes inside the statement. A query that hand-writes the
-post, takes a URL per row, or builds it with `url_build` is a finding.
+post to dev, takes dev's URL per row, or builds it with `url_build` is a finding; a request to another host is
+`network.tera`.
 
 ```sql
 -- a template file
@@ -207,21 +225,18 @@ SELECT TRY_CAST(content AS JSON) FROM read_lines($cmd$for f in a35d1dd0-… 1f83
   tail -n 300 ~/.claude/projects/-Users-aloksubbarao-inframe/$f.jsonl | sed "s/^/{\"_s\":\"$f\",\"_l\":/; s/\$/}/"; done |$cmd$)
 ```
 ```sql
--- GOOD: the ids are rows; one statement per row; receipts unnested
-WITH c AS (
-    SELECT name, getenv('HOME') AS home, replace(cwd, '/', '-') AS project, sessionId AS session_id
-    FROM terminal_sessions WHERE sessionId IS NOT NULL
-), rendered AS (
-    SELECT tera_render($tera$
-        SELECT * FROM read_json($cmd$tail -n 200 "{{ home }}/.claude/projects/{{ project }}/{{ session_id }}.jsonl" |$cmd$,
-                                format := 'newline_delimited')
-    $tera$, c::JSON, autoescape := false) AS sql
-    FROM c
-), dispatched AS (
-    SELECT array_agg(selfdispatch(sql)) AS receipts FROM rendered
+-- GOOD: the sessions are rows; transcripts are already the agent.messages view, so a join with the filter
+-- pushed in does it. No dispatch is needed when no table function takes a per-row literal.
+WITH sessions AS (
+    SELECT sessionId::VARCHAR AS session_id, custom_title FROM terminal_sessions WHERE sessionId IS NOT NULL
 )
-SELECT receipt.* FROM dispatched CROSS JOIN UNNEST(receipts) AS t(receipt);
+SELECT session_id, custom_title, timestamp, content_bytes, head
+FROM sessions JOIN agent.messages USING (session_id)
+WHERE is_prompt AND timestamp > now() - INTERVAL 1 DAY;
 ```
+
+Verified on dev 2026-10-19 on the same three open sessions: 56 prompt rows, 14.6 KB in all. Reading the raw
+`.jsonl` per session instead returned 4.5 MB and 10.7 MB bodies and a 507 for the third.
 
 **printf building a path, the reader's schema declared, arrows digging into the result** (checks 6, 7):
 ```sql
@@ -231,7 +246,7 @@ SELECT printf('%s/.claude/projects/%s/%s.jsonl', getenv('HOME'), replace(cwd, '/
 … read_json(…, maximum_depth := 1) WHERE type ->> '$' IN ('user', 'assistant') …
 … CASE json_type(message -> 'content') WHEN 'VARCHAR' THEN message ->> 'content' ELSE message ->> '$.content[0].text' END
 ```
-GOOD is the query above: values in the first CTE, the template substitutes them, `SELECT *`, `receipt.*`.
+GOOD is the query above: the transcript is a view with typed columns (`agent.messages`), filtered, never dug into.
 
 **Parquet snapshots in the hot path of a one-query job** (checks 9, 10):
 ```sql
