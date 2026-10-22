@@ -1,6 +1,9 @@
 -- Any HTTP method — GET, POST, PATCH, PUT, DELETE — with headers, a raw body and a cookie jar, as rows. Each request is
 -- one statement rendered by network.tera; its reply row carries the jar after the request. A stage that depends on a
--- login is the next atom/molecule pair, its rows joined to the previous stage's jar by session.
+-- login is the next atom/molecule pair, its rows joined to the previous stage's jar by session. Requests in one stage
+-- are sent together and each starts from the previous stage's jar, so they do not see each other's cookies: every step
+-- that needs an earlier step's cookies (log in → read a CSRF token → POST) is its own stage. A stage whose jar feeds
+-- the next has one request per session; with two, the join sends each later request once per jar.
 -- timeout 30 s per request; workers: one post per request, a stage's requests sent together; batch: the request rows;
 -- no delay, no retries; redirects followed (8 max), no link following, depth 0; no cache; one reply per request.
 -- POST keeps curl's own method so a 302 after a form login becomes a GET; any other method with a body is forced
