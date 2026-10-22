@@ -121,6 +121,14 @@ and Tera's `autoescape` is HTML encoding, so it sent `a&#x27;b$c`.
   back with the jar. `html_to_duck_blocks` drops `<input>`. The attribute XPath reads it:
   `html_extract_text(parse_html(body), $x$//input[@name='authenticity_token']/@value$x$)`. Observed
   on github.com/login (2026-10-20): it returned an 88-char token. The POST back has not been tested.
+- **POST, PATCH, PUT, DELETE with the jar:** request rows (`method`, `url`, `headers`, `body`) become
+  curl config lines (`option = <to_json value>`), and `network.tera` sends each one with the jar in a
+  quoted heredoc. Its reply row carries status, headers, body and the jar after the request. A request
+  that needs a login is the next stage, joined to the login's jar by session
+  ([references/http_session.sql](references/http_session.sql)). Observed on dev 2026-10-21 (httpbin):
+  the cookie `a'b$c` set during a redirect reached the POST and the PATCH, and bodies holding `'`, `"`,
+  `$HOME` and `$(whoami)` arrived as text. `nullif(transfer.errormsg, '')` without a `::VARCHAR` cast
+  failed ("Malformed JSON at byte 0"): `read_json` types a field that is null as JSON.
 
 ## Step 2 — Look before parsing
 
