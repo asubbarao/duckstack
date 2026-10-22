@@ -38,7 +38,8 @@ SELECT d.path, d.parent, d.name, len(d.rel) AS depth, d.modified, c.cut IS NOT N
 FROM d LEFT JOIN cut c USING (path);
 
 CREATE OR REPLACE VIEW fs.files AS
-SELECT path, folder, file_name(path) AS name, parse_filename(path, true) AS stem, file_extension(path) AS ext,
+-- name, stem and ext are string work: the hostfs file_name/file_extension calls stat each of the ~1.3M rows (41 s CPU a scan).
+SELECT path, folder, parse_filename(path) AS name, parse_filename(path, true) AS stem, if(stem = '', '', name[len(stem) + 1:]) AS ext,
        file_size(path) AS bytes, file_last_modified(path) AS modified
 FROM fs.filelist;
 
