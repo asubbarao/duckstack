@@ -58,9 +58,10 @@ WITH c AS (
     SELECT list(quote_literal(path)) AS files FROM agent.entries WHERE reader = 'read_parquet' AND NOT starts_with(name, 'tmp_')
 ), statements AS (
     SELECT tera_render($view$
+-- No join back to agent.entries: the planner put it at ~68M rows and hashed the whole Parquet corpus instead
+-- (RIGHT_SEMI build side), 14.9 GiB and an empty stream.blocks at every boot. The literal list already names the files.
 CREATE OR REPLACE VIEW agent.lines AS
-SELECT * FROM read_parquet([{{ files | join(sep=", ") }}], union_by_name := true, file_row_number := true)
-SEMI JOIN agent.entries e ON e.path = transcript;
+SELECT * FROM read_parquet([{{ files | join(sep=", ") }}], union_by_name := true, file_row_number := true);
 CREATE OR REPLACE VIEW agent.attachment_fields AS
 SELECT transcript, file_row_number, (timestamp ->> '$')::TIMESTAMPTZ AS ts, attachment ->> 'type' AS attachment_type,
        key, attachment ->> key AS value
