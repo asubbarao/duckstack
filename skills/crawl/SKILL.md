@@ -121,14 +121,15 @@ and Tera's `autoescape` is HTML encoding, so it sent `a&#x27;b$c`.
   back with the jar. `html_to_duck_blocks` drops `<input>`. The attribute XPath reads it:
   `html_extract_text(parse_html(body), $x$//input[@name='authenticity_token']/@value$x$)`. Observed
   on github.com/login (2026-10-20): it returned an 88-char token. The POST back has not been tested.
-- **POST, PATCH, PUT, DELETE with the jar:** request rows (`method`, `url`, `headers`, `body`) become
-  curl config lines (`option = <to_json value>`), and `network.tera` sends each one with the jar in a
-  quoted heredoc. Its reply row carries status, headers, body and the jar after the request. A request
-  that needs a login is the next stage, joined to the login's jar by session
-  ([references/http_session.sql](references/http_session.sql)). Observed on dev 2026-10-21 (httpbin):
-  the cookie `a'b$c` set during a redirect reached the POST and the PATCH, and bodies holding `'`, `"`,
-  `$HOME` and `$(whoami)` arrived as text. `nullif(transfer.errormsg, '')` without a `::VARCHAR` cast
-  failed ("Malformed JSON at byte 0"): `read_json` types a field that is null as JSON.
+- **POST, PATCH, PUT, DELETE with the jar:** a session is a row with its requests in order, each request
+  a list of curl config options (`{option: 'url' | 'request' | 'header' | 'data-raw', value}`).
+  `network.tera` sends them in order through one jar (a cookie set by any request reaches the later
+  ones) and answers one row per request: status, headers, body, the jar after it
+  ([references/http_session.sql](references/http_session.sql)). Options and jar reach curl only
+  through quoted heredocs. Observed on dev 2026-10-22 (httpbin): a PATCH sent a cookie set two requests
+  earlier, and bodies holding `'`, `"`, `$HOME` and `$(whoami)` arrived as text.
+  `nullif(transfer.errormsg, '')` without a `::VARCHAR` cast failed ("Malformed JSON at byte 0"):
+  `read_json` types a field that is null as JSON.
 
 ## Step 2 — Look before parsing
 

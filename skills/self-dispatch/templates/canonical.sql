@@ -5,8 +5,8 @@
 -- shell: commands or files, any reader, many sources per statement, jq on/off | sql: in the database |
 -- bash_loop_fallback_method: a FALLBACK, listed by the audit wherever it is used.
 -- pipeline: one command as words; its example is ../../crawl/references/cookie_jar.sql (verified on dev 2026-10-20).
--- network: one HTTP request, any method, with a cookie jar in and out; its example is
--- ../../crawl/references/http_session.sql (verified on dev 2026-10-21).
+-- network: an HTTP session, requests in order through one cookie jar, any method; its example is
+-- ../../crawl/references/http_session.sql (verified on dev 2026-10-22).
 -- A pipeline of stages, each fed by the last one's receipts: ../references/five_stage_pipeline.sql.
 -- Verified on dev 2026-10-17.
 

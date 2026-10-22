@@ -1,20 +1,26 @@
-{# 5. One HTTP request through curl, any method, with the cookie jar carried in and handed back out.
-   Row: config_lines (list: curl config lines, `option = "<to_json value>"`), jar (Netscape cookie text, '' for none).
-   The jar and the config reach curl only through quoted heredocs, so no URL, header, body or cookie is ever shell
-   text. The reply is one row: status, method, url (after redirects), content_type, error, headers, body, jar. #}
-SELECT transfer.response_code::INTEGER AS status, transfer.method::VARCHAR AS method, transfer.url_effective::VARCHAR AS url,
-       transfer.content_type::VARCHAR AS content_type, nullif(transfer.errormsg::VARCHAR, '') AS error, headers, body, jar
-FROM read_json($cmd$bash <<'HTTP_REQUEST'
+{# 5. An HTTP session: requests sent in order through curl, sharing one cookie jar.
+   Row: requests (list; each request is a list of curl config options {option, value}, e.g. url, request, header,
+        data-raw), jar (Netscape cookie text to start from, '' for none).
+   Each request reads and rewrites the same jar, so a cookie set by one reaches every later one. The jar and the
+   options reach curl only through quoted heredocs, so no URL, header, body or cookie is ever shell text. One reply
+   row per request: seq, status, method, url (after redirects), content_type, error, headers, body, jar after it. #}
+SELECT seq, transfer.response_code::INTEGER AS status, transfer.method::VARCHAR AS method,
+       transfer.url_effective::VARCHAR AS url, transfer.content_type::VARCHAR AS content_type,
+       nullif(transfer.errormsg::VARCHAR, '') AS error, headers, body, jar
+FROM read_json($cmd$bash <<'HTTP_SESSION'
 work=$(mktemp -d)
 trap 'rm -f "$work/jar" "$work/config" "$work/body"; rmdir "$work"' EXIT
 cat > "$work/jar" <<'COOKIE_JAR'
 {{ jar }}
 COOKIE_JAR
+{% for request in requests %}
 cat > "$work/config" <<'CURL_CONFIG'
-{% for line in config_lines %}{{ line }}
+{% for o in request %}{{ o.option }} = {{ o.value | json_encode() }}
 {% endfor %}CURL_CONFIG
 : > "$work/body"
 response=$(curl -sS -L --compressed --max-time 30 --max-redirs 8 --proto '=http,https' --proto-redir '=http,https' -b "$work/jar" -c "$work/jar" -o "$work/body" -w '{"transfer":%{json},"headers":%{header_json}}' -K "$work/config")
-jq -c --rawfile body "$work/body" --rawfile jar "$work/jar" '. + {body: $body, jar: $jar}' <<< "$response"
-HTTP_REQUEST
-|$cmd$, maximum_object_size := 67108864)
+jq -c --argjson seq {{ loop.index }} --rawfile body "$work/body" --rawfile jar "$work/jar" '. + {seq: $seq, body: $body, jar: $jar}' <<< "$response"
+{% endfor %}
+HTTP_SESSION
+|$cmd$, format := 'newline_delimited', maximum_object_size := 67108864)
+ORDER BY seq
