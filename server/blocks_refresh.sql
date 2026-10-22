@@ -1,6 +1,6 @@
 -- Fills and keeps stream.blocks (blocks.sql) current: now and every 15 minutes, 30 s after the copies. Each transcript
 -- agent.entries shows changed in the last 30 minutes or not in the table yet (at boot, all of them) is parsed again, 100
--- transcripts a post, in order: each post replaces the table with its other rows plus those transcripts' parse (a literal
+-- transcripts a post (disjoint files, so order does not matter): each post replaces the table with its other rows plus those transcripts' parse (a literal
 -- list, so the scan reads only those files), so memory follows the batch, not the corpus (the whole corpus in one
 -- statement outgrew 16 GB on 2026-10-21). Then is_repeat is set from uuid, file, line and timestamp alone, and the BM25
 -- index is rebuilt, each step from the receipts of the one before. Nothing changed, no post.
@@ -25,7 +25,7 @@ SELECT *, false AS is_repeat FROM stream.main.parsed WHERE file_path IN ({{ file
 $w$, b::JSON, autoescape := false) AS sql
     FROM batches b
 ), batch_step AS (
-    SELECT array_agg(selfdispatch(sql) ORDER BY batch) AS receipts FROM rendered
+    SELECT array_agg({batch: batch, sql: sql, receipt: selfdispatch(sql)}) AS receipts FROM rendered
 ), repeat_step AS (
     SELECT array_agg(selfdispatch($r$
 CREATE OR REPLACE TABLE stream.main.blocks AS
@@ -36,14 +36,14 @@ WITH first_copy AS (
 SELECT b.* REPLACE (b.uuid IS NOT NULL AND f.first_line IS DISTINCT FROM (b.file_path, b.line) AS is_repeat)
 FROM stream.main.blocks b LEFT JOIN first_copy f USING (uuid)
 $r$)) AS receipts
-    FROM batch_step WHERE list_bool_or([r.status = 200 FOR r IN receipts])
+    FROM batch_step WHERE list_bool_or([x.receipt.status = 200 FOR x IN receipts])
 ), index_step AS (
     SELECT array_agg(selfdispatch($p$PRAGMA create_fts_index('stream.main.blocks', 'block_key', 'message_content', overwrite = 1)$p$)) AS receipts
     FROM repeat_step CROSS JOIN UNNEST(receipts) AS t(r) WHERE r.status = 200
 )
-SELECT r.* FROM batch_step CROSS JOIN UNNEST(receipts) AS t(r)
-UNION ALL SELECT r.* FROM repeat_step CROSS JOIN UNNEST(receipts) AS t(r)
-UNION ALL SELECT r.* FROM index_step CROSS JOIN UNNEST(receipts) AS t(r);
+SELECT 'batch' AS step, x.batch, x.sql, unnest(x.receipt) FROM batch_step CROSS JOIN UNNEST(receipts) AS t(x)
+UNION ALL BY NAME SELECT 'is_repeat' AS step, r.* FROM repeat_step CROSS JOIN UNNEST(receipts) AS t(r)
+UNION ALL BY NAME SELECT 'fts_index' AS step, r.* FROM index_step CROSS JOIN UNNEST(receipts) AS t(r);
 $refresh$ AS sql
 ), posted AS (
     SELECT sql, array_agg(selfdispatch(sql)) AS receipts FROM program GROUP BY sql
