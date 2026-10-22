@@ -1,6 +1,6 @@
 {# 5. An HTTP session: requests sent in order through curl, sharing one cookie jar.
-   Row: requests (list; each request is a list of curl config options {option, value}, e.g. url, request, header,
-        data-raw), jar (Netscape cookie text to start from, '' for none).
+   Row: requests (list; each request is a list of curl config options {option, value}, value already to_json
+        encoded by the caller, e.g. url, request, header, data-raw), jar (Netscape cookie text, '' for none).
    Each request reads and rewrites the same jar, so a cookie set by one reaches every later one. The jar and the
    options reach curl only through quoted heredocs, so no URL, header, body or cookie is ever shell text. One reply
    row per request: seq, status, method, url (after redirects), content_type, error, headers, body, jar after it. #}
@@ -9,16 +9,16 @@ SELECT seq, transfer.response_code::INTEGER AS status, transfer.method::VARCHAR 
        nullif(transfer.errormsg::VARCHAR, '') AS error, headers, body, jar
 FROM read_json($cmd$bash <<'HTTP_SESSION'
 work=$(mktemp -d)
-trap 'rm -f "$work/jar" "$work/config" "$work/body"; rmdir "$work"' EXIT
+trap 'rm -rf "$work"' EXIT
 cat > "$work/jar" <<'COOKIE_JAR'
 {{ jar }}
 COOKIE_JAR
 {% for request in requests %}
-cat > "$work/config" <<'CURL_CONFIG'
-{% for o in request %}{{ o.option }} = {{ o.value | json_encode() }}
-{% endfor %}CURL_CONFIG
 : > "$work/body"
-response=$(curl -sS -L --compressed --max-time 30 --max-redirs 8 --proto '=http,https' --proto-redir '=http,https' -b "$work/jar" -c "$work/jar" -o "$work/body" -w '{"transfer":%{json},"headers":%{header_json}}' -K "$work/config")
+response=$(curl -sS -L --compressed --max-time 30 --max-redirs 8 --proto '=http,https' --proto-redir '=http,https' -b "$work/jar" -c "$work/jar" -o "$work/body" -w '{"transfer":%{json},"headers":%{header_json}}' -K - <<'CURL_CONFIG'
+{% for o in request %}{{ o.option }} = {{ o.value }}
+{% endfor %}CURL_CONFIG
+)
 jq -c --argjson seq {{ loop.index }} --rawfile body "$work/body" --rawfile jar "$work/jar" '. + {seq: $seq, body: $body, jar: $jar}' <<< "$response"
 {% endfor %}
 HTTP_SESSION

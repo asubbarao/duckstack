@@ -23,16 +23,23 @@ WITH sessions AS (
     ] AS requests
     UNION ALL
     SELECT 'b', '', [[{option: 'url', value: 'https://httpbin.org/cookies'}]]
+), declared AS (            -- curl's config format reads to_json's escapes (\" \\ \n \t) back to the original text
+    SELECT session, jar,
+           list_transform(requests, r -> list_transform(r, o -> {option: o.option, value: to_json(o.value)::VARCHAR})) AS requests
+    FROM sessions
 ), rendered AS (
     SELECT *, tera_render('network.tera', c::JSON, autoescape := false,
                template_path := '/Users/aloksubbarao/.duck/deploy/skills/self-dispatch/templates/*.tera') AS executable_sql
-    FROM sessions AS c
+    FROM declared AS c
 ), dispatched AS (
     SELECT session, executable_sql, array_agg(selfdispatch(executable_sql)) AS receipts FROM rendered GROUP BY ALL
-), replies AS (
-    SELECT session, receipt.error AS dispatch_error, reply
-    FROM dispatched CROSS JOIN UNNEST(receipts) AS r(receipt) CROSS JOIN UNNEST(TRY_CAST(receipt.body AS JSON[])) AS e(reply)
+), replies AS (             -- a failed dispatch keeps its session row with a NULL reply
+    SELECT session, executable_sql, receipt.error AS dispatch_error,
+           reply ->> 'seq' AS seq, reply ->> 'status' AS status, reply ->> 'method' AS method,
+           reply ->> 'url' AS url, reply ->> 'content_type' AS content_type, reply ->> 'error' AS error,
+           reply -> 'headers' AS headers, reply ->> 'body' AS body, reply ->> 'jar' AS jar
+    FROM dispatched
+    CROSS JOIN UNNEST(receipts) AS r(receipt)
+    CROSS JOIN UNNEST(coalesce(TRY_CAST(receipt.body AS JSON[]), [NULL::JSON])) AS e(reply)
 )
-SELECT session, dispatch_error, reply ->> 'seq' AS seq, reply ->> 'status' AS status, reply ->> 'method' AS method,
-       reply ->> 'url' AS url, reply ->> 'error' AS error, reply ->> 'body' AS body, reply ->> 'jar' AS jar
-FROM replies ORDER BY session, seq::INTEGER;
+SELECT * FROM replies ORDER BY session, seq::INTEGER;
