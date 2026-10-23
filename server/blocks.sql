@@ -7,14 +7,14 @@
 -- timestamp is UTC, the truth; ts_pst is the same instant on the Pacific wall clock, the one readers group and show by.
 -- stream.parsed: the parse of agent.lines (fields are JSON there, hence ->> '$'); the build's input only. A view in the
 -- stream catalog resolves names inside stream, so it names dev.agent.lines.
--- Boot posts the view, then the empty table from that receipt (a post binds alone), and returns every receipt.
--- blocks_refresh.sql fills it (at boot every transcript is new to it) and builds the index.
+-- Boot posts the view, then fills the table from that receipt (a post binds alone; the whole store, ~20 s), and returns
+-- every receipt. blocks_refresh.sql keeps it current, computes is_repeat and builds the index.
 ATTACH IF NOT EXISTS ':memory:' AS stream;
 WITH intent AS (
     SELECT $v$
 CREATE OR REPLACE VIEW stream.main.parsed AS
 -- Codex writes its session id, cwd and branch once, in session_meta; the file's own is its first (later ones are copied
--- parents). A window by transcript, not a join, so the refresh's file_path filter still reaches the Parquet scan.
+-- parents). A window by transcript, not a join, so the refresh's filter on stored still reaches the Parquet scan.
 WITH line AS (
     SELECT ['text', 'thinking', 'output', 'content'] AS content_keys,
            ['call_id', 'tool_use_id', 'id'] AS id_keys, ['command', 'cmd', 'sql', '$'] AS command_keys,
@@ -25,7 +25,7 @@ WITH line AS (
             'Another Claude session sent a message', '# AGENTS.md', '[Cross-session delivery notice]',
             'Here is a note offered by a side agent'] AS harness_prefixes,
            arg_min(payload, CASE WHEN type ->> '$' = 'session_meta' THEN file_row_number END) OVER (PARTITION BY transcript) AS codex_meta,
-           transcript AS file_path, file_row_number AS line, CASE WHEN contains(transcript, '/.codex/') THEN 'codex' ELSE 'claude' END AS source,
+           transcript AS file_path, stored, file_row_number AS line, CASE WHEN contains(transcript, '/.codex/') THEN 'codex' ELSE 'claude' END AS source,
            contains(transcript, '/subagents/') AS is_agent,
            coalesce(sessionId ->> '$', codex_meta ->> 'id', parse_filename(transcript, true)) AS session_id,
            (timestamp ->> '$')::TIMESTAMPTZ AS timestamp, type ->> '$' AS message_type, uuid ->> '$' AS uuid,
@@ -68,7 +68,7 @@ $v$ AS parsed_sql
 ), parsed_step AS (
     SELECT array_agg(selfdispatch(parsed_sql)) AS receipts FROM intent
 ), create_step AS (
-    SELECT array_agg(selfdispatch($c$CREATE TABLE IF NOT EXISTS stream.main.blocks AS SELECT *, false AS is_repeat FROM stream.main.parsed LIMIT 0$c$)) AS receipts
+    SELECT array_agg(selfdispatch($c$CREATE TABLE IF NOT EXISTS stream.main.blocks AS SELECT *, false AS is_repeat FROM stream.main.parsed$c$)) AS receipts
     FROM parsed_step CROSS JOIN UNNEST(receipts) AS t(r) WHERE r.status = 200
 )
 SELECT r.* FROM parsed_step CROSS JOIN UNNEST(receipts) AS t(r)

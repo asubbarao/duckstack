@@ -3,15 +3,14 @@
 -- agent.entries: PR #1576's entries shape over fs.files under the transcript roots and the store (fs.sql keeps fs.files
 -- current, so a new transcript is listed within a minute). A session is a Claude transcript <project>/<stem>.jsonl plus
 -- its <project>/<stem>/subagents/*.jsonl, or one Codex rollout file (.jsonl or .jsonl.zst); its stored copy is
--- <store><session>.parquet. A machine without transcripts lists nothing, copies nothing and never posts agent.lines
--- (read_parquet fails on an empty file list).
+-- <store><session>.parquet. agent.lines is a glob over the store, so a copy is in the view the moment it lands; on a
+-- machine with no store the glob matches nothing and the view's post fails (a receipt, not a boot failure).
 -- read_json keeps every top-level field as a column of JSON (maximum_depth 1, map inference off): the same shape in
 -- every file. Map inference turns a project's ~170 top-level fields into one MAP; inferred deeper, a field is a STRUCT
 -- in one file and a MAP in another, which union_by_name cannot merge. maximum_object_size 32 MB fits the largest line
 -- (~21 MB); the reader's buffers are twice it per thread.
 -- agent.attachment_fields: every attachment field as a (key, value) row, found with json_keys, so hook runs and other
--- attachments need no hand-typed field list; PIVOT ON key turns one attachment_type back into columns. It is created in
--- the agent.lines rebind below, because it cannot bind before agent.lines exists.
+-- attachments need no hand-typed field list; PIVOT ON key turns one attachment_type back into columns.
 CREATE SCHEMA IF NOT EXISTS agent;
 CREATE OR REPLACE VIEW agent.entries AS
 WITH roots AS (
@@ -30,9 +29,9 @@ CREATE OR REPLACE VIEW agent.titles AS
 SELECT * FROM read_json($cmd$cat "$HOME/.codex/session_index.jsonl" 2>/dev/null; true |$cmd$, format := 'newline_delimited');
 -- One refresh program, run once now and every five minutes. Each session with a file newer than its stored copy (or
 -- none stored) is copied whole, one post per session, run at the same time: an empty store takes 980 sessions (3.6 GB,
--- ~45 s; failed posts are retried by the next run), a 5-minute run the few active ones (~13 MB, 0.5 s). agent.lines is
--- rebound after the copies with the stored files' literal list, so it never reads a partial file. No changed session
--- means no rows, so nothing is posted.
+-- ~45 s; failed posts are retried by the next run), a 5-minute run the few active ones (~13 MB, 0.5 s). No changed
+-- session means no rows, so nothing is posted. The views are posted after the copies, so a machine whose store was
+-- empty at boot has them after the first run. [!t] in the glob skips the tmp_ file DuckDB writes during a copy.
 WITH program AS (
     SELECT $refresh$
 WITH c AS (
@@ -54,22 +53,17 @@ $copy$, c::JSON, autoescape := false) AS sql FROM c
 )
 SELECT r.* FROM posted CROSS JOIN UNNEST(receipts) AS t(r);
 
-WITH c AS (
-    SELECT list(quote_literal(path)) AS files FROM agent.entries WHERE reader = 'read_parquet' AND NOT starts_with(name, 'tmp_')
-), statements AS (
-    SELECT tera_render($view$
--- No join back to agent.entries: the planner put it at ~68M rows and hashed the whole Parquet corpus instead
--- (RIGHT_SEMI build side), 14.9 GiB and an empty stream.blocks at every boot. The literal list already names the files.
+WITH posted AS (
+    SELECT array_agg(selfdispatch($view$
 CREATE OR REPLACE VIEW agent.lines AS
-SELECT * FROM read_parquet([{{ files | join(sep=", ") }}], union_by_name := true, file_row_number := true);
+SELECT * FROM read_parquet(getenv('HOME') || '/.duck/lake/agent/**/[!t]*.parquet',
+                           union_by_name := true, file_row_number := true, filename := 'stored');
 CREATE OR REPLACE VIEW agent.attachment_fields AS
 SELECT transcript, file_row_number, (timestamp ->> '$')::TIMESTAMPTZ AS ts, attachment ->> 'type' AS attachment_type,
        key, attachment ->> key AS value
 FROM agent.lines CROSS JOIN UNNEST(json_keys(attachment)) AS t(key)
 WHERE attachment IS NOT NULL;
-$view$, c::JSON, autoescape := false) AS sql FROM c WHERE len(files) > 0
-), posted AS (
-    SELECT array_agg(selfdispatch(sql)) AS receipts FROM statements
+$view$)) AS receipts
 )
 SELECT r.* FROM posted CROSS JOIN UNNEST(receipts) AS t(r);
 $refresh$ AS sql

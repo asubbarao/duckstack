@@ -29,9 +29,9 @@ cmd or sql, else the whole input). The raw store below is for fields neither car
   (`~/.duck/lake/agent/Users/<you>/.claude/projects/<project>/<session>.parquet`, Codex rollouts likewise).
 - **Coverage:** every Claude Code and Codex transcript. A Claude session's Parquet holds its main file and its
   `subagents/*.jsonl`.
-- **Feed:** boot and a cron every 5 minutes copy each session whose transcript changed since its stored copy, then
-  re-post `agent.lines` over the stored files. So the store is up to ~5 minutes behind live; `stream.blocks` refreshes
-  every 15 minutes on top of it.
+- **Feed:** boot and a cron every 5 minutes copy each session whose transcript changed since its stored copy.
+  `agent.lines` is a glob over the store, so a copy is in it at once. The store is up to ~5 minutes behind live;
+  `stream.blocks` refreshes every 15 minutes on top of it, re-reading only the Parquet files written since.
 
 | View | One row per |
 |---|---|
