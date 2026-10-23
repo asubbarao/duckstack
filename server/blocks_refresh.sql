@@ -1,29 +1,24 @@
--- Fills and keeps stream.blocks (blocks.sql) current: now and every 15 minutes, 30 s after the copies, it replaces the rows
--- of each transcript agent.entries shows changed in the last 30 minutes or not in the table yet (at boot, all of them; a
--- literal list, so the scan reads only those files), recomputes is_repeat over the whole table, then rebuilds the BM25
--- index from that step's receipt. Nothing changed, no post.
+-- Keeps stream.blocks (blocks.sql fills it at boot) current: now and every 15 minutes, 30 s after the copies. The rows of
+-- every Parquet file written in the last 30 minutes (twice the cron period) are replaced; the filter on the file's own
+-- modified time runs per file inside the Parquet scan, so unchanged files are not read (~3 s: the is_repeat window over
+-- the whole table is 2 s of it). Then the BM25 index is rebuilt from that step's receipt.
 WITH program AS (
     SELECT $refresh$
-WITH transcript AS (
-    SELECT path, modified FROM dev.agent.entries WHERE reader = 'read_json'
-), stale AS (
-    SELECT path FROM transcript WHERE modified >= now()::TIMESTAMP - INTERVAL 30 MINUTE   -- twice the cron period
-    UNION
-    SELECT path FROM transcript ANTI JOIN stream.main.blocks b ON b.file_path = transcript.path
-), changed AS (
-    SELECT string_agg(quote_literal(path), ', ') AS files FROM stale
-), rendered AS (
-    SELECT tera_render($w$
+WITH window_step AS (
+    SELECT array_agg(selfdispatch($w$
 CREATE OR REPLACE TABLE stream.main.blocks AS
+WITH fresh AS (
+    SELECT *, false AS is_repeat FROM stream.main.parsed
+    WHERE file_last_modified(stored) >= now()::TIMESTAMP - INTERVAL 30 MINUTE
+), kept_and_fresh AS (
+    SELECT * FROM stream.main.blocks ANTI JOIN fresh USING (stored)
+    UNION ALL BY NAME
+    SELECT * FROM fresh
+)
 SELECT * EXCLUDE (is_repeat),
        uuid IS NOT NULL AND (file_path, line) IS DISTINCT FROM arg_min((file_path, line), (timestamp, file_path, line)) OVER (PARTITION BY uuid) AS is_repeat
-FROM (SELECT * FROM stream.main.blocks WHERE file_path NOT IN ({{ files }})
-      UNION ALL BY NAME
-      SELECT * FROM stream.main.parsed WHERE file_path IN ({{ files }}))
-$w$, changed::JSON, autoescape := false) AS sql
-    FROM changed WHERE files IS NOT NULL
-), window_step AS (
-    SELECT array_agg(selfdispatch(sql)) AS receipts FROM rendered
+FROM kept_and_fresh
+$w$)) AS receipts
 ), index_step AS (
     SELECT array_agg(selfdispatch($p$PRAGMA create_fts_index('stream.main.blocks', 'block_key', 'message_content', overwrite = 1)$p$)) AS receipts
     FROM window_step CROSS JOIN UNNEST(receipts) AS t(r) WHERE r.status = 200
